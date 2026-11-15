@@ -349,6 +349,7 @@ export class HealthOverviewService {
         id: horse.id,
         name: horse.name,
         horseCode: horse.horseCode,
+        avatarUrl: horse.avatarUrl,
         microchipRfid: horse.microchipRfid,
         status: horse.status,
         healthGroup: GROUP[horse.status] ?? 'QUALIFIED',

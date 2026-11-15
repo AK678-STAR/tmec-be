@@ -6,6 +6,8 @@ import { MeService } from './me.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { AuthService } from '../auth/auth.service';
+import { validate } from 'class-validator';
+import { UpdateProfileDto } from './dto/accounts.dto';
 
 describe('MeService.changePassword', () => {
   let service: MeService;
@@ -45,6 +47,41 @@ describe('MeService.changePassword', () => {
       ],
     }).compile();
     service = module.get(MeService);
+  });
+
+  it('saves and removes an avatar only on the signed-in account', async () => {
+    const avatarUrl = 'data:image/jpeg;base64,YWJj';
+    await service.updateProfile('user-1', { fullName: 'Trainer', avatarUrl });
+    expect(prisma.user.update).toHaveBeenLastCalledWith({
+      where: { id: 'user-1' },
+      data: { fullName: 'Trainer', phoneNumber: null, avatarUrl },
+    });
+    await service.updateProfile('user-1', { fullName: 'Trainer', avatarUrl: '' });
+    expect(prisma.user.update).toHaveBeenLastCalledWith({
+      where: { id: 'user-1' },
+      data: { fullName: 'Trainer', phoneNumber: null, avatarUrl: null },
+    });
+  });
+
+  it('preserves the saved avatar for older profile clients that omit it', async () => {
+    await service.updateProfile('user-1', { fullName: 'Trainer' });
+    expect(prisma.user.update.mock.calls[0][0].data).not.toHaveProperty('avatarUrl');
+  });
+
+  it('validates uploaded profile photos and their size', async () => {
+    for (const avatarUrl of [
+      'javascript:alert(1)',
+      '/images/horses/horse-01.jpg',
+      'data:image/jpeg;base64,' + 'a'.repeat(51200),
+    ]) {
+      const dto = Object.assign(new UpdateProfileDto(), { fullName: 'Trainer', avatarUrl });
+      expect((await validate(dto)).some((error) => error.property === 'avatarUrl')).toBe(true);
+    }
+    for (const avatarUrl of ['', 'data:image/jpeg;base64,YWJj']) {
+      expect(
+        await validate(Object.assign(new UpdateProfileDto(), { fullName: 'Trainer', avatarUrl })),
+      ).toHaveLength(0);
+    }
   });
 
   it('should count a wrong current password and report the attempts left', async () => {

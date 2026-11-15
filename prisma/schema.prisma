@@ -249,6 +249,7 @@ model User {
   passwordHash         String     @default("") // "" = tài khoản INVITED chưa đặt mật khẩu
   passwordChangedAt    DateTime?
   fullName             String
+  avatarUrl            String?
   phoneNumber          String?
   role                 Role
   status               UserStatus @default(PENDING_EMAIL)

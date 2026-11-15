@@ -96,6 +96,7 @@ describe('permissions', () => {
       passwordHash: 'secret-hash',
       passwordChangedAt: null,
       fullName: 'A',
+      avatarUrl: 'data:image/jpeg;base64,YWJj',
       phoneNumber: null,
       role: Role.GROOM,
       status: 'ACTIVE',
@@ -120,5 +121,6 @@ describe('permissions', () => {
     expect(publicUser).not.toHaveProperty('passwordHash');
     expect(publicUser).not.toHaveProperty('verificationCode');
     expect(publicUser.phone).toBe('');
+    expect(publicUser.avatarUrl).toBe('data:image/jpeg;base64,YWJj');
   });
 });

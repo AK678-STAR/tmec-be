@@ -12,6 +12,7 @@ import {
 export interface PublicUser {
   id: string;
   fullName: string;
+  avatarUrl: string | null;
   email: string;
   phone: string;
   role: User['role'];
@@ -53,6 +54,7 @@ export function toPublicUser(user: User): PublicUser {
   return {
     id: user.id,
     fullName: user.fullName,
+    avatarUrl: user.avatarUrl ?? null,
     email: user.email,
     phone: user.phoneNumber ?? '',
     role: user.role,

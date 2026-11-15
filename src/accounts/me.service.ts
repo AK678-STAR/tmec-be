@@ -54,7 +54,11 @@ export class MeService {
     }
     return this.prisma.user.update({
       where: { id: user.id },
-      data: { fullName, phoneNumber: phone || null },
+      data: {
+        fullName,
+        phoneNumber: phone || null,
+        ...(dto.avatarUrl !== undefined ? { avatarUrl: dto.avatarUrl || null } : {}),
+      },
     });
   }
 

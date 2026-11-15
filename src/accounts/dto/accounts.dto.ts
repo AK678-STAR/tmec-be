@@ -1,7 +1,7 @@
 // DTO của quản lý tài khoản và hồ sơ cá nhân. DTO chỉ kiểm tra kiểu dữ liệu; luật nghiệp vụ
 // nằm ở service để trả đúng mã lỗi FE đọc.
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsObject, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsObject, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 
 export class InviteAccountDto {
   @ApiProperty({ example: 'Ngô Thanh Tùng' })
@@ -53,6 +53,13 @@ export class UpdatePermissionsDto {
 }
 
 export class UpdateProfileDto {
+  @ApiPropertyOptional({ description: 'Compressed JPEG profile photo; empty string removes it' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50 * 1024)
+  @Matches(/^(?:data:image\/jpeg;base64,[A-Za-z0-9+/=]+)?$/)
+  avatarUrl?: string;
+
   @ApiProperty({ example: 'Mai Quang Minh' })
   @IsString()
   fullName: string;
