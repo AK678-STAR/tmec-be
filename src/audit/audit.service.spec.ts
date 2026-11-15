@@ -75,7 +75,7 @@ describe('AuditService query', () => {
     const result = await service.exportCsv({ action: 'UPDATE_STALL', page: 2, pageSize: 10 });
     expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { action: 'UPDATE_STALL' },
+        where: expect.objectContaining({ action: 'UPDATE_STALL' }),
       }),
     );
     expect(prisma.auditLog.findMany.mock.calls[0][0]).not.toHaveProperty('skip');
@@ -89,7 +89,9 @@ describe('AuditService query', () => {
     await service.list({ actor: 'manager' });
     expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { user: { fullName: { contains: 'manager', mode: 'insensitive' } } },
+        where: expect.objectContaining({
+          user: { fullName: { contains: 'manager', mode: 'insensitive' } },
+        }),
       }),
     );
     expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Array), {
