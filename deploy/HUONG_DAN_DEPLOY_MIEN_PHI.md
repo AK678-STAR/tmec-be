@@ -196,6 +196,22 @@ Lưu ý bảo mật:
 
 **Kiểm tra:** vào `https://tmec.site`, bấm **Đăng nhập**, đăng nhập bằng tài khoản Club Manager, và thấy dashboard có dữ liệu.
 
+### 7.1 Cách Reset dữ liệu về mặc định ban đầu nếu bị loạn sau khi deploy hoặc chạy thử
+
+Nếu trong quá trình người dùng thao tác hoặc chạy thử dữ liệu bị lỗi, thừa thãi hoặc muốn đưa toàn bộ hệ thống về trạng thái mẫu ban đầu (Golden Demo State):
+
+1. Mở PowerShell trong thư mục `Racehorse_Training_Management_System_MT_BE`.
+2. Thiết lập chuỗi kết nối Session Pooler (cổng 5432) của Supabase:
+   ```bash
+   $env:DATABASE_URL="<chuỗi Session pooler Supabase>"; $env:DIRECT_URL="<chuỗi Session pooler Supabase>"
+   ```
+3. Chạy lệnh reset nạp lại:
+   ```bash
+   npm run db:seed -- --reset
+   ```
+   *Lệnh này sẽ tự động xóa sạch 34 bảng quan hệ theo đúng thứ tự ràng buộc khóa ngoại (foreign key) và tái tạo 100% dữ liệu gốc: 12 chiến mã, 5 vai trò demo, mật khẩu `EquiFlow@2026`, 4 phân khu chuồng, giải đấu và sao kê tài chính.*
+4. Đóng cửa sổ terminal sau khi hoàn tất.
+
 ---
 
 ## Bước 8. Giữ backend không ngủ (UptimeRobot)
