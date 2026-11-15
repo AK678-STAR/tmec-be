@@ -3509,7 +3509,7 @@ async function seedActivityAndSupport(tx: Tx) {
           title: 'Cúp Tri Ân 20/11 - Tôn Vinh Huấn Luyện Viên Thiên Mã 2026',
           confirmedRunners: 5,
         }),
-        timestamp: days(4, 18, 0),
+        timestamp: days(-2, 18, 0),
       },
     ],
     skipDuplicates: true,

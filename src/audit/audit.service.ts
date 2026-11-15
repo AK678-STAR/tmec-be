@@ -33,17 +33,17 @@ export class AuditService {
     if (from && to && new Date(from) > new Date(to)) {
       throw apiError(HttpStatus.BAD_REQUEST, 'VALIDATION', 'From must not be later than to');
     }
+    const now = new Date();
+    const effectiveTo = to ? (new Date(to) > now ? now : new Date(to)) : now;
     return {
       ...(userId && { userId }),
       ...(action && { action }),
       ...(entityName && { entityName }),
       ...(actor && { user: { fullName: { contains: actor, mode: 'insensitive' as const } } }),
-      ...((from || to) && {
-        timestamp: {
-          ...(from && { gte: new Date(from) }),
-          ...(to && { lte: new Date(to) }),
-        },
-      }),
+      timestamp: {
+        ...(from && { gte: new Date(from) }),
+        lte: effectiveTo,
+      },
     };
   }
 
