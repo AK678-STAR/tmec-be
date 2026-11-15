@@ -1,4 +1,6 @@
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
+import { JSON_BODY_LIMIT } from './common/constants/http';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
@@ -13,7 +15,9 @@ import {
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // Evidence is sent both as a field and in legacy Markdown, up to 50KB each.
+  app.useBodyParser('json', { limit: JSON_BODY_LIMIT });
 
   const configService = app.get(ConfigService);
   const port = configService.get<number>('PORT', 3000);

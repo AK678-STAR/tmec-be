@@ -1,3 +1,4 @@
+import { incidentDescription, incidentNotificationText } from './incident-evidence';
 import {
   BadRequestException,
   ForbiddenException,
@@ -63,7 +64,7 @@ export class IncidentsService {
         reportedById: reporter.userId,
         severity: dto.severity,
         symptomsJson: symptomsList,
-        description: dto.description.trim(),
+        description: incidentDescription(dto.description, dto.evidencePhotoUrl),
         status: IncidentStatus.REPORTED,
       },
       include: {
@@ -112,7 +113,7 @@ export class IncidentsService {
         type: isCritical ? 'CRITICAL_INCIDENT_REPORTED' : 'HEALTH_ANOMALY_LOGGED',
         category: 'MEDICAL',
         title: `${titlePrefix} ${horse.name} (${horse.horseCode || ''})`,
-        message: `Groom ${reporter.fullName} báo cáo: ${symptomsText}. Nội dung: "${dto.description}"`,
+        message: `Groom ${reporter.fullName} báo cáo: ${symptomsText}. Nội dung: "${incidentNotificationText(dto.description)}"`,
         params: {
           incidentNumber,
           horseId: horse.id,

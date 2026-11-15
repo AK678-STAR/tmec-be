@@ -73,12 +73,25 @@ describe('IncidentsService', () => {
           horseId: 'horse-1',
           severity: SeverityLevel.CRITICAL,
           symptoms: ['COLIC', 'FEVER'],
-          description: 'Ngựa quằn quại đau bụng, lăn nhiều lần trên rơm.',
+          description:
+            'Ngựa quằn quại đau bụng, lăn nhiều lần trên rơm.\n\n![Ảnh hiện trường](data:image/jpeg;base64,YWJj)',
+          evidencePhotoUrl: 'data:image/jpeg;base64,YWJj',
         },
         reporter,
       );
 
       expect(res.id).toBe('inc-1');
+      expect(prisma.incidentReport.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            description:
+              'Ngựa quằn quại đau bụng, lăn nhiều lần trên rơm.\n\n![Ảnh hiện trường](data:image/jpeg;base64,YWJj)',
+          }),
+        }),
+      );
+      expect(notifications.notifyHorse.mock.calls[0][2].message).not.toContain('data:image');
+      expect(notifications.notifyHorse.mock.calls[0][2].message).toContain('Ngựa quằn quại');
+
       expect(notifications.notifyHorse).toHaveBeenCalledWith(
         'horse-1',
         {

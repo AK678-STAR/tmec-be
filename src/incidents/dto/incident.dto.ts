@@ -9,12 +9,23 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
+  MaxLength,
   Max,
   Min,
 } from 'class-validator';
 import { IncidentStatus, SeverityLevel } from '@prisma/client';
 
 export class CreateIncidentDto {
+  @ApiPropertyOptional({ description: 'Evidence image URL or compressed JPEG data URL' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50 * 1024)
+  @Matches(
+    /^(?:data:image\/(?:jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+|https?:\/\/[^\s)]+|\/(?!\/)[^\s)]+)$/,
+  )
+  evidencePhotoUrl?: string;
+
   @ApiProperty({ description: 'ID của con ngựa gặp sự cố' })
   @IsUUID()
   @IsNotEmpty()

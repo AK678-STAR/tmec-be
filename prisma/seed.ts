@@ -176,6 +176,7 @@ async function clearFixtures(tx: Tx) {
 
 interface HorseSpec {
   id: string;
+  avatarUrl: string;
   horseCode: string;
   name: string;
   microchip: string;
@@ -198,6 +199,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[0],
     horseCode: 'HR-000001',
+    avatarUrl: '/images/horses/horse-01.jpg',
     name: 'Bạch Long Mã',
     microchip: '985000000000001',
     breed: 'Thoroughbred',
@@ -213,6 +215,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[1],
     horseCode: 'HR-000002',
+    avatarUrl: '/images/horses/horse-02.jpg',
     name: 'Xích Thố',
     microchip: '985000000000002',
     breed: 'Thoroughbred',
@@ -229,6 +232,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[2],
     horseCode: 'HR-000003',
+    avatarUrl: '/images/horses/horse-03.jpg',
     name: 'Kim Long',
     microchip: '985000000000003',
     breed: 'Warmblood',
@@ -244,6 +248,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[3],
     horseCode: 'HR-000004',
+    avatarUrl: '/images/horses/horse-04.jpg',
     name: 'Vân Tiêu',
     microchip: '985000000000004',
     breed: 'Arabian Cross',
@@ -259,6 +264,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[4],
     horseCode: 'HR-000005',
+    avatarUrl: '/images/horses/horse-05.jpg',
     name: 'Thần Phong',
     microchip: '985000000000005',
     breed: 'Arabian',
@@ -274,6 +280,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[5],
     horseCode: 'HR-000006',
+    avatarUrl: '/images/horses/horse-06.jpg',
     name: 'Hắc Báo',
     microchip: '985000000000006',
     breed: 'Standardbred',
@@ -289,6 +296,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[6],
     horseCode: 'HR-000007',
+    avatarUrl: '/images/horses/horse-07.jpg',
     name: 'Hồng Kỳ',
     microchip: '985000000000007',
     breed: 'Quarter Horse',
@@ -304,6 +312,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[7],
     horseCode: 'HR-000008',
+    avatarUrl: '/images/horses/horse-08.jpg',
     name: 'Phi Vũ',
     microchip: '985000000000008',
     breed: 'Appaloosa',
@@ -319,6 +328,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[8],
     horseCode: 'HR-000009',
+    avatarUrl: '/images/horses/horse-09.jpg',
     name: 'Tử Điện',
     microchip: '985000000000009',
     breed: 'Paint',
@@ -334,6 +344,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[9],
     horseCode: 'HR-000010',
+    avatarUrl: '/images/horses/horse-10.jpg',
     name: 'Thanh Loan',
     microchip: '985000000000010',
     breed: 'Arabian Cross',
@@ -349,6 +360,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[10],
     horseCode: 'HR-000011',
+    avatarUrl: '/images/horses/horse-11.jpg',
     name: 'Ngàn Hoa',
     microchip: '985000000000011',
     breed: 'Paint',
@@ -364,6 +376,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[11],
     horseCode: 'HR-000012',
+    avatarUrl: '/images/horses/horse-12.jpg',
     name: 'Thiên Mã',
     microchip: '985000000000012',
     breed: 'Warmblood',
@@ -379,6 +392,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[12],
     horseCode: 'HR-000013',
+    avatarUrl: '/images/horses/horse-13.jpg',
     name: 'Hỏa Phụng',
     microchip: '985000000000013',
     breed: 'Thoroughbred',
@@ -394,6 +408,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[13],
     horseCode: 'HR-000014',
+    avatarUrl: '/images/horses/horse-14.jpg',
     name: 'Phong Lôi',
     microchip: '985000000000014',
     breed: 'Quarter Horse',
@@ -409,6 +424,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[14],
     horseCode: 'HR-000015',
+    avatarUrl: '/images/horses/horse-15.jpg',
     name: 'Tuyết Ảnh',
     microchip: '985000000000015',
     breed: 'Arabian',
@@ -425,6 +441,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[15],
     horseCode: 'HR-000016',
+    avatarUrl: '/images/horses/horse-16.jpg',
     name: 'Lôi Chấn',
     microchip: '985000000000016',
     breed: 'Standardbred',
@@ -441,6 +458,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[16],
     horseCode: 'HR-000017',
+    avatarUrl: '/images/horses/horse-17.jpg',
     name: 'Dạ Nguyệt',
     microchip: '985000000000017',
     breed: 'Appaloosa',
@@ -458,6 +476,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[17],
     horseCode: 'HR-000018',
+    avatarUrl: '/images/horses/horse-18.jpg',
     name: 'Lão Tướng',
     microchip: '985000000000018',
     breed: 'Thoroughbred',
@@ -473,6 +492,7 @@ const HORSES: HorseSpec[] = [
   {
     id: horseIds[18],
     horseCode: 'HR-000019',
+    avatarUrl: '/images/horses/horse-19.jpg',
     name: 'Huyền Vũ',
     microchip: '985000000000019',
     breed: 'Warmblood',
@@ -1043,6 +1063,7 @@ async function seedClub(tx: Tx, passwordHash: string) {
     data: HORSES.map((h) => ({
       id: h.id,
       horseCode: h.horseCode,
+      avatarUrl: h.avatarUrl,
       name: h.name,
       microchip: h.microchip,
       microchipRfid: h.microchip,
