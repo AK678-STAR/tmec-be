@@ -1,4 +1,4 @@
-import { IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 
 export class CreatePrescriptionDto {
   @IsString()
@@ -41,15 +41,25 @@ export class CreatePrescriptionDto {
 
   @IsOptional()
   @IsNumber()
+  @Min(1)
+  @Max(3, { message: 'Medication frequency cannot exceed 3 times per day' })
   frequencyPerDay?: number;
 
   @IsOptional()
   @IsNumber()
   @Min(0)
   daysCount?: number;
+
+  @IsOptional()
+  @IsString()
+  supplyId?: string;
 }
 
 export class UpdatePrescriptionDto {
+  @IsOptional()
+  @IsString()
+  supplyId?: string;
+
   @IsOptional()
   @IsString()
   medicationName?: string;

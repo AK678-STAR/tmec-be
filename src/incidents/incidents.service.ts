@@ -53,7 +53,9 @@ export class IncidentsService {
           : ['OTHER'];
 
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    const countToday = await this.prisma.incidentReport.count();
+    const countToday = await this.prisma.incidentReport.count({
+      where: { incidentNumber: { startsWith: `INC-${dateStr}-` } },
+    });
     const incidentNumber = `INC-${dateStr}-${String(countToday + 1).padStart(4, '0')}`;
 
     const incident = await this.prisma.incidentReport.create({
@@ -217,7 +219,9 @@ export class IncidentsService {
     const description = `[Mô phỏng - ${packet.incident?.location || 'TRACK'}] ${packet.incident?.label || 'Sự cố sân chạy'}.${snapshotText}`;
 
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    const countToday = await this.prisma.incidentReport.count();
+    const countToday = await this.prisma.incidentReport.count({
+      where: { incidentNumber: { startsWith: `INC-${dateStr}-` } },
+    });
     const incidentNumber = `INC-${dateStr}-${String(countToday + 1).padStart(4, '0')}`;
 
     const incident = await this.prisma.incidentReport.create({

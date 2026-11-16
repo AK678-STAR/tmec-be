@@ -1182,4 +1182,75 @@ describe('InventoryService', () => {
       expect((context.activeDeliveries[0] as any).requestedBy).toBeUndefined();
     });
   });
+
+  describe('deductStockForFeeding & restoreStockForFeeding', () => {
+    it('throws INSUFFICIENT_STOCK when balance is less than required feeding amount', async () => {
+      prisma.stockBalance.findUnique.mockResolvedValue({
+        id: 'sb-1',
+        zoneId: 'z-1',
+        supplyId: 'sup-hay',
+        quantity: new Prisma.Decimal(1.0),
+      });
+
+      await expect(
+        service.deductStockForFeeding('z-1', [
+          { supplyId: 'sup-hay', supplyName: 'Cỏ khô Timothy', amount: 3.4, unit: 'kg' },
+        ]),
+      ).rejects.toThrow(/Kho không đủ/);
+
+      expect(prisma.stockBalance.update).not.toHaveBeenCalled();
+    });
+
+    it('deducts stock correctly when balance is sufficient', async () => {
+      prisma.stockBalance.findUnique.mockResolvedValue({
+        id: 'sb-1',
+        zoneId: 'z-1',
+        supplyId: 'sup-hay',
+        quantity: new Prisma.Decimal(5.0),
+      });
+      prisma.stockBalance.update.mockResolvedValue({});
+
+      await service.deductStockForFeeding('z-1', [
+        { supplyId: 'sup-hay', supplyName: 'Cỏ khô Timothy', amount: 3.4, unit: 'kg' },
+      ]);
+
+      expect(prisma.stockBalance.update).toHaveBeenCalledWith({
+        where: {
+          zoneId_supplyId: {
+            zoneId: 'z-1',
+            supplyId: 'sup-hay',
+          },
+        },
+        data: {
+          quantity: new Prisma.Decimal(1.6),
+        },
+      });
+    });
+
+    it('restores stock correctly on task undo', async () => {
+      prisma.stockBalance.findUnique.mockResolvedValue({
+        id: 'sb-1',
+        zoneId: 'z-1',
+        supplyId: 'sup-hay',
+        quantity: new Prisma.Decimal(1.6),
+      });
+      prisma.stockBalance.update.mockResolvedValue({});
+
+      await service.restoreStockForFeeding('z-1', [
+        { supplyId: 'sup-hay', supplyName: 'Cỏ khô Timothy', amount: 3.4, unit: 'kg' },
+      ]);
+
+      expect(prisma.stockBalance.update).toHaveBeenCalledWith({
+        where: {
+          zoneId_supplyId: {
+            zoneId: 'z-1',
+            supplyId: 'sup-hay',
+          },
+        },
+        data: {
+          quantity: { increment: new Prisma.Decimal(3.4) },
+        },
+      });
+    });
+  });
 });

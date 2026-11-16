@@ -278,7 +278,7 @@ describe('Medical services', () => {
     it('numbers records from the highest number of the month, not the total row count', async () => {
       mockPrismaService.horse.findUnique.mockResolvedValue({ id: 'horse-1', name: 'Thunder' });
       const now = new Date();
-      const prefix = `BA-${String(now.getFullYear()).slice(-2)}${String(now.getMonth() + 1).padStart(2, '0')}-`;
+      const prefix = `MED-${now.getFullYear()}-`;
       mockPrismaService.medicalRecord.findFirst
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce({ recordNumber: `${prefix}005` });

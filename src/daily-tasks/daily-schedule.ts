@@ -176,20 +176,43 @@ function templatesFor(horse: ScheduleHorse): Template[] {
       itemsSnapshotJson: Array.isArray(meal?.items) ? meal.items : undefined,
     });
   }
-  const fallbackMeals: Array<[string, string]> = [
-    ['MORNING', '3.0kg cỏ khô Timothy + 1.0kg cám yến mạch + nước sạch.'],
-    ['NOON', '2.0kg cỏ khô + nước hòa tan chất điện giải.'],
-    ['EVENING', '3.5kg cỏ khô + 1.2kg ngũ cốc hỗn hợp.'],
+  const fallbackMeals: Array<{
+    mealType: string;
+    description: string;
+    items?: Array<{ supplyCode: string; supplyName: string; amount: number; unit: string }>;
+  }> = [
+    {
+      mealType: 'MORNING',
+      description: '3.0kg cỏ khô Timothy + 1.0kg cám yến mạch + nước sạch.',
+      items: [
+        { supplyCode: 'TIMOTHY', supplyName: 'Cỏ khô Timothy', amount: 3.0, unit: 'KG' },
+        { supplyCode: 'OATS', supplyName: 'Cám yến mạch', amount: 1.0, unit: 'KG' },
+      ],
+    },
+    {
+      mealType: 'NOON',
+      description: '2.0kg cỏ khô + nước hòa tan chất điện giải.',
+      items: [{ supplyCode: 'TIMOTHY', supplyName: 'Cỏ khô Timothy', amount: 2.0, unit: 'KG' }],
+    },
+    {
+      mealType: 'EVENING',
+      description: '3.5kg cỏ khô + 1.2kg ngũ cốc hỗn hợp.',
+      items: [
+        { supplyCode: 'TIMOTHY', supplyName: 'Cỏ khô Timothy', amount: 3.5, unit: 'KG' },
+        { supplyCode: 'OATS', supplyName: 'Cám yến mạch', amount: 1.2, unit: 'KG' },
+      ],
+    },
   ];
-  for (const [mealType, description] of fallbackMeals) {
-    if (seen.has(mealType)) continue;
+  for (const fb of fallbackMeals) {
+    if (seen.has(fb.mealType)) continue;
     list.push({
       taskType: DailyTaskType.FEEDING,
-      title: `Cho ăn bữa ${MEAL_LABEL[mealType]}`,
-      description,
-      mealType,
-      baseTime: MEAL_BASE[mealType],
+      title: `Cho ăn bữa ${MEAL_LABEL[fb.mealType]}`,
+      description: fb.description,
+      mealType: fb.mealType,
+      baseTime: MEAL_BASE[fb.mealType],
       minutes: 5,
+      itemsSnapshotJson: fb.items,
     });
   }
 
@@ -213,9 +236,8 @@ function templatesFor(horse: ScheduleHorse): Template[] {
 
       times.forEach((time, idx) => {
         const suffix = times.length > 1 ? ` (Lần ${idx + 1})` : '';
-        const isIceCold = /đá|lạnh|ice|boot|chườm|ngâm/i.test(inst.activity);
         list.push({
-          taskType: isIceCold ? DailyTaskType.ICE_BOOT_REST : DailyTaskType.ICE_BOOT_REST,
+          taskType: DailyTaskType.PHYSICAL_THERAPY,
           title: `${inst.activity}${suffix}`,
           description: `Chỉ dẫn chăm sóc theo phác đồ y tế${inst.phaseName ? ` [${inst.phaseName}]` : ''}: ${inst.activity}.${inst.notes ? ` Ghi chú: ${inst.notes}` : ''}`,
           mealType: null,

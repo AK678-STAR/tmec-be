@@ -49,11 +49,10 @@ export class MedicalRecordsService {
       : null;
   }
 
-  /** Mã BA-YYMM-NNN: số thứ tự đếm lại mỗi tháng, lấy số lớn nhất hiện có + 1 (không trùng sau khi xóa nháp). */
+  /** Mã MED-YYYY-NNN: số thứ tự đếm lại mỗi năm, lấy số lớn nhất hiện có + 1 (không trùng sau khi xóa nháp). */
   private async nextRecordNumber(now: Date): Promise<string> {
-    const yy = String(now.getFullYear()).slice(-2);
-    const mm = String(now.getMonth() + 1).padStart(2, '0');
-    const prefix = `BA-${yy}${mm}-`;
+    const year = now.getFullYear();
+    const prefix = `MED-${year}-`;
     const last = await this.prisma.medicalRecord.findFirst({
       where: { recordNumber: { startsWith: prefix } },
       orderBy: { recordNumber: 'desc' },
@@ -1138,6 +1137,7 @@ export class MedicalRecordsService {
 
     const newPrescription = {
       id: `rx-${Date.now()}`,
+      supplyId: dto.supplyId || null,
       medicationName: dto.medicationName,
       dosage: dosageStr,
       unit: dto.unit || '',

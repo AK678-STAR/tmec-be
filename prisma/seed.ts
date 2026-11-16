@@ -2350,9 +2350,16 @@ async function seedStableCare(tx: Tx) {
 
   const nutritionPlans: Prisma.NutritionPlanCreateManyInput[] = [];
   HORSES.filter((h) => h.status !== HorseStatus.RETIRED).forEach((h, idx) => {
-    const hayKg = h.status === HorseStatus.ISOLATED || h.status === HorseStatus.INJURED ? 6.5 : 8.5;
+    const baseHay = h.weightKg ? Number((h.weightKg * 0.017).toFixed(1)) : 8.0;
+    const baseGrain = h.weightKg ? Number((h.weightKg * 0.006).toFixed(1)) : 2.8;
+    const hayKg =
+      h.status === HorseStatus.ISOLATED || h.status === HorseStatus.INJURED
+        ? Number((baseHay * 0.75).toFixed(1))
+        : baseHay;
     const grainKg =
-      h.status === HorseStatus.ISOLATED || h.status === HorseStatus.INJURED ? 1.5 : 3.2;
+      h.status === HorseStatus.ISOLATED || h.status === HorseStatus.INJURED
+        ? Number((baseGrain * 0.5).toFixed(1))
+        : baseGrain;
     nutritionPlans.push({
       id: id(`nutri:approved:${h.id}`),
       planCode: `NP-2026-${String(idx + 1).padStart(3, '0')}`,
@@ -2556,6 +2563,8 @@ async function seedStableCare(tx: Tx) {
             },
           ]
         : undefined;
+    const horseNutri = nutritionPlans.find((np) => np.horseId === h.id);
+    const meals = (horseNutri?.mealsJson as any) || makeMeals(8, 3, true);
     return {
       id: h.id,
       zoneId: zoneIds[zCode],
@@ -2565,7 +2574,7 @@ async function seedStableCare(tx: Tx) {
       isLocked: Boolean(h.isMedicalLocked),
       allowedActivityLevel:
         h.id === horseIds[14] || h.id === horseIds[15] ? 'Strict stall rest' : undefined,
-      mealsJson: makeMeals(8, 3, true),
+      mealsJson: meals,
       medications: meds,
       careInstructions,
     };
@@ -2797,7 +2806,7 @@ async function seedStableCare(tx: Tx) {
       {
         id: id('inc:reported'),
         sourceEventId: 'evt-inc-001',
-        incidentNumber: 'INC-2026-001',
+        incidentNumber: 'INC-20261115-0001',
         horseId: horseIds[6],
         stallZoneId: zoneIds.A,
         reportedById: userIds.grooms[4],
@@ -2809,7 +2818,7 @@ async function seedStableCare(tx: Tx) {
       {
         id: id('inc:review'),
         sourceEventId: 'evt-inc-002',
-        incidentNumber: 'INC-2026-002',
+        incidentNumber: 'INC-20261113-0001',
         horseId: horseIds[12],
         stallZoneId: zoneIds.B,
         reportedById: userIds.grooms[6],
@@ -2825,7 +2834,7 @@ async function seedStableCare(tx: Tx) {
       {
         id: id('inc:resolved'),
         sourceEventId: 'evt-inc-003',
-        incidentNumber: 'INC-2026-003',
+        incidentNumber: 'INC-20260902-0001',
         horseId: horseIds[0],
         stallZoneId: zoneIds.A,
         reportedById: userIds.grooms[0],
@@ -2841,7 +2850,7 @@ async function seedStableCare(tx: Tx) {
       {
         id: id('inc:dismissed'),
         sourceEventId: 'evt-inc-004',
-        incidentNumber: 'INC-2026-004',
+        incidentNumber: 'INC-20261106-0001',
         horseId: horseIds[4],
         stallZoneId: zoneIds.A,
         reportedById: userIds.grooms[9],
@@ -3388,7 +3397,7 @@ async function seedActivityAndSupport(tx: Tx) {
         category: NotificationCategory.TRAINING,
         title: 'Cảnh báo nhịp tim hồi phục Hồng Kỳ',
         message: 'Hồng Kỳ ghi nhận nhịp tim 10 phút sau tập ở mức 132 bpm.',
-        link: '/training/overview?highlight=HR-000007',
+        link: '/alerts?highlight=HR-000007',
         params: { horseCode: 'HR-000007' },
         dedupeKey: 'notif:training:h7-hr',
       },

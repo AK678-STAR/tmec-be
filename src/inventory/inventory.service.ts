@@ -40,6 +40,24 @@ interface AckCapabilityPayload {
   expiresAt: number;
 }
 
+const UNIT_DISPLAY_VI: Record<string, string> = {
+  VIAL: 'lọ',
+  PILL: 'viên',
+  TABLET: 'viên',
+  TABLETS: 'viên',
+  BOTTLE: 'chai',
+  PACKET: 'gói',
+  SACHET: 'gói',
+  SACHETS: 'gói',
+  LITER: 'lít',
+  ML: 'ml',
+  MG: 'mg',
+  G: 'g',
+  KG: 'kg',
+  PIECE: 'cái',
+  SET: 'bộ',
+};
+
 @Injectable()
 export class InventoryService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(InventoryService.name);
@@ -731,28 +749,179 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Helper: Trừ kho tự động khi hoàn thành bữa ăn (FEEDING task) hoặc cho uống thuốc (MEDICATION task)
+   * Chặn hoàn thành nếu số lượng trong kho không đủ (VD: cần 3.4kg cỏ nhưng kho chỉ có 1kg).
    */
   async deductStockForFeeding(
     zoneId: string,
-    items: Array<{ supplyId?: string; supplyName?: string; amount?: number }>,
+    items: Array<{
+      supplyId?: string;
+      supplyCode?: string;
+      supplyName?: string;
+      amount?: number;
+      unit?: string;
+    }>,
     tx?: Prisma.TransactionClient,
   ) {
     if (!zoneId || !items || !Array.isArray(items) || items.length === 0) return;
     const db = tx || this.prisma;
+
+    // Phase 1: Pre-validation - Kiểm tra toàn bộ vật tư trong danh sách
+    const resolvedItems: Array<{
+      supplyId: string;
+      supplyName: string;
+      unit: string;
+      amount: number;
+      currentQty: number;
+    }> = [];
+
+    for (const item of items) {
+      if (!item.amount || Number(item.amount) <= 0) continue;
+      const amount = Number(item.amount);
+      let supplyId = item.supplyId;
+      let supplyName = item.supplyName || '';
+      let unit = item.unit || 'kg';
+
+      if (!supplyId && (item as any).supplyCode) {
+        try {
+          const found = await db.supplyCatalog.findFirst({
+            where: {
+              code: { equals: (item as any).supplyCode, mode: 'insensitive' },
+              isActive: true,
+            },
+            select: { id: true, name: true, unit: true },
+          });
+          if (found) {
+            supplyId = found.id;
+            supplyName = supplyName || found.name;
+            unit = found.unit || unit;
+          }
+        } catch {
+          // ignore lookup error
+        }
+      }
+
+      if (!supplyId && supplyName) {
+        try {
+          const found = await db.supplyCatalog.findFirst({
+            where: {
+              OR: [
+                { name: { equals: supplyName, mode: 'insensitive' } },
+                { name: { contains: supplyName, mode: 'insensitive' } },
+              ],
+              isActive: true,
+            },
+            select: { id: true, name: true, unit: true },
+          });
+          if (found) {
+            supplyId = found.id;
+            supplyName = found.name;
+            unit = found.unit || unit;
+          }
+        } catch {
+          // ignore lookup error
+        }
+      }
+
+      if (supplyId && (!supplyName || !unit || unit === 'kg')) {
+        try {
+          const found = await db.supplyCatalog.findUnique({
+            where: { id: supplyId },
+            select: { name: true, unit: true },
+          });
+          if (found) {
+            supplyName = supplyName || found.name;
+            if (found.unit) unit = found.unit;
+          }
+        } catch {
+          // ignore lookup error
+        }
+      }
+
+      if (!supplyId) continue;
+
+      const balance = await db.stockBalance.findUnique({
+        where: {
+          zoneId_supplyId: {
+            zoneId,
+            supplyId,
+          },
+        },
+      });
+
+      const currentQty = balance ? Number(balance.quantity) : 0;
+      const displayUnit = UNIT_DISPLAY_VI[unit.toUpperCase()] || unit;
+
+      if (!balance || currentQty < amount) {
+        const itemDisplayName = supplyName || 'Thức ăn / Vật tư';
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'INSUFFICIENT_STOCK',
+          `Kho không đủ ${itemDisplayName}: Cần ${amount} ${displayUnit}, hiện chỉ còn ${currentQty} ${displayUnit}.`,
+          {
+            item: itemDisplayName,
+            required: amount,
+            available: currentQty,
+            unit: displayUnit,
+          },
+        );
+      }
+
+      resolvedItems.push({
+        supplyId,
+        supplyName,
+        unit: displayUnit,
+        amount,
+        currentQty,
+      });
+    }
+
+    // Phase 2: Toàn bộ vật tư đủ tồn kho -> Thực hiện trừ kho chính xác
+    for (const item of resolvedItems) {
+      const newQty = item.currentQty - item.amount;
+
+      await db.stockBalance.update({
+        where: {
+          zoneId_supplyId: {
+            zoneId,
+            supplyId: item.supplyId,
+          },
+        },
+        data: {
+          quantity: new Prisma.Decimal(newQty),
+        },
+      });
+
+      this.logger.log(
+        `[InventoryService] Đã trừ kho khu ${zoneId}, vật tư ${item.supplyName} (${item.supplyId}): -${item.amount} ${item.unit}. Tồn kho còn lại: ${newQty} ${item.unit}.`,
+      );
+    }
+  }
+
+  /**
+   * Helper: Hoàn lại số lượng tồn kho khi hoàn tác bữa ăn hoặc cho uống thuốc
+   */
+  async restoreStockForFeeding(
+    zoneId: string,
+    items: Array<{
+      supplyId?: string;
+      supplyCode?: string;
+      supplyName?: string;
+      amount?: number;
+      unit?: string;
+    }>,
+  ) {
+    if (!zoneId || !items || !Array.isArray(items) || items.length === 0) return;
 
     for (const item of items) {
       if (!item.amount || Number(item.amount) <= 0) continue;
       const amount = Number(item.amount);
       let supplyId = item.supplyId;
 
-      if (!supplyId && item.supplyName) {
+      if (!supplyId && (item as any).supplyCode) {
         try {
-          const found = await db.supplyCatalog.findFirst({
+          const found = await this.prisma.supplyCatalog.findFirst({
             where: {
-              OR: [
-                { name: { equals: item.supplyName, mode: 'insensitive' } },
-                { name: { contains: item.supplyName, mode: 'insensitive' } },
-              ],
+              code: { equals: (item as any).supplyCode, mode: 'insensitive' },
               isActive: true,
             },
             select: { id: true },
@@ -762,61 +931,6 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
           // ignore lookup error
         }
       }
-
-      if (!supplyId) continue;
-
-      try {
-        const balance = await db.stockBalance.findUnique({
-          where: {
-            zoneId_supplyId: {
-              zoneId,
-              supplyId,
-            },
-          },
-        });
-
-        const currentQty = balance ? Number(balance.quantity) : 0;
-        const newQty = Math.max(0, currentQty - amount);
-
-        if (balance) {
-          await db.stockBalance.update({
-            where: {
-              zoneId_supplyId: {
-                zoneId,
-                supplyId,
-              },
-            },
-            data: {
-              quantity: new Prisma.Decimal(newQty),
-            },
-          });
-        }
-
-        if (currentQty < amount) {
-          this.logger.warn(
-            `[InventoryService] Thiếu hàng khi trừ kho khu ${zoneId}, vật tư ${supplyId}: Yêu cầu ${amount}, tồn kho hiện có ${currentQty}. Đã trừ về 0.`,
-          );
-        }
-      } catch (err) {
-        this.logger.error(`Failed to deduct stock for zone ${zoneId}, supply ${supplyId}:`, err);
-        throw err;
-      }
-    }
-  }
-
-  /**
-   * Helper: Hoàn lại số lượng tồn kho khi hoàn tác bữa ăn hoặc cho uống thuốc
-   */
-  async restoreStockForFeeding(
-    zoneId: string,
-    items: Array<{ supplyId?: string; supplyName?: string; amount?: number }>,
-  ) {
-    if (!zoneId || !items || !Array.isArray(items) || items.length === 0) return;
-
-    for (const item of items) {
-      if (!item.amount || Number(item.amount) <= 0) continue;
-      const amount = Number(item.amount);
-      let supplyId = item.supplyId;
 
       if (!supplyId && item.supplyName) {
         try {
@@ -839,19 +953,33 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
       if (!supplyId) continue;
 
       try {
-        await this.prisma.stockBalance.update({
+        const balance = await this.prisma.stockBalance.findUnique({
           where: {
             zoneId_supplyId: {
               zoneId,
               supplyId,
             },
           },
-          data: {
-            quantity: { increment: new Prisma.Decimal(amount) },
-          },
         });
+
+        if (balance) {
+          await this.prisma.stockBalance.update({
+            where: {
+              zoneId_supplyId: {
+                zoneId,
+                supplyId,
+              },
+            },
+            data: {
+              quantity: { increment: new Prisma.Decimal(amount) },
+            },
+          });
+          this.logger.log(
+            `[InventoryService] Đã hoàn lại +${amount} vào kho khu ${zoneId}, vật tư ${supplyId}.`,
+          );
+        }
       } catch (err) {
-        console.error(`Failed to restore stock for zone ${zoneId}, supply ${supplyId}:`, err);
+        this.logger.error(`Failed to restore stock for zone ${zoneId}, supply ${supplyId}:`, err);
       }
     }
   }

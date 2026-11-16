@@ -177,11 +177,11 @@ export class CreatePreventiveScheduleDto {
   @IsString()
   category?: string;
 
-  @ApiProperty({ description: 'Tên quy trình / loại chăm sóc / vắc xin' })
-  @IsNotEmpty({ message: 'Enter care procedure name' })
+  @ApiPropertyOptional({ description: 'Tên quy trình / loại chăm sóc / vắc xin' })
+  @IsOptional()
   @IsString()
-  @Length(2, 150)
-  type: string;
+  @Length(0, 150)
+  type?: string;
 
   @ApiProperty({ description: 'Ngày đến hạn' })
   @IsNotEmpty({ message: 'Enter due date' })

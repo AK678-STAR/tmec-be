@@ -35,6 +35,7 @@ describe('DailyTasksService', () => {
       notifyUsers: jest.fn().mockResolvedValue(undefined),
     };
     inventoryService = {
+      deductStockForFeeding: jest.fn().mockResolvedValue(undefined),
       deductStockForFeedingTask: jest.fn().mockResolvedValue(undefined),
       restoreStockForFeeding: jest.fn().mockResolvedValue(undefined),
       restoreStockForFeedingTask: jest.fn().mockResolvedValue(undefined),
@@ -133,7 +134,7 @@ describe('DailyTasksService', () => {
       expect(prisma.dailyCareTask.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
-            taskType: DailyTaskType.ICE_BOOT_REST,
+            taskType: DailyTaskType.PHYSICAL_THERAPY,
             isMedicalLocked: true,
           }),
         }),
@@ -216,6 +217,84 @@ describe('DailyTasksService', () => {
             completedById: null,
           }),
         }),
+      );
+    });
+
+    it('deducts inventory when completing a MEDICATION task', async () => {
+      const mockTask = {
+        id: 'task-med-1',
+        taskCode: 'TSK-MED-001',
+        taskType: DailyTaskType.MEDICATION,
+        isCompleted: false,
+        stallZoneId: 'zone-c',
+        horseId: 'horse-1',
+        horse: { name: 'Thunder' },
+        itemsSnapshotJson: [
+          {
+            supplyId: 'sup-anti-inflam',
+            supplyName: 'Thuốc chống viêm thú y',
+            amount: 2,
+            unit: 'VIAL',
+            isMedicine: true,
+          },
+        ],
+      };
+
+      prisma.dailyCareTask.findUnique.mockResolvedValue(mockTask);
+      prisma.dailyCareTask.update.mockResolvedValue({ ...mockTask, isCompleted: true });
+
+      const user = { userId: 'groom-1', role: Role.GROOM, fullName: 'Groom Nam' } as any;
+      await service.completeTask('task-med-1', {}, user);
+
+      expect(inventoryService.deductStockForFeeding).toHaveBeenCalledWith(
+        'zone-c',
+        expect.arrayContaining([
+          expect.objectContaining({
+            supplyId: 'sup-anti-inflam',
+            amount: 2,
+          }),
+        ]),
+        expect.anything(),
+      );
+    });
+
+    it('restores inventory when uncompleting a MEDICATION task', async () => {
+      const mockTask = {
+        id: 'task-med-1',
+        taskCode: 'TSK-MED-001',
+        taskType: DailyTaskType.MEDICATION,
+        isCompleted: true,
+        completedById: 'groom-1',
+        completedAt: new Date(),
+        undoUntil: new Date(Date.now() + 10 * 60 * 1000),
+        stallZoneId: 'zone-c',
+        horseId: 'horse-1',
+        horse: { name: 'Thunder' },
+        itemsSnapshotJson: [
+          {
+            supplyId: 'sup-anti-inflam',
+            supplyName: 'Thuốc chống viêm thú y',
+            amount: 2,
+            unit: 'VIAL',
+            isMedicine: true,
+          },
+        ],
+      };
+
+      prisma.dailyCareTask.findUnique.mockResolvedValue(mockTask);
+      prisma.dailyCareTask.update.mockResolvedValue({ ...mockTask, isCompleted: false });
+
+      const user = { userId: 'groom-1', role: Role.GROOM, fullName: 'Groom Nam' } as any;
+      await service.uncompleteTask('task-med-1', user);
+
+      expect(inventoryService.restoreStockForFeeding).toHaveBeenCalledWith(
+        'zone-c',
+        expect.arrayContaining([
+          expect.objectContaining({
+            supplyId: 'sup-anti-inflam',
+            amount: 2,
+          }),
+        ]),
       );
     });
 

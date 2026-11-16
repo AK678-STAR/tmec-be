@@ -57,9 +57,9 @@ describe('planDailyTasks', () => {
     expect(afternoon.every((t) => t.assignedGroomUserId === 'g2' && t.shiftId === 'P')).toBe(true);
   });
 
-  it('gives a locked horse ice-boot rest from careInstructions and skips walking', () => {
+  it('gives a locked horse physical therapy from careInstructions and skips walking', () => {
     const types = tasks.filter((t) => t.horseId === 'h0').map((t) => t.taskType);
-    expect(types).toContain('ICE_BOOT_REST');
+    expect(types).toContain('PHYSICAL_THERAPY');
     expect(types).toContain('GROOMING');
     expect(types).not.toContain('WALKING');
   });

@@ -286,7 +286,11 @@ export class DailyTasksService {
 
     const activeMedicalTitlesByHorse = new Map<string, Set<string>>();
     for (const t of planned) {
-      if (t.taskType === DailyTaskType.MEDICATION || t.taskType === DailyTaskType.ICE_BOOT_REST) {
+      if (
+        t.taskType === DailyTaskType.MEDICATION ||
+        t.taskType === DailyTaskType.ICE_BOOT_REST ||
+        t.taskType === DailyTaskType.PHYSICAL_THERAPY
+      ) {
         if (!activeMedicalTitlesByHorse.has(t.horseId)) {
           activeMedicalTitlesByHorse.set(t.horseId, new Set());
         }
@@ -331,6 +335,7 @@ export class DailyTasksService {
         const nextShiftId = t.shiftId ?? null;
         const nextGroomId = t.assignedGroomUserId ?? null;
         const nextLockNotes = lockNotes ?? null;
+        const nextItemsJson = (t.itemsSnapshotJson as any) || null;
         if (
           !existing.isCompleted &&
           ((existing.stallZoneId ?? null) !== nextZoneId ||
@@ -340,7 +345,8 @@ export class DailyTasksService {
             (existing.shiftId ?? null) !== nextShiftId ||
             (existing.assignedGroomUserId ?? null) !== nextGroomId ||
             existing.isMedicalLocked !== isLocked ||
-            (existing.medicalLockNotes ?? null) !== nextLockNotes)
+            (existing.medicalLockNotes ?? null) !== nextLockNotes ||
+            JSON.stringify(existing.itemsSnapshotJson ?? null) !== JSON.stringify(nextItemsJson))
         ) {
           await this.prisma.dailyCareTask.update({
             where: { id: existing.id },
@@ -353,6 +359,7 @@ export class DailyTasksService {
               assignedGroomUserId: nextGroomId,
               isMedicalLocked: isLocked,
               medicalLockNotes: nextLockNotes,
+              itemsSnapshotJson: nextItemsJson,
             },
           });
         }
@@ -366,7 +373,13 @@ export class DailyTasksService {
         where: {
           date: dayDate,
           horseId: { in: processedHorseIds },
-          taskType: { in: [DailyTaskType.MEDICATION, DailyTaskType.ICE_BOOT_REST] },
+          taskType: {
+            in: [
+              DailyTaskType.MEDICATION,
+              DailyTaskType.ICE_BOOT_REST,
+              DailyTaskType.PHYSICAL_THERAPY,
+            ],
+          },
           isCompleted: false,
         },
         select: { id: true, horseId: true, title: true },
@@ -644,13 +657,63 @@ export class DailyTasksService {
         include: TASK_DETAIL_INCLUDE,
       });
 
-      // Trừ kho tự động cho việc cho ăn (FEEDING) cùng transaction
-      if (task.taskType === DailyTaskType.FEEDING && task.stallZoneId && task.itemsSnapshotJson) {
-        await this.inventoryService.deductStockForFeeding(
-          task.stallZoneId,
-          task.itemsSnapshotJson as any,
-          tx,
-        );
+      // Trừ kho tự động cho việc cho ăn (FEEDING) hoặc cho uống thuốc (MEDICATION) cùng transaction
+      if (task.taskType === DailyTaskType.FEEDING || task.taskType === DailyTaskType.MEDICATION) {
+        let targetZoneId = task.stallZoneId;
+        if (!targetZoneId && task.horseId) {
+          const alloc = await (tx || this.prisma).stallAllocation.findFirst({
+            where: { horseId: task.horseId, isActive: true },
+            include: { stall: true },
+          });
+          targetZoneId = alloc?.stall?.zoneId || null;
+        }
+
+        let itemsToDeduct = Array.isArray(task.itemsSnapshotJson)
+          ? (task.itemsSnapshotJson as any[])
+          : typeof task.itemsSnapshotJson === 'string'
+            ? (() => {
+                try {
+                  const parsed = JSON.parse(task.itemsSnapshotJson as string);
+                  return Array.isArray(parsed) ? parsed : null;
+                } catch {
+                  return null;
+                }
+              })()
+            : null;
+
+        // Fallback cho task MEDICATION nếu itemsSnapshotJson chưa được lưu (legacy task)
+        if (
+          task.taskType === DailyTaskType.MEDICATION &&
+          (!itemsToDeduct || itemsToDeduct.length === 0)
+        ) {
+          const medName = (task.title || '')
+            .replace(/^Cho uống thuốc:\s*/i, '')
+            .replace(/\s*\(Lần\s*\d+\)$/i, '')
+            .trim();
+          const amountMatch = (task.description || '').match(
+            /Liều lượng:\s*([0-9]+(?:\.[0-9]+)?)/i,
+          );
+          const amount = amountMatch ? parseFloat(amountMatch[1]) : 1;
+          const unitMatch = (task.description || '').match(
+            /Liều lượng:\s*[0-9]+(?:\.[0-9]+)?\s*([a-zA-Z\u00C0-\u024F\u1E00-\u1EFF]+)/i,
+          );
+          const unit = unitMatch ? unitMatch[1] : undefined;
+
+          if (medName) {
+            itemsToDeduct = [
+              {
+                supplyName: medName,
+                amount,
+                unit,
+                isMedicine: true,
+              },
+            ];
+          }
+        }
+
+        if (targetZoneId && itemsToDeduct && itemsToDeduct.length > 0) {
+          await this.inventoryService.deductStockForFeeding(targetZoneId, itemsToDeduct as any, tx);
+        }
       }
 
       return taskUpdated;
@@ -767,12 +830,60 @@ export class DailyTasksService {
       },
     );
 
-    // Hoàn lại kho thức ăn nếu hoàn tác việc cho ăn (FEEDING)
-    if (task.taskType === DailyTaskType.FEEDING && task.stallZoneId && task.itemsSnapshotJson) {
-      await this.inventoryService.restoreStockForFeeding(
-        task.stallZoneId,
-        task.itemsSnapshotJson as any,
-      );
+    // Hoàn lại kho nếu hoàn tác việc cho ăn (FEEDING) hoặc cho uống thuốc (MEDICATION)
+    if (task.taskType === DailyTaskType.FEEDING || task.taskType === DailyTaskType.MEDICATION) {
+      let targetZoneId = task.stallZoneId;
+      if (!targetZoneId && task.horseId) {
+        const alloc = await this.prisma.stallAllocation.findFirst({
+          where: { horseId: task.horseId, isActive: true },
+          include: { stall: true },
+        });
+        targetZoneId = alloc?.stall?.zoneId || null;
+      }
+
+      let itemsToRestore = Array.isArray(task.itemsSnapshotJson)
+        ? (task.itemsSnapshotJson as any[])
+        : typeof task.itemsSnapshotJson === 'string'
+          ? (() => {
+              try {
+                const parsed = JSON.parse(task.itemsSnapshotJson as string);
+                return Array.isArray(parsed) ? parsed : null;
+              } catch {
+                return null;
+              }
+            })()
+          : null;
+
+      if (
+        task.taskType === DailyTaskType.MEDICATION &&
+        (!itemsToRestore || itemsToRestore.length === 0)
+      ) {
+        const medName = (task.title || '')
+          .replace(/^Cho uống thuốc:\s*/i, '')
+          .replace(/\s*\(Lần\s*\d+\)$/i, '')
+          .trim();
+        const amountMatch = (task.description || '').match(/Liều lượng:\s*([0-9]+(?:\.[0-9]+)?)/i);
+        const amount = amountMatch ? parseFloat(amountMatch[1]) : 1;
+        const unitMatch = (task.description || '').match(
+          /Liều lượng:\s*[0-9]+(?:\.[0-9]+)?\s*([a-zA-Z\u00C0-\u024F\u1E00-\u1EFF]+)/i,
+        );
+        const unit = unitMatch ? unitMatch[1] : undefined;
+
+        if (medName) {
+          itemsToRestore = [
+            {
+              supplyName: medName,
+              amount,
+              unit,
+              isMedicine: true,
+            },
+          ];
+        }
+      }
+
+      if (targetZoneId && itemsToRestore && itemsToRestore.length > 0) {
+        await this.inventoryService.restoreStockForFeeding(targetZoneId, itemsToRestore as any);
+      }
     }
 
     return updated;

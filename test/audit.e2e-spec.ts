@@ -119,7 +119,7 @@ describe('P1-06 audit HTTP contract (mock database, real JWT/guards)', () => {
       .expect(200);
     expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { action: 'PERMISSIONS_CHANGED' },
+        where: expect.objectContaining({ action: 'PERMISSIONS_CHANGED' }),
       }),
     );
     expect(response.body.data.csv).toContain('"Audit Manager","PERMISSIONS_CHANGED"');

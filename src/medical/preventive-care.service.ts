@@ -872,11 +872,29 @@ export class PreventiveCareService {
       }
     }
 
+    let typeName = (dto.type || '').trim();
+    if (!typeName) {
+      const defaultCatalog = await this.prisma.preventiveTypeCatalog.findFirst({
+        where: { category: scheduleType, isActive: true },
+      });
+      typeName =
+        defaultCatalog?.name ||
+        (scheduleType === PreventiveType.VACCINATION
+          ? 'Vaccination'
+          : scheduleType === PreventiveType.DEWORMING
+            ? 'Deworming'
+            : scheduleType === PreventiveType.FARRIER_HOOF_CARE
+              ? 'Farrier Care'
+              : scheduleType === PreventiveType.DENTAL
+                ? 'Dental Care'
+                : 'Routine Checkup');
+    }
+
     if (!typeCatalogId) {
       // Find catalog with matching name
       let catalog = await this.prisma.preventiveTypeCatalog.findFirst({
         where: {
-          name: { equals: dto.type.trim(), mode: 'insensitive' },
+          name: { equals: typeName, mode: 'insensitive' },
         },
       });
 
@@ -889,8 +907,7 @@ export class PreventiveCareService {
 
       if (!catalog) {
         // Create catalog entry for this type
-        const cleanSlug = dto.type
-          .trim()
+        const cleanSlug = typeName
           .toUpperCase()
           .replace(/[^A-Z0-9]/g, '_')
           .slice(0, 15);
@@ -898,7 +915,7 @@ export class PreventiveCareService {
         catalog = await this.prisma.preventiveTypeCatalog.create({
           data: {
             code,
-            name: dto.type.trim(),
+            name: typeName,
             category: scheduleType,
             intervalDays:
               scheduleType === PreventiveType.FARRIER_HOOF_CARE
@@ -936,7 +953,7 @@ export class PreventiveCareService {
         scheduleType,
         dueDate,
         veterinarianUserId: actor.userId,
-        productAdministered: dto.type.trim(),
+        productAdministered: typeName,
         notes: dto.notes?.trim() || null,
         status: PreventiveStatus.PENDING,
       },
