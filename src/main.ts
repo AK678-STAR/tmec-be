@@ -140,7 +140,6 @@ async function bootstrap() {
       'Financial Ledger & Invoices (Flow 5: F5-05 & F5-06)',
       'Owner billing, invoicing and prize distribution',
     )
-    .addTag('AI Assistant', 'AI training recommendations and query assistant')
     .addTag('Notifications', 'System notifications, broadcast messages and reminders')
     .addTag('Audit Logs', 'Immutable governance audit trails')
     .addTag('Simulator Realtime & Sessions', 'Simulator connection, telemetry and debug controls')
