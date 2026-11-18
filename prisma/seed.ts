@@ -2855,8 +2855,8 @@ async function seedStableCare(tx: Tx) {
         urgencyReason: 'Nhập cám yến mạch phục vụ chế độ tập tăng tải tuần đua 15-20/11',
         requestedById: userIds.grooms[0],
         reviewedById: userIds.manager,
-        reviewedAt: days(1, 10, 0),
-        deliveredAt: days(1, 10, 5),
+        reviewedAt: days(-1, 10, 0),
+        deliveredAt: days(-1, 10, 5),
         deliveredById: userIds.grooms[0],
       },
       {
@@ -2870,7 +2870,7 @@ async function seedStableCare(tx: Tx) {
         urgencyReason: 'Bổ sung gói điện giải khu B chuẩn bị cho vòng bán kết ngày 18/11',
         requestedById: userIds.grooms[1],
         reviewedById: userIds.manager,
-        reviewedAt: days(3, 14, 0),
+        reviewedAt: days(-1, 14, 0),
       },
       {
         id: id('restock:d5:timothy'),
@@ -2884,6 +2884,16 @@ async function seedStableCare(tx: Tx) {
       },
     ],
     skipDuplicates: true,
+  });
+
+  // Phiếu nhập từ lần seed trước từng mang ngày tương lai: kéo về hôm qua (đã nhập kho / đã duyệt).
+  await tx.restockRequest.updateMany({
+    where: { id: id('restock:d1:oats') },
+    data: { reviewedAt: days(-1, 10, 0), deliveredAt: days(-1, 10, 5) },
+  });
+  await tx.restockRequest.updateMany({
+    where: { id: id('restock:d3:electrolyte') },
+    data: { reviewedAt: days(-1, 14, 0) },
   });
 
   // IncidentReports covering all 4 IncidentStatus
