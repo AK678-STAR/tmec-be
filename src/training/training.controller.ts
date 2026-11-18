@@ -157,8 +157,9 @@ export class TrainingController {
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('status', new OptionalEnumPipe(WorkoutStatus)) status?: WorkoutStatus,
+    @Query('scope') scope?: string,
   ) {
-    return this.workouts.findAllWorkouts({ planId, horseId, date, from, to, status }, user);
+    return this.workouts.findAllWorkouts({ planId, horseId, date, from, to, status, scope }, user);
   }
 
   @Get('trial-runs')

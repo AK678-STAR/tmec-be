@@ -1106,6 +1106,7 @@ export class WorkoutsService {
       to?: string;
       status?: WorkoutStatus;
       workoutType?: string;
+      scope?: string;
     },
     user: CurrentUserPayload,
   ) {
@@ -1136,7 +1137,8 @@ export class WorkoutsService {
       // Giáo án còn Nháp chưa phải lịch thật: groom chỉ thấy khi HT đã kích hoạt.
       where.assignedStaffUserId = user.userId;
       where.trainingPlan = { status: { not: PlanStatus.DRAFT } };
-    } else if (user.role === UserRole.HEAD_TRAINER) {
+    } else if (user.role === UserRole.HEAD_TRAINER && query.scope !== 'club') {
+      // scope=club (Lịch tuần): HT xem toàn CLB, chỉ đọc; sửa vẫn chỉ trên giáo án của mình.
       where.trainingPlan = { trainerUserId: user.userId };
     }
 

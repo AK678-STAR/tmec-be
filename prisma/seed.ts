@@ -47,7 +47,12 @@ import {
   TRAINING_MONTHLY_RATE,
 } from '../src/financial/financial.service';
 import { calculatePrizeSplit } from '../src/tournaments/tournaments.service';
-import { clubDate } from '../src/training/training-rules';
+import {
+  clubDate,
+  GROOM_BUFFER_MINUTES,
+  TRIAL_SLOT_MINUTES,
+  workoutDurationMinutes,
+} from '../src/training/training-rules';
 
 type Tx = Prisma.TransactionClient;
 
@@ -1686,7 +1691,47 @@ async function seedTraining(tx: Tx) {
     },
   );
 
+  // Buổi tập do groom của ngựa phụ trách (BE chỉ nhận GROOM ở assignedStaffUserId), rồi dời giờ
+  // từng 15' cho tới khi không vi phạm luật xếp lịch của workouts.service: groom bận theo thời lượng
+  // + GROOM_BUFFER_MINUTES, cùng ngựa cách nhau ≥ 30', chạy thử cùng mặt sân không chung khung 15'.
+  const groomOfHorse = new Map(HORSES.map((h) => [h.id, h.groomId ?? null]));
+  const placed: Array<{ start: number; end: number; staff: string | null; horse: string; trial: string | null }> = [];
+  const MIN = 60 * 1000;
+  workouts.sort((a, b) => +new Date(a.scheduledDate) - +new Date(b.scheduledDate));
+  for (const w of workouts) {
+    w.assignedStaffUserId = groomOfHorse.get(w.horseId) ?? w.assignedStaffUserId;
+    if (w.status === WorkoutStatus.CANCELLED) continue;
+    const original = +new Date(w.scheduledDate);
+    const span = (workoutDurationMinutes(w.workoutType) + GROOM_BUFFER_MINUTES) * MIN;
+    const trial = w.workoutType === 'TRIAL' ? (w.trackSurface ?? null) : null;
+    let start = original;
+    const clashes = (s: number) =>
+      placed.some(
+        (p) =>
+          (w.assignedStaffUserId && p.staff === w.assignedStaffUserId && s < p.end && p.start < s + span) ||
+          (p.horse === w.horseId && Math.abs(p.start - s) < 30 * MIN) ||
+          (trial && p.trial === trial && Math.abs(p.start - s) < TRIAL_SLOT_MINUTES * MIN),
+      );
+    while (clashes(start)) start += 15 * MIN;
+    placed.push({ start, end: start + span, staff: w.assignedStaffUserId ?? null, horse: w.horseId, trial });
+    const shift = start - original;
+    if (shift) {
+      w.scheduledDate = new Date(start);
+      if (w.resultRecordedAt) w.resultRecordedAt = new Date(+new Date(w.resultRecordedAt) + shift);
+    }
+  }
   await tx.workoutSession.createMany({ data: workouts, skipDuplicates: true });
+  // Buổi tập đã có từ lần seed trước: cập nhật người phụ trách và giờ theo bản đã xếp lại ở trên.
+  for (const w of workouts) {
+    await tx.workoutSession.updateMany({
+      where: { id: w.id },
+      data: {
+        assignedStaffUserId: w.assignedStaffUserId,
+        scheduledDate: w.scheduledDate,
+        resultRecordedAt: w.resultRecordedAt,
+      },
+    });
+  }
 
   // SimulatorSessions (covering WORKOUT, RACE, EXAM + COMPLETED, RUNNING, PENDING, ABORTED_INJURY)
   await tx.simulatorSession.createMany({
@@ -3285,7 +3330,7 @@ async function seedRacingAndInvoices(tx: Tx) {
       prizeMoneyWon: gross,
       ...split,
       settledAt,
-      officialNotes: `Xếp hạng ${rank} chính thức từ ban trọng tài`,
+      officialNotes: rank === 1 ? 'Quán quân' : rank === 2 ? 'Á quân' : `Hạng ${rank}`,
     };
   };
 
@@ -3313,6 +3358,21 @@ async function seedRacingAndInvoices(tx: Tx) {
     makeResult(tIds.oct, 3, 3, 94.1, 61.2, 20000000, 5000000, days(-21)),
   ];
   await tx.tournamentResult.createMany({ data: results, skipDuplicates: true });
+  // Kết quả đã có từ lần seed trước: cập nhật ghi chú theo hạng và tiền chia theo calculatePrizeSplit.
+  for (const r of results) {
+    await tx.tournamentResult.updateMany({
+      where: { id: r.id },
+      data: {
+        officialNotes: r.officialNotes,
+        grossPrize: r.grossPrize,
+        entryFeeDeducted: r.entryFeeDeducted,
+        trainerCut: r.trainerCut,
+        jockeyCut: r.jockeyCut,
+        netOwnerPayout: r.netOwnerPayout,
+        settledAt: r.settledAt,
+      },
+    });
+  }
 
   // Only closed demo months are billed; November/December remain scheduling data.
   const stayStart = new Date('2026-06-01T00:00:00+07:00');
@@ -3408,6 +3468,36 @@ async function seedRacingAndInvoices(tx: Tx) {
     }
   }
   await tx.financialInvoice.createMany({ data: invoices, skipDuplicates: true });
+  // Hóa đơn mẫu đã có từ lần seed trước: tính lại các khoản (nhất là tiền thưởng giải đã chốt trong tháng), giữ trạng thái.
+  for (const inv of invoices) {
+    await tx.financialInvoice.updateMany({
+      where: { id: inv.id },
+      data: {
+        boardingFee: inv.boardingFee,
+        boardingDays: inv.boardingDays,
+        medicalFee: inv.medicalFee,
+        trainingFee: inv.trainingFee,
+        prizeCredit: inv.prizeCredit,
+        netAmount: inv.netAmount,
+      },
+    });
+  }
+  // Ngựa có hóa đơn Quá hạn còn số dư dương thì bị lưu giữ nợ, giống FinancialService.applyDebtImpoundToHorses.
+  const overdueHorseIds = [
+    ...new Set(
+      invoices
+        .filter((i) => i.status === InvoiceStatus.OVERDUE && Number(i.netAmount) > 0)
+        .map((i) => i.horseId),
+    ),
+  ];
+  await tx.horse.updateMany({
+    where: { id: { in: overdueHorseIds }, isDebtImpounded: false },
+    data: {
+      isDebtImpounded: true,
+      debtImpoundedAt: days(-20),
+      debtImpoundReason: 'Quá hạn thanh toán chi phí nuôi dưỡng / lưu chuồng.',
+    },
+  });
 }
 
 async function seedActivityAndSupport(tx: Tx) {

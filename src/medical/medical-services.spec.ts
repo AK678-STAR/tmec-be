@@ -966,6 +966,37 @@ describe('Medical services', () => {
       expect(mockPrismaService.injuryLog.update).not.toHaveBeenCalled();
     });
 
+    it('tolerates up to 5 minutes of client clock skew on discoveryDate', async () => {
+      mockPrismaService.horse.findUnique.mockResolvedValue({
+        id: 'horse-1',
+        name: 'Thunder',
+        medicalLocks: [],
+        isMedicalLocked: false,
+      });
+      mockPrismaService.injuryLog.create.mockResolvedValue({ id: 'inj-1', horseId: 'horse-1' });
+      const base = {
+        horseId: 'horse-1',
+        coordinateX: 0.5,
+        coordinateY: 0.5,
+        anatomicalZone: 'Cổ',
+        injuryType: 'Trầy',
+        description: 'Sưng nhẹ',
+      };
+      await expect(
+        injuries.createInjury(mockVetUser, {
+          ...base,
+          discoveryDate: new Date(Date.now() + 2 * 60 * 1000).toISOString(),
+        } as any),
+      ).resolves.toBeDefined();
+      const err = await injuries
+        .createInjury(mockVetUser, {
+          ...base,
+          discoveryDate: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        } as any)
+        .catch((e) => e);
+      expect(err.getResponse()).toEqual(expect.objectContaining({ code: 'DATE_IN_FUTURE' }));
+    });
+
     it('should create 2D injury point with initial recovery history', async () => {
       mockPrismaService.horse.findUnique.mockResolvedValue({
         id: 'horse-1',

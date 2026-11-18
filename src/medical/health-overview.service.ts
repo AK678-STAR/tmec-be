@@ -226,6 +226,8 @@ export class HealthOverviewService {
         ...i,
         region: i.anatomicalZone,
         view: i.viewSide,
+        detectedDate: (i.discoveryDate ?? i.createdAt).toISOString(),
+        notes: i.description || '',
       })),
       observations: (
         await this.prisma.dailyGroomingLog.findMany({

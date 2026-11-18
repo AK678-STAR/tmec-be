@@ -19,6 +19,21 @@ import { apiError } from '../common/exceptions/api-error';
 
 type Tx = Prisma.TransactionClient;
 
+// Quy mô CLB: tối đa 6 khu chuồng, mỗi khu tối đa 12 ô (lưới hàng × cột cũng ≤ 12).
+export const MAX_ZONES = 6;
+export const MAX_STALLS_PER_ZONE = 12;
+
+function assertGridSize(rows: number, cols: number) {
+  if (rows * cols > MAX_STALLS_PER_ZONE) {
+    throw apiError(
+      HttpStatus.BAD_REQUEST,
+      'ZONE_TOO_LARGE',
+      `Mỗi khu tối đa ${MAX_STALLS_PER_ZONE} ô chuồng (hàng × cột = ${rows * cols}).`,
+      { max: MAX_STALLS_PER_ZONE },
+    );
+  }
+}
+
 const STALL_INCLUDE = {
   zoneRef: { select: { id: true, code: true, name: true, rows: true, cols: true, isActive: true } },
   allocations: {
@@ -137,6 +152,15 @@ export class StallsService {
   }
 
   async createZone(dto: CreateZoneDto, user: CurrentUserPayload) {
+    assertGridSize(dto.rows, dto.cols);
+    if ((await this.prisma.stallZone.count()) >= MAX_ZONES) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'ZONE_LIMIT_REACHED',
+        `Câu lạc bộ tối đa ${MAX_ZONES} khu chuồng.`,
+        { max: MAX_ZONES },
+      );
+    }
     await this.assertZoneUnique(dto.code, dto.name);
     const zone = await this.prisma.$transaction(async (tx) => {
       const created = await tx.stallZone.create({
@@ -201,6 +225,7 @@ export class StallsService {
     });
     const maxRow = used._max.row ?? 0;
     const maxCol = used._max.col ?? 0;
+    assertGridSize(dto.rows ?? zone.rows, dto.cols ?? zone.cols);
     if (dto.rows !== undefined && dto.rows < maxRow) {
       throw apiError(
         HttpStatus.BAD_REQUEST,
@@ -357,6 +382,14 @@ export class StallsService {
     }
     await this.assertStallCodeFree(dto.code);
     await this.assertPositionFree(zone, dto.row, dto.col);
+    if ((await this.prisma.stall.count({ where: { zoneId: zone.id } })) >= MAX_STALLS_PER_ZONE) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'ZONE_FULL',
+        `Khu ${zone.name} đã đủ ${MAX_STALLS_PER_ZONE} ô chuồng.`,
+        { max: MAX_STALLS_PER_ZONE },
+      );
+    }
 
     const stall = await this.prisma.stall.create({
       data: {

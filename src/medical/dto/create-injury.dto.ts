@@ -10,7 +10,6 @@ import {
   Max,
   MaxLength,
   Min,
-  MinLength,
 } from 'class-validator';
 import { BodySide, SeverityLevel } from '@prisma/client';
 
@@ -90,7 +89,6 @@ export class CreateInjuryDto {
   @ApiPropertyOptional({ description: 'Mô tả chi tiết điểm chấn thương' })
   @IsOptional()
   @IsString()
-  @MinLength(10, { message: 'The injury description needs at least 10 characters' })
   @MaxLength(1000, { message: 'The injury description can be at most 1000 characters' })
   description?: string;
 }

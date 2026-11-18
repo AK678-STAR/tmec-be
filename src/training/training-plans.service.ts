@@ -10,12 +10,14 @@ import { ChangePlanStatusDto, ClonePlanDto } from './dto/workout-actions.dto';
 import {
   addDays,
   clubDate,
+  GROOM_BUFFER_MINUTES,
   isHeavy,
   MAX_PLAN_WEEKS,
   PENDING_WORKOUT_STATUSES,
   PlanPhase,
   startOfClubDay,
   validatePhases,
+  workoutDurationMinutes,
 } from './training-rules';
 import { Tx, MEDICAL_STATUSES, PLAN_INCLUDE, phasesOf } from './training-shared';
 import { PrismaService } from '../prisma/prisma.service';
@@ -120,9 +122,8 @@ export class TrainingPlansService {
     });
 
     const outOfScope =
-      !plan ||
-      (user.role === UserRole.HORSE_OWNER && plan.horse.ownerId !== user.userId) ||
-      (user.role === UserRole.HEAD_TRAINER && plan.trainerUserId !== user.userId);
+      !plan || (user.role === UserRole.HORSE_OWNER && plan.horse.ownerId !== user.userId);
+    // HT được xem giáo án của HLV khác (mở từ Lịch tuần toàn CLB); mọi thao tác ghi vẫn kiểm tra chủ giáo án.
     if (outOfScope) {
       throw apiError(HttpStatus.NOT_FOUND, 'PLAN_NOT_FOUND', 'Training plan not found.');
     }
@@ -729,6 +730,64 @@ export class TrainingPlansService {
     const shift = startDate.getTime() - source.startDate.getTime();
     const copyWorkouts = dto.copyWorkouts !== false;
 
+    // Bản sao giữ nguyên groom + giờ -> phải bỏ các buổi trùng lịch groom (thời lượng + 15 phút đệm)
+    // hoặc trùng giờ của ngựa đích, như kiểm tra khi tạo buổi tập lẻ.
+    const MIN = 60 * 1000;
+    const span = (start: number, type?: string | null) =>
+      [start, start + (workoutDurationMinutes(type) + GROOM_BUFFER_MINUTES) * MIN] as const;
+    const candidates = copyWorkouts
+      ? source.workoutSessions
+          .map((w) => ({ w, date: new Date(w.scheduledDate.getTime() + shift) }))
+          .filter(({ date }) => date >= now)
+      : [];
+    const copies: typeof candidates = [];
+    if (candidates.length > 0) {
+      const times = candidates.map(({ date }) => date.getTime());
+      const grooms = [
+        ...new Set(candidates.map(({ w }) => w.assignedStaffUserId).filter(Boolean)),
+      ] as string[];
+      const taken = await this.prisma.workoutSession.findMany({
+        where: {
+          status: { not: WorkoutStatus.CANCELLED },
+          OR: [{ assignedStaffUserId: { in: grooms } }, { horseId: horse.id }],
+          scheduledDate: {
+            gte: new Date(Math.min(...times) - 120 * MIN),
+            lte: new Date(Math.max(...times) + 120 * MIN),
+          },
+        },
+        select: {
+          horseId: true,
+          assignedStaffUserId: true,
+          scheduledDate: true,
+          workoutType: true,
+        },
+      });
+      const busy = (taken ?? []).map((t) => ({
+        horseId: t.horseId,
+        groom: t.assignedStaffUserId,
+        start: t.scheduledDate.getTime(),
+        type: t.workoutType,
+      }));
+      for (const c of candidates) {
+        const start = c.date.getTime();
+        const [aStart, aEnd] = span(start, c.w.workoutType);
+        const clash = busy.some((b) => {
+          if (b.horseId === horse.id && Math.abs(b.start - start) < 30 * MIN) return true;
+          if (!c.w.assignedStaffUserId || b.groom !== c.w.assignedStaffUserId) return false;
+          const [bStart, bEnd] = span(b.start, b.type);
+          return aStart < bEnd && bStart < aEnd;
+        });
+        if (clash) continue;
+        copies.push(c);
+        busy.push({
+          horseId: horse.id,
+          groom: c.w.assignedStaffUserId,
+          start,
+          type: c.w.workoutType,
+        });
+      }
+    }
+
     const plan = await this.prisma.trainingPlan.create({
       data: {
         horseId: horse.id,
@@ -751,29 +810,26 @@ export class TrainingPlansService {
         status: PlanStatus.DRAFT,
         ...(copyWorkouts && {
           workoutSessions: {
-            create: source.workoutSessions
-              .map((w) => ({ w, date: new Date(w.scheduledDate.getTime() + shift) }))
-              .filter(({ date }) => date >= now)
-              .map(({ w, date }) => {
-                const blocked = horse.isMedicalLocked && isHeavy(w.workoutType, w.intensity);
-                return {
-                  horseId: horse.id,
-                  assignedStaffUserId: w.assignedStaffUserId,
-                  phaseId: w.phaseId,
-                  scheduledDate: date,
-                  distanceMeters: w.distanceMeters,
-                  repetitions: w.repetitions,
-                  targetSpeedKmh: w.targetSpeedKmh,
-                  targetDurationSeconds: w.targetDurationSeconds,
-                  workoutType: w.workoutType,
-                  intensity: w.intensity,
-                  trackSurface: w.trackSurface,
-                  jockeyName: w.jockeyName,
-                  trainerNotes: w.trainerNotes,
-                  status: blocked ? WorkoutStatus.BLOCKED : WorkoutStatus.SCHEDULED,
-                  statusReason: blocked ? 'Ngựa đang bị Khóa huấn luyện y tế' : null,
-                };
-              }),
+            create: copies.map(({ w, date }) => {
+              const blocked = horse.isMedicalLocked && isHeavy(w.workoutType, w.intensity);
+              return {
+                horseId: horse.id,
+                assignedStaffUserId: w.assignedStaffUserId,
+                phaseId: w.phaseId,
+                scheduledDate: date,
+                distanceMeters: w.distanceMeters,
+                repetitions: w.repetitions,
+                targetSpeedKmh: w.targetSpeedKmh,
+                targetDurationSeconds: w.targetDurationSeconds,
+                workoutType: w.workoutType,
+                intensity: w.intensity,
+                trackSurface: w.trackSurface,
+                jockeyName: w.jockeyName,
+                trainerNotes: w.trainerNotes,
+                status: blocked ? WorkoutStatus.BLOCKED : WorkoutStatus.SCHEDULED,
+                statusReason: blocked ? 'Ngựa đang bị Khóa huấn luyện y tế' : null,
+              };
+            }),
           },
         }),
       },
@@ -785,8 +841,15 @@ export class TrainingPlansService {
       'CLONE_TRAINING_PLAN',
       `Cloned training plan "${source.phaseName}" to horse ${horse.name}`,
       plan.id,
-      { entityName: 'TrainingPlan', newValues: { sourcePlanId: source.id, horseId: horse.id } },
+      {
+        entityName: 'TrainingPlan',
+        newValues: {
+          sourcePlanId: source.id,
+          horseId: horse.id,
+          skippedWorkouts: candidates.length - copies.length,
+        },
+      },
     );
-    return plan;
+    return { ...plan, skippedWorkouts: candidates.length - copies.length };
   }
 }

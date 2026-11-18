@@ -333,6 +333,43 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
     });
   });
 
+  describe('clonePlan groom overlap', () => {
+    it('skips copied workouts that would double-book the groom', async () => {
+      const at = (h: number) => new Date(addDays(today, 2).getTime() + h * 60 * 60 * 1000);
+      prisma.trainingPlan.findUnique.mockResolvedValue({
+        ...draftPlan,
+        trainerUserId: trainer.userId,
+        startDate: addDays(today, 1),
+        workoutSessions: [
+          { scheduledDate: at(6), assignedStaffUserId: 'groom-1', workoutType: 'CANTER' },
+          { scheduledDate: at(9), assignedStaffUserId: 'groom-1', workoutType: 'CANTER' },
+        ],
+      });
+      prisma.horse.findUnique.mockResolvedValue({ id: 'horse-2', name: 'B', status: 'ACTIVE' });
+      // Groom đã có buổi lúc 6:30 cùng ngày -> bản sao 6:00 (60 + 15 phút) bị bỏ, 9:00 giữ.
+      prisma.workoutSession.findMany.mockResolvedValue([
+        {
+          horseId: 'horse-1',
+          assignedStaffUserId: 'groom-1',
+          scheduledDate: at(6.5),
+          workoutType: 'TROT',
+        },
+      ]);
+      prisma.trainingPlan.create.mockImplementation(({ data }: any) => ({ id: 'plan-2', data }));
+
+      const res: any = await plans.clonePlan(
+        'plan-1',
+        { targetHorseId: 'horse-2', startDate: addDays(today, 1).toISOString() } as any,
+        trainer,
+      );
+
+      expect(res.skippedWorkouts).toBe(1);
+      const created = prisma.trainingPlan.create.mock.calls[0][0].data.workoutSessions.create;
+      expect(created).toHaveLength(1);
+      expect(created[0].scheduledDate).toEqual(at(9));
+    });
+  });
+
   describe('changePlanStatus - activate (DL-2.02)', () => {
     beforeEach(() => {
       prisma.trainingPlan.findUnique.mockResolvedValue(draftPlan);
@@ -1352,9 +1389,10 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
         );
       });
 
-      it('findPlanById returns 404 PLAN_NOT_FOUND when HEAD_TRAINER accesses another trainer plan', async () => {
+      it('findPlanById lets HEAD_TRAINER read another trainer plan (read-only)', async () => {
         prisma.trainingPlan.findUnique.mockResolvedValue(planB);
-        expect(await codeOf(plans.findPlanById('plan-b', trainerA))).toBe('PLAN_NOT_FOUND');
+        const res = await plans.findPlanById('plan-b', trainerA);
+        expect(res.id).toBe('plan-b');
       });
 
       it('findPlanById succeeds when accessing own plan or as CLUB_MANAGER', async () => {
@@ -1448,6 +1486,16 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
         );
 
         await workouts.findAllWorkouts({}, vet);
+        expect(prisma.workoutSession.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.not.objectContaining({ trainingPlan: expect.anything() }),
+          }),
+        );
+      });
+
+      it('lets HEAD_TRAINER read the whole club calendar with scope=club', async () => {
+        prisma.workoutSession.findMany.mockResolvedValue([workoutA, workoutB]);
+        await workouts.findAllWorkouts({ scope: 'club' }, trainerA);
         expect(prisma.workoutSession.findMany).toHaveBeenCalledWith(
           expect.objectContaining({
             where: expect.not.objectContaining({ trainingPlan: expect.anything() }),

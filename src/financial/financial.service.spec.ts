@@ -284,7 +284,7 @@ describe('FinancialService', () => {
       const user = { id: 'my-owner-id', name: 'Owner', role: 'HORSE_OWNER' };
 
       await expect(service.findOne('inv-1', user)).rejects.toThrow(
-        'You can only view financial statements for your own horses',
+        'Bạn chỉ được xem bảng kê của ngựa mình sở hữu',
       );
     });
   });
@@ -628,7 +628,7 @@ describe('FinancialService', () => {
       });
 
       await expect(service.update('inv-sent', { medicalFee: 500000 }, mgr)).rejects.toThrow(
-        'Only DRAFT invoices can have service fees edited.',
+        'Chỉ sửa được phí dịch vụ khi hóa đơn còn ở trạng thái Chưa gửi',
       );
     });
 
@@ -646,7 +646,7 @@ describe('FinancialService', () => {
           },
           mgr,
         ),
-      ).rejects.toThrow('An active statement already exists for this horse in period 2026-10.');
+      ).rejects.toThrow('Ngựa này đã có bảng kê đang hiệu lực cho kỳ 2026-10.');
     });
 
     it('should separate paid revenue, receivables, draft invoices, delivered supply imports, and surplus payouts in getClubCashflow', async () => {

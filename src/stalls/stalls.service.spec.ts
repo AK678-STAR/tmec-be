@@ -38,6 +38,7 @@ describe('StallsService (SC-1.04, SC-1.07, DL-1.02, DL-1.03)', () => {
         findMany: jest.fn().mockResolvedValue([]),
         create: jest.fn(({ data }) => Promise.resolve({ id: 'z-new', ...data })),
         update: jest.fn(({ data }) => Promise.resolve({ ...zone, ...data })),
+        count: jest.fn().mockResolvedValue(4),
       },
       stall: {
         findMany: jest.fn().mockResolvedValue([]),
@@ -48,6 +49,7 @@ describe('StallsService (SC-1.04, SC-1.07, DL-1.02, DL-1.03)', () => {
         update: jest.fn(({ data }) => Promise.resolve({ ...freeStall, ...data })),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
         aggregate: jest.fn().mockResolvedValue({ _max: { row: 2, col: 3 } }),
+        count: jest.fn().mockResolvedValue(0),
       },
       stallAllocation: {
         count: jest.fn().mockResolvedValue(0),
@@ -63,6 +65,20 @@ describe('StallsService (SC-1.04, SC-1.07, DL-1.02, DL-1.03)', () => {
   });
 
   describe('zones', () => {
+    it('caps the club at 6 zones and each zone at 12 stalls', async () => {
+      const code = (p: Promise<unknown>) => p.catch((e) => e.getResponse().code);
+      expect(
+        await code(service.createZone({ code: 'X', name: 'Khu X', rows: 4, cols: 4 }, manager)),
+      ).toBe('ZONE_TOO_LARGE');
+      prisma.stallZone.count.mockResolvedValueOnce(6);
+      expect(
+        await code(service.createZone({ code: 'X', name: 'Khu X', rows: 3, cols: 4 }, manager)),
+      ).toBe('ZONE_LIMIT_REACHED');
+      expect(await code(service.updateZone('z-1', { rows: 4, cols: 4 } as any, manager))).toBe(
+        'ZONE_TOO_LARGE',
+      );
+    });
+
     it('creates a whole grid of stalls named {zone}-{nn} when asked', async () => {
       await service.createZone(
         { code: 'B', name: 'Khu B', rows: 2, cols: 3, autoCreateStalls: true },

@@ -175,7 +175,7 @@ export class TournamentsService {
     });
 
     if (!tournament) {
-      throw apiError(HttpStatus.NOT_FOUND, 'TOURNAMENT_NOT_FOUND', `Tournament ${id} not found`);
+      throw apiError(HttpStatus.NOT_FOUND, 'TOURNAMENT_NOT_FOUND', 'Không tìm thấy giải đấu.');
     }
 
     return {
@@ -204,7 +204,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'INVALID_DEADLINE',
-        'Registration deadline must be on or before the race date',
+        'Hạn đăng ký phải trước hoặc trùng ngày thi đấu.',
       );
     }
 
@@ -218,28 +218,28 @@ export class TournamentsService {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'INVALID_STATUS_TRANSITION',
-          'Tournaments cannot be directly created as COMPLETED. Use lockResults after recording all race results.',
+          'Không thể tạo giải ở trạng thái COMPLETED. Hãy ghi đủ kết quả rồi chốt kết quả.',
         );
       }
       if (initialStatus === TournamentStatus.CANCELLED) {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'INVALID_STATUS_TRANSITION',
-          'Cannot create a tournament directly in CANCELLED status.',
+          'Không thể tạo giải ở trạng thái CANCELLED.',
         );
       }
       if (initialStatus === TournamentStatus.CLOSED_REGISTRATION) {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'INVALID_STATUS_TRANSITION',
-          'Cannot create a tournament directly in CLOSED_REGISTRATION status.',
+          'Không thể tạo giải ở trạng thái CLOSED_REGISTRATION.',
         );
       }
       if (initialStatus === TournamentStatus.OPEN_REGISTRATION && deadline < now) {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'INVALID_DEADLINE',
-          'Cannot set Open for Registration when registration deadline is in the past',
+          'Không thể mở đăng ký khi hạn đăng ký đã qua.',
         );
       }
     }
@@ -287,7 +287,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'CANNOT_CHANGE_COMPLETED',
-        'Completed tournaments cannot have their status altered',
+        'Không thể đổi trạng thái của giải đã hoàn thành.',
       );
     }
 
@@ -295,7 +295,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'INVALID_STATUS_TRANSITION',
-        'Tournaments cannot be directly marked as COMPLETED. Use lockResults after recording all race results.',
+        'Không thể chuyển thẳng sang COMPLETED. Hãy ghi đủ kết quả rồi chốt kết quả.',
       );
     }
 
@@ -315,7 +315,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'INVALID_STATUS_TRANSITION',
-        `Cannot transition tournament status from ${currentStatus} to ${targetStatus}`,
+        `Không thể chuyển trạng thái giải từ ${currentStatus} sang ${targetStatus}.`,
       );
     }
 
@@ -327,7 +327,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'INVALID_DEADLINE',
-        'Cannot set Open for Registration when registration deadline is in the past',
+        'Không thể mở đăng ký khi hạn đăng ký đã qua.',
       );
     }
   }
@@ -338,7 +338,7 @@ export class TournamentsService {
   async update(id: string, dto: UpdateTournamentDto, actor: TournamentActor) {
     const existing = await this.prisma.tournament.findUnique({ where: { id } });
     if (!existing) {
-      throw apiError(HttpStatus.NOT_FOUND, 'TOURNAMENT_NOT_FOUND', `Tournament ${id} not found`);
+      throw apiError(HttpStatus.NOT_FOUND, 'TOURNAMENT_NOT_FOUND', 'Không tìm thấy giải đấu.');
     }
 
     if (
@@ -348,7 +348,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'TOURNAMENT_LOCKED',
-        `Cannot edit tournament that is already ${existing.status}`,
+        `Không thể sửa giải ở trạng thái ${existing.status}.`,
       );
     }
 
@@ -361,7 +361,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'INVALID_DEADLINE',
-        'Registration deadline must be on or before the race date',
+        'Hạn đăng ký phải trước hoặc trùng ngày thi đấu.',
       );
     }
 
@@ -403,7 +403,7 @@ export class TournamentsService {
   async changeStatus(id: string, dto: ChangeTournamentStatusDto, actor: TournamentActor) {
     const existing = await this.prisma.tournament.findUnique({ where: { id } });
     if (!existing) {
-      throw apiError(HttpStatus.NOT_FOUND, 'TOURNAMENT_NOT_FOUND', `Tournament ${id} not found`);
+      throw apiError(HttpStatus.NOT_FOUND, 'TOURNAMENT_NOT_FOUND', 'Không tìm thấy giải đấu.');
     }
 
     if (existing.status === dto.status) {
@@ -445,14 +445,14 @@ export class TournamentsService {
     });
 
     if (!tournament) {
-      throw apiError(HttpStatus.NOT_FOUND, 'TOURNAMENT_NOT_FOUND', `Tournament ${id} not found`);
+      throw apiError(HttpStatus.NOT_FOUND, 'TOURNAMENT_NOT_FOUND', 'Không tìm thấy giải đấu.');
     }
 
     if (tournament._count.registrations > 0) {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'HAS_REGISTRATIONS',
-        'Cannot delete tournament with existing horse registrations. Cancel the tournament instead.',
+        'Không thể xóa giải đã có ngựa đăng ký. Hãy hủy giải thay vì xóa.',
       );
     }
 
@@ -460,7 +460,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'CANNOT_DELETE_COMPLETED',
-        'Cannot delete a completed tournament',
+        'Không thể xóa giải đã hoàn thành.',
       );
     }
 
@@ -468,7 +468,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'CANNOT_DELETE_CANCELLED',
-        'Cannot delete a cancelled tournament. Cancelled tournaments must be preserved for audit history.',
+        'Không thể xóa giải đã hủy. Giải đã hủy được giữ lại để tra cứu lịch sử.',
       );
     }
 
@@ -476,7 +476,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'CANNOT_DELETE_CLOSED',
-        'Cannot delete a closed tournament. Cancel the tournament if it will not proceed.',
+        'Không thể xóa giải đã đóng đăng ký. Hãy hủy giải nếu không tổ chức.',
       );
     }
 
@@ -507,7 +507,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.NOT_FOUND,
         'TOURNAMENT_NOT_FOUND',
-        `Tournament ${tournamentId} not found`,
+        'Không tìm thấy giải đấu.',
       );
     }
 
@@ -637,7 +637,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.NOT_FOUND,
         'TOURNAMENT_NOT_FOUND',
-        `Tournament ${tournamentId} not found`,
+        'Không tìm thấy giải đấu.',
       );
     }
 
@@ -662,14 +662,14 @@ export class TournamentsService {
     });
 
     if (!horse || horse.deletedAt) {
-      throw apiError(HttpStatus.NOT_FOUND, 'HORSE_NOT_FOUND', `Horse ${horseId} not found`);
+      throw apiError(HttpStatus.NOT_FOUND, 'HORSE_NOT_FOUND', 'Không tìm thấy ngựa.');
     }
 
     if (actor.role === 'HORSE_OWNER' && horse.ownerId !== actor.id) {
       throw apiError(
         HttpStatus.FORBIDDEN,
         'FORBIDDEN',
-        'You can only check eligibility for your own horses.',
+        'Bạn chỉ được kiểm tra điều kiện cho ngựa của mình.',
       );
     }
 
@@ -916,7 +916,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.NOT_FOUND,
         'TOURNAMENT_NOT_FOUND',
-        `Tournament ${tournamentId} not found`,
+        'Không tìm thấy giải đấu.',
       );
     }
 
@@ -924,7 +924,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'REGISTRATION_NOT_OPEN',
-        `Tournament is currently in ${tournament.status} state, registration is only permitted in OPEN_REGISTRATION.`,
+        'Giải không ở trạng thái mở đăng ký.',
       );
     }
 
@@ -932,7 +932,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'DEADLINE_EXPIRED',
-        'Registration deadline for this tournament has passed.',
+        'Đã quá hạn đăng ký giải này.',
       );
     }
 
@@ -944,14 +944,14 @@ export class TournamentsService {
     });
 
     if (!horse || horse.deletedAt) {
-      throw apiError(HttpStatus.NOT_FOUND, 'HORSE_NOT_FOUND', `Horse ${dto.horseId} not found`);
+      throw apiError(HttpStatus.NOT_FOUND, 'HORSE_NOT_FOUND', 'Không tìm thấy ngựa.');
     }
 
     if (actor.role === 'HORSE_OWNER' && horse.ownerId !== actor.id) {
       throw apiError(
         HttpStatus.FORBIDDEN,
         'FORBIDDEN',
-        'You can only register your own horse for a tournament.',
+        'Bạn chỉ được đăng ký ngựa của mình.',
       );
     }
 
@@ -960,7 +960,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'MEDICAL_LOCK_ACTIVE',
-        `Cannot register horse ${horse.name}: Medical Lock is currently in force by Veterinarian.`,
+        `Không thể đăng ký ngựa ${horse.name}: ngựa đang bị bác sĩ thú y khóa y tế.`,
       );
     }
 
@@ -969,7 +969,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'DEBT_IMPOUNDED',
-        `Cannot register horse ${horse.name}: Horse is currently impounded due to overdue payment by owner.`,
+        `Không thể đăng ký ngựa ${horse.name}: ngựa đang bị lưu giữ do chủ còn hóa đơn quá hạn.`,
       );
     }
 
@@ -977,7 +977,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'HORSE_RETIRED',
-        `Cannot register retired horse ${horse.name}.`,
+        `Không thể đăng ký ngựa đã nghỉ hưu ${horse.name}.`,
       );
     }
 
@@ -998,7 +998,7 @@ export class TournamentsService {
       apiError(
         HttpStatus.CONFLICT,
         'ALREADY_REGISTERED',
-        `Horse ${horse.name} is already registered for this tournament.`,
+        `Ngựa ${horse.name} đã được đăng ký giải này.`,
       );
 
     // RULE-CONC-01: kiểm tra trùng + tạo trong một transaction; ràng buộc unique (tournamentId, horseId)
@@ -1077,7 +1077,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.NOT_FOUND,
         'REGISTRATION_NOT_FOUND',
-        `Registration ${registrationId} not found in this tournament`,
+        'Không tìm thấy lượt đăng ký trong giải này.',
       );
     }
 
@@ -1085,7 +1085,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'REASON_REQUIRED',
-        'A reason is required to scratch a horse from a tournament.',
+        'Cần nhập lý do khi rút ngựa khỏi giải.',
       );
     }
 
@@ -1096,7 +1096,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'CANNOT_SCRATCH_TERMINAL',
-        'Cannot scratch a horse from a cancelled or completed tournament.',
+        'Không thể rút ngựa khỏi giải đã hủy hoặc đã hoàn thành.',
       );
     }
 
@@ -1104,7 +1104,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'CANNOT_SCRATCH_UPCOMING',
-        'Cannot scratch a horse from an upcoming tournament.',
+        'Không thể rút ngựa khỏi giải chưa mở đăng ký.',
       );
     }
 
@@ -1115,7 +1115,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'CANNOT_SCRATCH',
-        `Cannot scratch registration ${registrationId} with status ${registration.status}. Only active registrations (REGISTERED or CONFIRMED) can be scratched.`,
+        `Không thể rút lượt đăng ký ${registrationId} ở trạng thái ${registration.status}. Chỉ rút được lượt đăng ký còn hiệu lực.`,
       );
     }
 
@@ -1163,7 +1163,7 @@ export class TournamentsService {
         throw apiError(
           HttpStatus.NOT_FOUND,
           'TOURNAMENT_NOT_FOUND',
-          `Tournament ${tournamentId} not found`,
+          'Không tìm thấy giải đấu.',
         );
       }
 
@@ -1171,7 +1171,7 @@ export class TournamentsService {
         throw apiError(
           HttpStatus.FORBIDDEN,
           'PERMISSION_DENIED',
-          'Only the Club Manager has the authority to record or edit tournament results.',
+          'Chỉ Quản lý CLB được ghi hoặc sửa kết quả giải.',
         );
       }
 
@@ -1179,7 +1179,7 @@ export class TournamentsService {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'ALREADY_LOCKED',
-          'Results for this tournament have already been locked by the Club Manager.',
+          'Kết quả giải này đã được Quản lý CLB chốt.',
         );
       }
 
@@ -1187,7 +1187,7 @@ export class TournamentsService {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'INVALID_STATUS_TRANSITION',
-          'Cannot record results for a cancelled tournament.',
+          'Không thể ghi kết quả cho giải đã hủy.',
         );
       }
 
@@ -1195,7 +1195,7 @@ export class TournamentsService {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'REGISTRATION_NOT_CLOSED',
-          'Results can only be recorded after registration has closed (CLOSED_REGISTRATION).',
+          'Chỉ ghi kết quả sau khi giải đã đóng đăng ký.',
         );
       }
 
@@ -1208,7 +1208,7 @@ export class TournamentsService {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'RACE_NOT_FINISHED',
-          'Results cannot be recorded before the race has occurred.',
+          'Không thể ghi kết quả trước khi giải diễn ra.',
         );
       }
 
@@ -1221,7 +1221,7 @@ export class TournamentsService {
           throw apiError(
             HttpStatus.BAD_REQUEST,
             'INVALID_REGISTRATION_ID',
-            `Registration ID ${item.registrationId} does not belong to this tournament`,
+            `Lượt đăng ký ${item.registrationId} không thuộc giải này.`,
           );
         }
 
@@ -1234,7 +1234,7 @@ export class TournamentsService {
           throw apiError(
             HttpStatus.BAD_REQUEST,
             'CANNOT_RECORD_RESULT',
-            `Cannot record result for registration ${item.registrationId} with status ${reg.status}. Results may only be recorded for active registrations.`,
+            `Không thể ghi kết quả cho lượt đăng ký ${item.registrationId} ở trạng thái ${reg.status}. Chỉ ghi kết quả cho lượt đăng ký còn hiệu lực.`,
           );
         }
 
@@ -1242,7 +1242,7 @@ export class TournamentsService {
           throw apiError(
             HttpStatus.BAD_REQUEST,
             'HORSE_MEDICAL_LOCKED',
-            `Cannot record result for horse ${reg.horse.name}: Horse is currently under Veterinary Medical Lock.`,
+            `Không thể ghi kết quả cho ngựa ${reg.horse.name}: ngựa đang bị khóa y tế.`,
           );
         }
       }
@@ -1258,7 +1258,7 @@ export class TournamentsService {
           throw apiError(
             HttpStatus.BAD_REQUEST,
             'NO_REGISTRATIONS',
-            'Cannot lock tournament without any registered participants.',
+            'Không thể chốt giải khi chưa có ngựa đăng ký.',
           );
         }
 
@@ -1268,7 +1268,7 @@ export class TournamentsService {
           throw apiError(
             HttpStatus.BAD_REQUEST,
             'RESULTS_INCOMPLETE',
-            `Cannot lock results: ${missingResults.length} registered horse(s) still lack finish results.`,
+            `Không thể chốt kết quả: còn ${missingResults.length} ngựa chưa có kết quả.`,
           );
         }
       }
@@ -1276,7 +1276,6 @@ export class TournamentsService {
       const savedResults: any[] = [];
       if (dto.lockResults) {
         const now = new Date();
-        const billingPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
         // 1. Upsert results from dto
         for (const item of dto.results) {
           const calculatedSpeed =
@@ -1354,53 +1353,7 @@ export class TournamentsService {
             data: { status: HorseStatus.RESTING },
           });
 
-          const prizeWon = Number(res.prizeMoneyWon || 0);
-          if (prizeWon > 0 && reg.horse.ownerId) {
-            const split = calculatePrizeSplit(prizeWon, Number(tournament.entryFee) || 0);
-            const ownerShare = Number.isFinite(Number(res.netOwnerPayout))
-              ? Number(res.netOwnerPayout)
-              : split.netOwnerPayout;
-
-            const existingInvoice = await tx.financialInvoice.findFirst({
-              where: {
-                horseId: reg.horseId,
-                ownerId: reg.horse.ownerId,
-                billingPeriod,
-                status: 'DRAFT',
-              },
-            });
-
-            if (existingInvoice) {
-              const newPrizeCredit = Number(existingInvoice.prizeCredit) + ownerShare;
-              const newNetAmount =
-                Number(existingInvoice.boardingFee) +
-                Number(existingInvoice.medicalFee) +
-                Number(existingInvoice.trainingFee) -
-                newPrizeCredit;
-
-              await tx.financialInvoice.update({
-                where: { id: existingInvoice.id },
-                data: {
-                  prizeCredit: newPrizeCredit,
-                  netAmount: newNetAmount,
-                },
-              });
-            } else {
-              await tx.financialInvoice.create({
-                data: {
-                  horseId: reg.horseId,
-                  ownerId: reg.horse.ownerId,
-                  billingPeriod,
-                  boardingFee: 0,
-                  medicalFee: 0,
-                  trainingFee: 0,
-                  prizeCredit: ownerShare,
-                  netAmount: -ownerShare,
-                  status: 'DRAFT',
-                },
-              });
-            }
-          }
+          // Tiền thưởng vào hóa đơn khi chốt tháng (generateMonthlyDrafts tính theo settledAt), không tạo hóa đơn kỳ chưa kết thúc.
         }
       } else {
         for (const item of dto.results) {
@@ -1519,7 +1472,7 @@ export class TournamentsService {
       throw apiError(
         HttpStatus.FORBIDDEN,
         'PERMISSION_DENIED',
-        'Only the Club Manager has the authority to lock tournament results.',
+        'Chỉ Quản lý CLB được chốt kết quả giải.',
       );
     }
 
@@ -1542,7 +1495,7 @@ export class TournamentsService {
         throw apiError(
           HttpStatus.NOT_FOUND,
           'TOURNAMENT_NOT_FOUND',
-          `Tournament ${tournamentId} not found`,
+          'Không tìm thấy giải đấu.',
         );
       }
 
@@ -1550,7 +1503,7 @@ export class TournamentsService {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'ALREADY_COMPLETED',
-          'Tournament results have already been locked.',
+          'Kết quả giải đã được chốt.',
         );
       }
 
@@ -1558,7 +1511,7 @@ export class TournamentsService {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'INVALID_STATUS_TRANSITION',
-          'Cannot lock results for a cancelled tournament.',
+          'Không thể chốt kết quả của giải đã hủy.',
         );
       }
 
@@ -1566,7 +1519,7 @@ export class TournamentsService {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'REGISTRATION_NOT_CLOSED',
-          'Results can only be locked when tournament is in CLOSED_REGISTRATION status.',
+          'Chỉ chốt kết quả khi giải đã đóng đăng ký.',
         );
       }
 
@@ -1575,7 +1528,7 @@ export class TournamentsService {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'RACE_NOT_FINISHED',
-          'Results cannot be locked before the race date.',
+          'Không thể chốt kết quả trước ngày thi đấu.',
         );
       }
 
@@ -1588,7 +1541,7 @@ export class TournamentsService {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'NO_REGISTRATIONS',
-          'Cannot lock tournament without any registered participants.',
+          'Không thể chốt giải khi chưa có ngựa đăng ký.',
         );
       }
 
@@ -1597,13 +1550,12 @@ export class TournamentsService {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'RESULTS_INCOMPLETE',
-          `Cannot lock results: ${missingResults.length} registered horse(s) still lack finish results.`,
+          `Không thể chốt kết quả: còn ${missingResults.length} ngựa chưa có kết quả.`,
         );
       }
 
       // Xử lý trong transaction
       const now = new Date();
-      const billingPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
       // 1. Chốt giải đấu
       await tx.tournament.update({
@@ -1636,51 +1588,7 @@ export class TournamentsService {
           },
         });
 
-        if (prizeWon > 0 && reg.horse.ownerId) {
-          // Owner nhận 85% tiền thưởng sau khi trừ phí tham gia giải
-          const ownerShare = split.netOwnerPayout;
-
-          // Tạo hoặc cập nhật hóa đơn tài chính của Owner cho kỳ hiện tại
-          const existingInvoice = await tx.financialInvoice.findFirst({
-            where: {
-              horseId: reg.horseId,
-              ownerId: reg.horse.ownerId,
-              billingPeriod,
-              status: 'DRAFT',
-            },
-          });
-
-          if (existingInvoice) {
-            const newPrizeCredit = Number(existingInvoice.prizeCredit) + ownerShare;
-            const newNetAmount =
-              Number(existingInvoice.boardingFee) +
-              Number(existingInvoice.medicalFee) +
-              Number(existingInvoice.trainingFee) -
-              newPrizeCredit;
-
-            await tx.financialInvoice.update({
-              where: { id: existingInvoice.id },
-              data: {
-                prizeCredit: newPrizeCredit,
-                netAmount: newNetAmount,
-              },
-            });
-          } else {
-            await tx.financialInvoice.create({
-              data: {
-                horseId: reg.horseId,
-                ownerId: reg.horse.ownerId,
-                billingPeriod,
-                boardingFee: 0,
-                medicalFee: 0,
-                trainingFee: 0,
-                prizeCredit: ownerShare,
-                netAmount: -ownerShare, // Âm nghĩa là CLB đang nợ tiền thưởng trả cho Owner
-                status: 'DRAFT',
-              },
-            });
-          }
-        }
+        // Tiền thưởng vào hóa đơn khi chốt tháng (generateMonthlyDrafts tính theo settledAt), không tạo hóa đơn kỳ chưa kết thúc.
       }
       return tournament;
     });
