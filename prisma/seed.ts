@@ -37,7 +37,16 @@ import { createHash } from 'crypto';
 import { existsSync } from 'fs';
 import { yymm } from '../src/common/utils/input';
 import { planDailyTasks, ScheduleHorse } from '../src/daily-tasks/daily-schedule';
-import { BOARDING_MONTHLY_RATE, calculateBoardingFee } from '../src/financial/boarding-fee';
+import {
+  BOARDING_MONTHLY_RATE,
+  boardingMonth,
+  calculateBoardingFee,
+} from '../src/financial/boarding-fee';
+import {
+  MEDICAL_MONTHLY_PACKAGE_FEE,
+  TRAINING_MONTHLY_RATE,
+} from '../src/financial/financial.service';
+import { calculatePrizeSplit } from '../src/tournaments/tournaments.service';
 import { clubDate } from '../src/training/training-rules';
 
 type Tx = Prisma.TransactionClient;
@@ -76,8 +85,7 @@ const days = (offsetDays: number, hour = 0, minute = 0): Date => {
 };
 const dateStrOffset = (offsetDays: number) =>
   clubDate(new Date(now.getTime() + offsetDays * DAY_MS));
-const monthOf = (d: Date) =>
-  `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+const monthOf = (d: Date) => clubDate(d).slice(0, 7);
 const pastIso = (offsetDays: number) => dateStrOffset(offsetDays);
 
 const horseIds = Array.from({ length: 19 }, (_, idx) => id(`horse:${idx + 1}`));
@@ -2645,6 +2653,24 @@ async function seedStableCare(tx: Tx) {
       assignedGroomUserId: userIds.grooms[4],
     });
   }
+  // Historical vet-prescribed care retains the legacy task type without adding automatic ice treatment.
+  dailyTasks.push({
+    id: id('task:historical:ice-boot:h2'),
+    taskCode: 'TSK-2609-90001',
+    date: new Date('2026-09-15T00:00:00+07:00'),
+    horseId: horseIds[1],
+    stallZoneId: zoneIds.B,
+    stallId: HORSES[1].stallId,
+    taskType: DailyTaskType.ICE_BOOT_REST,
+    title: 'Chườm lạnh theo chỉ định thú y trong đợt hồi phục tháng 9',
+    description: 'Mẫu lịch sử chăm sóc đã hoàn tất theo phác đồ; không tự phát sinh từ khóa y tế.',
+    scheduledTime: '14:00',
+    shiftId: shiftIds.AFTERNOON,
+    isCompleted: true,
+    completedAt: new Date('2026-09-15T14:15:00+07:00'),
+    completedById: HORSES[1].groomId,
+    assignedGroomUserId: HORSES[1].groomId,
+  });
   await tx.dailyCareTask.createMany({ data: dailyTasks, skipDuplicates: true });
 
   // DailyGroomingLog across MORNING / AFTERNOON / EVENING
@@ -3039,7 +3065,7 @@ async function seedRacingAndInvoices(tx: Tx) {
         id: tIds.t20Nov,
         code: 'CUP-2026-11-20',
         name: 'Cúp Tri Ân 20/11 - Tôn Vinh Huấn Luyện Viên Thiên Mã 2026',
-        raceDate: days(6, 15, 0),
+        raceDate: new Date('2026-11-20T15:00:00+07:00'),
         location: 'Trường đua Thiên Mã Đà Lạt',
         distanceMeters: 1600,
         trackType: TrackSurface.TURF,
@@ -3048,7 +3074,7 @@ async function seedRacingAndInvoices(tx: Tx) {
         trackCondition: 'GOOD',
         maxFieldSize: 12,
         minAgeYears: 3,
-        registrationDeadline: days(4),
+        registrationDeadline: new Date('2026-11-18T00:00:00+07:00'),
         status: TournamentStatus.CLOSED_REGISTRATION,
       },
       {
@@ -3071,7 +3097,7 @@ async function seedRacingAndInvoices(tx: Tx) {
         id: tIds.openRegB,
         code: 'CUP-2026-11D',
         name: 'Giải Tốc Độ Sân Đất Miền Trung',
-        raceDate: days(16, 15, 0),
+        raceDate: new Date('2026-11-29T15:00:00+07:00'),
         location: 'Trường đua Đại Nam Classic',
         distanceMeters: 1200,
         trackType: TrackSurface.DIRT,
@@ -3080,14 +3106,14 @@ async function seedRacingAndInvoices(tx: Tx) {
         trackCondition: 'FAST',
         maxFieldSize: 10,
         minAgeYears: 3,
-        registrationDeadline: days(11),
+        registrationDeadline: new Date('2026-11-25T00:00:00+07:00'),
         status: TournamentStatus.OPEN_REGISTRATION,
       },
       {
         id: tIds.openRegC,
         code: 'CUP-2026-11E',
         name: 'Giải Bền Bỉ Cự Ly Trung Bình T11',
-        raceDate: days(21, 16, 0),
+        raceDate: new Date('2026-11-30T16:00:00+07:00'),
         location: 'Trường đua Bình Dương',
         distanceMeters: 2000,
         trackType: TrackSurface.SYNTHETIC,
@@ -3096,7 +3122,7 @@ async function seedRacingAndInvoices(tx: Tx) {
         trackCondition: 'STANDARD',
         maxFieldSize: 12,
         minAgeYears: 4,
-        registrationDeadline: days(16),
+        registrationDeadline: new Date('2026-11-26T00:00:00+07:00'),
         status: TournamentStatus.OPEN_REGISTRATION,
       },
       {
@@ -3119,7 +3145,7 @@ async function seedRacingAndInvoices(tx: Tx) {
         id: tIds.upcomingB,
         code: 'CUP-2026-12B',
         name: 'Giải Vô Địch Đêm Ánh Sáng T12',
-        raceDate: days(44, 18, 0),
+        raceDate: new Date('2026-12-27T18:00:00+07:00'),
         location: 'Trường đua Đại Nam Classic',
         distanceMeters: 1600,
         trackType: TrackSurface.SYNTHETIC,
@@ -3128,14 +3154,14 @@ async function seedRacingAndInvoices(tx: Tx) {
         trackCondition: 'STANDARD',
         maxFieldSize: 12,
         minAgeYears: 3,
-        registrationDeadline: days(34),
+        registrationDeadline: new Date('2026-12-20T00:00:00+07:00'),
         status: TournamentStatus.UPCOMING,
       },
       {
         id: tIds.upcomingC,
-        code: 'CUP-2027-01',
-        name: 'Cúp Khai Xuân Vạn Lý 2027',
-        raceDate: days(58, 15, 0),
+        code: 'CUP-2026-12C',
+        name: 'Cúp Bế Mạc Vạn Lý 2026',
+        raceDate: new Date('2026-12-31T15:00:00+07:00'),
         location: 'Trường đua Thiên Mã Đà Lạt',
         distanceMeters: 2400,
         trackType: TrackSurface.TURF,
@@ -3144,7 +3170,7 @@ async function seedRacingAndInvoices(tx: Tx) {
         trackCondition: 'GOOD',
         maxFieldSize: 14,
         minAgeYears: 4,
-        registrationDeadline: days(48),
+        registrationDeadline: new Date('2026-12-24T00:00:00+07:00'),
         status: TournamentStatus.UPCOMING,
       },
       {
@@ -3249,9 +3275,7 @@ async function seedRacingAndInvoices(tx: Tx) {
     entryFee: number,
     settledAt: Date,
   ): Prisma.TournamentResultCreateManyInput => {
-    const trainerCut = Math.round(gross * 0.1);
-    const jockeyCut = Math.round(gross * 0.05);
-    const netOwnerPayout = Math.max(0, gross - trainerCut - jockeyCut - entryFee);
+    const split = calculatePrizeSplit(gross, entryFee);
     return {
       id: id(`tres:${tId}:${horseIds[hIdx]}`),
       registrationId: id(`treg:${tId}:${horseIds[hIdx]}`),
@@ -3259,51 +3283,59 @@ async function seedRacingAndInvoices(tx: Tx) {
       finishTimeSeconds: timeSec,
       avgSpeedKmh: speed,
       prizeMoneyWon: gross,
-      grossPrize: gross,
-      trainerCut,
-      jockeyCut,
-      entryFeeDeducted: entryFee,
-      netOwnerPayout,
+      ...split,
       settledAt,
       officialNotes: `Xếp hạng ${rank} chính thức từ ban trọng tài`,
     };
   };
 
-  await tx.tournamentResult.createMany({
-    data: [
-      makeResult(tIds.may, 0, 1, 82.6, 61.0, 40000000, 3000000, days(-174)),
-      makeResult(tIds.may, 2, 2, 83.4, 60.4, 25000000, 3000000, days(-174)),
-      makeResult(tIds.may, 4, 3, 84.5, 59.6, 10000000, 3000000, days(-174)),
-      makeResult(tIds.junA, 5, 1, 70.8, 61.0, 50000000, 3500000, days(-151)),
-      makeResult(tIds.junA, 3, 2, 71.5, 60.4, 25000000, 3500000, days(-151)),
-      makeResult(tIds.junA, 6, 3, 72.3, 59.8, 15000000, 3500000, days(-151)),
-      makeResult(tIds.junB, 4, 1, 118.2, 60.9, 60000000, 4000000, days(-134)),
-      makeResult(tIds.junB, 0, 2, 119.1, 60.4, 30000000, 4000000, days(-134)),
-      makeResult(tIds.junB, 9, 3, 120.4, 59.8, 20000000, 4000000, days(-134)),
-      makeResult(tIds.july, 0, 1, 93.4, 61.7, 50000000, 3000000, days(-114)),
-      makeResult(tIds.july, 4, 2, 94.2, 61.1, 20000000, 3000000, days(-114)),
-      makeResult(tIds.july, 5, 3, 95.1, 60.5, 10000000, 3000000, days(-114)),
-      makeResult(tIds.aug, 4, 1, 105.6, 61.4, 70000000, 5000000, days(-84)),
-      makeResult(tIds.aug, 0, 2, 106.2, 61.0, 35000000, 5000000, days(-84)),
-      makeResult(tIds.aug, 6, 3, 107.8, 60.1, 15000000, 5000000, days(-84)),
-      makeResult(tIds.sep, 5, 1, 118.4, 60.8, 60000000, 4000000, days(-54)),
-      makeResult(tIds.sep, 2, 2, 119.5, 60.2, 25000000, 4000000, days(-54)),
-      makeResult(tIds.sep, 9, 3, 120.7, 59.6, 15000000, 4000000, days(-54)),
-      makeResult(tIds.oct, 0, 1, 91.9, 62.7, 90000000, 5000000, days(-21)),
-      makeResult(tIds.oct, 2, 2, 93.0, 61.9, 40000000, 5000000, days(-21)),
-      makeResult(tIds.oct, 3, 3, 94.1, 61.2, 20000000, 5000000, days(-21)),
-    ],
-    skipDuplicates: true,
-  });
+  const results: Prisma.TournamentResultCreateManyInput[] = [
+    makeResult(tIds.may, 0, 1, 82.6, 61.0, 40000000, 3000000, days(-174)),
+    makeResult(tIds.may, 2, 2, 83.4, 60.4, 25000000, 3000000, days(-174)),
+    makeResult(tIds.may, 4, 3, 84.5, 59.6, 10000000, 3000000, days(-174)),
+    makeResult(tIds.junA, 5, 1, 70.8, 61.0, 50000000, 3500000, days(-151)),
+    makeResult(tIds.junA, 3, 2, 71.5, 60.4, 25000000, 3500000, days(-151)),
+    makeResult(tIds.junA, 6, 3, 72.3, 59.8, 15000000, 3500000, days(-151)),
+    makeResult(tIds.junB, 4, 1, 118.2, 60.9, 60000000, 4000000, days(-134)),
+    makeResult(tIds.junB, 0, 2, 119.1, 60.4, 30000000, 4000000, days(-134)),
+    makeResult(tIds.junB, 9, 3, 120.4, 59.8, 20000000, 4000000, days(-134)),
+    makeResult(tIds.july, 0, 1, 93.4, 61.7, 50000000, 3000000, days(-114)),
+    makeResult(tIds.july, 4, 2, 94.2, 61.1, 20000000, 3000000, days(-114)),
+    makeResult(tIds.july, 5, 3, 95.1, 60.5, 10000000, 3000000, days(-114)),
+    makeResult(tIds.aug, 4, 1, 105.6, 61.4, 70000000, 5000000, days(-84)),
+    makeResult(tIds.aug, 0, 2, 106.2, 61.0, 35000000, 5000000, days(-84)),
+    makeResult(tIds.aug, 6, 3, 107.8, 60.1, 15000000, 5000000, days(-84)),
+    makeResult(tIds.sep, 5, 1, 118.4, 60.8, 60000000, 4000000, days(-54)),
+    makeResult(tIds.sep, 2, 2, 119.5, 60.2, 25000000, 4000000, days(-54)),
+    makeResult(tIds.sep, 9, 3, 120.7, 59.6, 15000000, 4000000, days(-54)),
+    makeResult(tIds.oct, 0, 1, 91.9, 62.7, 90000000, 5000000, days(-21)),
+    makeResult(tIds.oct, 2, 2, 93.0, 61.9, 40000000, 5000000, days(-21)),
+    makeResult(tIds.oct, 3, 3, 94.1, 61.2, 20000000, 5000000, days(-21)),
+  ];
+  await tx.tournamentResult.createMany({ data: results, skipDuplicates: true });
 
-  // 6-Month Financial Invoices (2026-07 .. 2026-12), using calculateBoardingFee + covering all 5 InvoiceStatus
+  // Only closed demo months are billed; November/December remain scheduling data.
   const stayStart = new Date('2026-06-01T00:00:00+07:00');
-  const periods = ['2026-07', '2026-08', '2026-09', '2026-10', '2026-11', '2026-12'];
+  const periods = ['2026-07', '2026-08', '2026-09', '2026-10'];
+  const billedHorseIndices = [0, 1, 2, 3, 4, 5, 6, 9, 14, 15, 16];
+  // Remove only deterministic future invoice fixtures from the old seed, never live invoice IDs.
+  const invalidPeriods = ['2026-11', '2026-12'];
+  const removed = await tx.financialInvoice.deleteMany({
+    where: {
+      id: {
+        in: invalidPeriods.flatMap((period) =>
+          billedHorseIndices.map((hIdx) => id(`inv:${period}:${HORSES[hIdx].id}`)),
+        ),
+      },
+      billingPeriod: { in: invalidPeriods },
+    },
+  });
+  if (removed.count)
+    console.log(`[seed] Removed ${removed.count} obsolete future demo invoice fixtures.`);
   const invoices: Prisma.FinancialInvoiceCreateManyInput[] = [];
 
   for (const period of periods) {
     // Include active showcase horses across owners
-    const billedHorseIndices = [0, 1, 2, 3, 4, 5, 6, 9, 14, 15, 16];
     for (const hIdx of billedHorseIndices) {
       const h = HORSES[hIdx];
       const allocs =
@@ -3318,28 +3350,37 @@ async function seedRacingAndInvoices(tx: Tx) {
       let status: InvoiceStatus = InvoiceStatus.PAID;
       let medicalFee = 0;
       let trainingFee =
-        h.status === HorseStatus.INJURED || h.status === HorseStatus.ISOLATED ? 0 : 2500000;
-      let prizeCredit = 0;
-
-      if (period === '2026-07' && hIdx === 0) prizeCredit = 39500000;
-      if (period === '2026-08' && hIdx === 4) prizeCredit = 54500000;
-      if (period === '2026-09' && hIdx === 5) prizeCredit = 47000000;
-      if (period === '2026-10' && hIdx === 0) prizeCredit = 71500000;
+        h.status === HorseStatus.INJURED || h.status === HorseStatus.ISOLATED
+          ? 0
+          : TRAINING_MONTHLY_RATE;
+      const horseRegistrationIds = new Set(
+        registrations.filter((r) => r.horseId === h.id).map((r) => r.id),
+      );
+      const prizeCredit = results
+        .filter(
+          (r) =>
+            horseRegistrationIds.has(r.registrationId) &&
+            r.settledAt &&
+            monthOf(new Date(r.settledAt)) === period,
+        )
+        .reduce((sum, r) => sum + Number(r.netOwnerPayout), 0);
 
       if (hIdx === 1 && (period === '2026-09' || period === '2026-10')) {
         status = InvoiceStatus.OVERDUE;
-        medicalFee = 3500000;
+        medicalFee = MEDICAL_MONTHLY_PACKAGE_FEE;
       } else if (
         hIdx === 16 &&
         (period === '2026-08' || period === '2026-09' || period === '2026-10')
       ) {
         status = InvoiceStatus.OVERDUE;
-        medicalFee = 1500000;
-      } else if (period === '2026-11') {
-        status = hIdx % 2 === 0 ? InvoiceStatus.SENT : InvoiceStatus.PAID;
-      } else if (period === '2026-12') {
-        status = hIdx === 15 ? InvoiceStatus.CANCELLED : InvoiceStatus.DRAFT;
-        trainingFee = status === InvoiceStatus.CANCELLED ? 0 : trainingFee;
+        medicalFee = MEDICAL_MONTHLY_PACKAGE_FEE;
+      } else if (period === '2026-10' && hIdx === 14) {
+        status = InvoiceStatus.DRAFT;
+      } else if (period === '2026-10' && hIdx === 15) {
+        status = InvoiceStatus.CANCELLED;
+        trainingFee = 0;
+      } else if (period === '2026-10' && hIdx === 9) {
+        status = InvoiceStatus.SENT;
       }
 
       const netAmount = boardingFee.toNumber() + medicalFee + trainingFee - prizeCredit;
@@ -3351,12 +3392,18 @@ async function seedRacingAndInvoices(tx: Tx) {
         boardingFee,
         boardingDays,
         boardingMonthlyRate: BOARDING_MONTHLY_RATE,
-        dueAt: new Date(`${period}-28T17:00:00+07:00`),
+        dueAt:
+          status === InvoiceStatus.DRAFT || status === InvoiceStatus.CANCELLED
+            ? null
+            : status === InvoiceStatus.SENT
+              ? days(7, 17)
+              : new Date(boardingMonth(period).end.getTime() + 7 * DAY_MS),
         medicalFee,
         trainingFee,
         prizeCredit,
         netAmount,
         status,
+        createdAt: boardingMonth(period).end,
       });
     }
   }
@@ -3542,7 +3589,13 @@ async function seedActivityAndSupport(tx: Tx) {
 }
 
 async function main() {
-  const prisma = new PrismaClient({ datasourceUrl: resolveDatabaseUrl() });
+  const databaseUrl = resolveDatabaseUrl();
+  if (RESET_FLAG && process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'Seed --reset is disabled in production. Back up and use a separate demo database.',
+    );
+  }
+  const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
   try {
     const password = await bcrypt.hash('EquiFlow@2026', 10);
     await prisma.$transaction(
@@ -3566,7 +3619,7 @@ async function main() {
       `[seed] Canonical EquiFlow seed completed (${RESET_FLAG ? 'reset+seed' : 'idempotent'}) across all ${modelCount} Prisma models.`,
     );
     console.log(
-      `[seed] Period covered: ${monthOf(days(-150))}..2026-12 | 19 horses, 32 stalls, 10 active grooms, 4 vets, 4 trainers, 2 managers, 6 owners.`,
+      '[seed] Demo coverage: July–December 2026; invoices: July–October 2026 only. 19 horses, 32 stalls, 10 active grooms, 4 vets, 4 trainers, 2 managers, 6 owners.',
     );
   } finally {
     await prisma.$disconnect();

@@ -247,7 +247,7 @@ async function main() {
       assert.ok(incidentStatuses.has(st), `Missing IncidentStatus: ${st}`);
     }
 
-    // 7. Tournaments, Registrations & 6-month Invoices
+    // 7. Six-month race coverage and invoices for closed months only.
     const tournaments = await prisma.tournament.findMany();
     const tourStatuses = distinct(tournaments.map((t) => t.status));
     for (const st of Object.values(TournamentStatus)) {
@@ -266,8 +266,36 @@ async function main() {
       assert.ok(invStatuses.has(st), `Missing InvoiceStatus: ${st}`);
     }
     const billingPeriods = distinct(invoices.map((i) => i.billingPeriod));
-    for (const p of ['2026-07', '2026-08', '2026-09', '2026-10', '2026-11', '2026-12']) {
+    for (const p of ['2026-07', '2026-08', '2026-09', '2026-10']) {
       assert.ok(billingPeriods.has(p), `Missing FinancialInvoice period ${p}`);
+    }
+    assert.ok(
+      invoices.every((i) => i.billingPeriod >= '2026-07' && i.billingPeriod <= '2026-10'),
+      'Demo invoices must be limited to July–October 2026',
+    );
+    const raceMonths = distinct(
+      tournaments.map((t) =>
+        new Date(t.raceDate.getTime() + 7 * 3600000).toISOString().slice(0, 7),
+      ),
+    );
+    for (const period of ['2026-07', '2026-08', '2026-09', '2026-10', '2026-11', '2026-12']) {
+      assert.ok(raceMonths.has(period), `Missing tournament month ${period}`);
+    }
+    for (const invoice of invoices) {
+      assert.ok(
+        !invoice.dueAt || invoice.dueAt > invoice.createdAt,
+        `Invoice due date must follow creation: ${invoice.id}`,
+      );
+      const expected =
+        Number(invoice.boardingFee) +
+        Number(invoice.medicalFee) +
+        Number(invoice.trainingFee) -
+        Number(invoice.prizeCredit);
+      assert.strictEqual(
+        Number(invoice.netAmount),
+        expected,
+        `Invoice amount mismatch: ${invoice.id}`,
+      );
     }
 
     // 8. Notifications & Counters

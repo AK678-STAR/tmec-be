@@ -39,7 +39,7 @@ export const PLAN_INCLUDE = {
       ownerId: true,
     },
   },
-  trainer: { select: { id: true, fullName: true, email: true } },
+  trainer: { select: { id: true, fullName: true, email: true, status: true } },
   _count: { select: { workoutSessions: true } },
 } satisfies Prisma.TrainingPlanInclude;
 
@@ -61,8 +61,16 @@ export const WORKOUT_INCLUDE = {
       },
     },
   },
-  assignedStaff: { select: { id: true, fullName: true } },
-  trainingPlan: { select: { id: true, phaseName: true, status: true, phases: true } },
+  assignedStaff: { select: { id: true, fullName: true, status: true } },
+  trainingPlan: {
+    select: {
+      id: true,
+      phaseName: true,
+      status: true,
+      phases: true,
+      trainer: { select: { id: true, fullName: true, status: true } },
+    },
+  },
   resultRecordedBy: { select: { id: true, fullName: true } },
   resultUpdatedBy: { select: { id: true, fullName: true } },
   // Trạng thái lần mô phỏng (nếu có): FE hiện "Đã mô phỏng · chờ ghi kết quả" thay vì "Đã lên lịch".
