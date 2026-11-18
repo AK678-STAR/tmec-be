@@ -317,9 +317,7 @@ describe('TournamentsService', () => {
           { status: TournamentStatus.OPEN_REGISTRATION },
           { id: 'u1', name: 'Mgr', role: 'CLUB_MANAGER' },
         ),
-      ).rejects.toThrow(
-        'Không thể mở đăng ký khi hạn đăng ký đã qua',
-      );
+      ).rejects.toThrow('Không thể mở đăng ký khi hạn đăng ký đã qua');
       expect(prisma.tournament.update).not.toHaveBeenCalled();
     });
 
@@ -517,9 +515,7 @@ describe('TournamentsService', () => {
 
       await expect(
         service.delete('t-1', { id: 'u1', name: 'Mgr', role: 'CLUB_MANAGER' }),
-      ).rejects.toThrow(
-        'Không thể xóa giải đã hủy. Giải đã hủy được giữ lại để tra cứu lịch sử',
-      );
+      ).rejects.toThrow('Không thể xóa giải đã hủy. Giải đã hủy được giữ lại để tra cứu lịch sử');
       expect(prisma.tournament.delete).not.toHaveBeenCalled();
     });
 
@@ -990,9 +986,7 @@ describe('TournamentsService', () => {
           },
           actor,
         ),
-      ).rejects.toThrow(
-        'Chỉ Quản lý CLB được ghi hoặc sửa kết quả giải',
-      );
+      ).rejects.toThrow('Chỉ Quản lý CLB được ghi hoặc sửa kết quả giải');
       expect(prisma.tournamentResult.upsert).not.toHaveBeenCalled();
       expect(audit.record).not.toHaveBeenCalled();
     });
@@ -1024,9 +1018,7 @@ describe('TournamentsService', () => {
           },
           actor,
         ),
-      ).rejects.toThrow(
-        'Chỉ Quản lý CLB được ghi hoặc sửa kết quả giải',
-      );
+      ).rejects.toThrow('Chỉ Quản lý CLB được ghi hoặc sửa kết quả giải');
       expect(prisma.tournamentResult.upsert).not.toHaveBeenCalled();
       expect(audit.record).not.toHaveBeenCalled();
     });

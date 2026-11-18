@@ -1695,7 +1695,13 @@ async function seedTraining(tx: Tx) {
   // từng 15' cho tới khi không vi phạm luật xếp lịch của workouts.service: groom bận theo thời lượng
   // + GROOM_BUFFER_MINUTES, cùng ngựa cách nhau ≥ 30', chạy thử cùng mặt sân không chung khung 15'.
   const groomOfHorse = new Map(HORSES.map((h) => [h.id, h.groomId ?? null]));
-  const placed: Array<{ start: number; end: number; staff: string | null; horse: string; trial: string | null }> = [];
+  const placed: Array<{
+    start: number;
+    end: number;
+    staff: string | null;
+    horse: string;
+    trial: string | null;
+  }> = [];
   const MIN = 60 * 1000;
   workouts.sort((a, b) => +new Date(a.scheduledDate) - +new Date(b.scheduledDate));
   for (const w of workouts) {
@@ -1708,12 +1714,21 @@ async function seedTraining(tx: Tx) {
     const clashes = (s: number) =>
       placed.some(
         (p) =>
-          (w.assignedStaffUserId && p.staff === w.assignedStaffUserId && s < p.end && p.start < s + span) ||
+          (w.assignedStaffUserId &&
+            p.staff === w.assignedStaffUserId &&
+            s < p.end &&
+            p.start < s + span) ||
           (p.horse === w.horseId && Math.abs(p.start - s) < 30 * MIN) ||
           (trial && p.trial === trial && Math.abs(p.start - s) < TRIAL_SLOT_MINUTES * MIN),
       );
     while (clashes(start)) start += 15 * MIN;
-    placed.push({ start, end: start + span, staff: w.assignedStaffUserId ?? null, horse: w.horseId, trial });
+    placed.push({
+      start,
+      end: start + span,
+      staff: w.assignedStaffUserId ?? null,
+      horse: w.horseId,
+      trial,
+    });
     const shift = start - original;
     if (shift) {
       w.scheduledDate = new Date(start);

@@ -504,11 +504,7 @@ export class TournamentsService {
     });
 
     if (!tournament) {
-      throw apiError(
-        HttpStatus.NOT_FOUND,
-        'TOURNAMENT_NOT_FOUND',
-        'Không tìm thấy giải đấu.',
-      );
+      throw apiError(HttpStatus.NOT_FOUND, 'TOURNAMENT_NOT_FOUND', 'Không tìm thấy giải đấu.');
     }
 
     const registeredHorseMap = new Map(tournament.registrations.map((r) => [r.horseId, r.id]));
@@ -634,11 +630,7 @@ export class TournamentsService {
     });
 
     if (!tournament) {
-      throw apiError(
-        HttpStatus.NOT_FOUND,
-        'TOURNAMENT_NOT_FOUND',
-        'Không tìm thấy giải đấu.',
-      );
+      throw apiError(HttpStatus.NOT_FOUND, 'TOURNAMENT_NOT_FOUND', 'Không tìm thấy giải đấu.');
     }
 
     const horse = await this.prisma.horse.findUnique({
@@ -913,11 +905,7 @@ export class TournamentsService {
     });
 
     if (!tournament) {
-      throw apiError(
-        HttpStatus.NOT_FOUND,
-        'TOURNAMENT_NOT_FOUND',
-        'Không tìm thấy giải đấu.',
-      );
+      throw apiError(HttpStatus.NOT_FOUND, 'TOURNAMENT_NOT_FOUND', 'Không tìm thấy giải đấu.');
     }
 
     if (tournament.status !== TournamentStatus.OPEN_REGISTRATION) {
@@ -929,11 +917,7 @@ export class TournamentsService {
     }
 
     if (new Date() > tournament.registrationDeadline) {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'DEADLINE_EXPIRED',
-        'Đã quá hạn đăng ký giải này.',
-      );
+      throw apiError(HttpStatus.BAD_REQUEST, 'DEADLINE_EXPIRED', 'Đã quá hạn đăng ký giải này.');
     }
 
     const horse = await this.prisma.horse.findUnique({
@@ -948,11 +932,7 @@ export class TournamentsService {
     }
 
     if (actor.role === 'HORSE_OWNER' && horse.ownerId !== actor.id) {
-      throw apiError(
-        HttpStatus.FORBIDDEN,
-        'FORBIDDEN',
-        'Bạn chỉ được đăng ký ngựa của mình.',
-      );
+      throw apiError(HttpStatus.FORBIDDEN, 'FORBIDDEN', 'Bạn chỉ được đăng ký ngựa của mình.');
     }
 
     // Chặn cứng: Khóa y tế
@@ -1160,11 +1140,7 @@ export class TournamentsService {
       });
 
       if (!tournament) {
-        throw apiError(
-          HttpStatus.NOT_FOUND,
-          'TOURNAMENT_NOT_FOUND',
-          'Không tìm thấy giải đấu.',
-        );
+        throw apiError(HttpStatus.NOT_FOUND, 'TOURNAMENT_NOT_FOUND', 'Không tìm thấy giải đấu.');
       }
 
       if (actor.role !== 'CLUB_MANAGER') {
@@ -1492,19 +1468,11 @@ export class TournamentsService {
       });
 
       if (!tournament) {
-        throw apiError(
-          HttpStatus.NOT_FOUND,
-          'TOURNAMENT_NOT_FOUND',
-          'Không tìm thấy giải đấu.',
-        );
+        throw apiError(HttpStatus.NOT_FOUND, 'TOURNAMENT_NOT_FOUND', 'Không tìm thấy giải đấu.');
       }
 
       if (tournament.status === TournamentStatus.COMPLETED) {
-        throw apiError(
-          HttpStatus.BAD_REQUEST,
-          'ALREADY_COMPLETED',
-          'Kết quả giải đã được chốt.',
-        );
+        throw apiError(HttpStatus.BAD_REQUEST, 'ALREADY_COMPLETED', 'Kết quả giải đã được chốt.');
       }
 
       if (tournament.status === TournamentStatus.CANCELLED) {
