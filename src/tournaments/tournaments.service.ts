@@ -19,6 +19,7 @@ import { QueryTournamentDto } from './dto/query-tournament.dto';
 import { ChangeTournamentStatusDto } from './dto/change-tournament-status.dto';
 import { RegisterHorseDto } from './dto/register-horse.dto';
 import { BatchRecordResultsDto } from './dto/record-result.dto';
+import { clubDate } from '../training/training-rules';
 
 export interface TournamentActor {
   id: string;
@@ -32,6 +33,42 @@ export interface PrizeSplit {
   trainerCut: number;
   jockeyCut: number;
   netOwnerPayout: number;
+}
+
+/** BR-RAC-03: lý do ngựa không đạt giới hạn cân nặng của giải; null = đạt (hoặc giải không giới hạn). */
+export function weightLimitIssue(
+  weightKg: number | null | undefined,
+  minWeightKg: number | null | undefined,
+  maxWeightKg: number | null | undefined,
+): string | null {
+  if (minWeightKg == null && maxWeightKg == null) return null;
+  const range =
+    minWeightKg != null && maxWeightKg != null
+      ? `${minWeightKg}–${maxWeightKg} kg`
+      : minWeightKg != null
+        ? `từ ${minWeightKg} kg`
+        : `đến ${maxWeightKg} kg`;
+  if (weightKg == null) return `Chưa cập nhật cân nặng (giải yêu cầu ${range})`;
+  if (minWeightKg != null && weightKg < minWeightKg)
+    return `Nặng ${weightKg} kg, giải yêu cầu ${range}`;
+  if (maxWeightKg != null && weightKg > maxWeightKg)
+    return `Nặng ${weightKg} kg, giải yêu cầu ${range}`;
+  return null;
+}
+
+function assertWeightRange(min: number | null | undefined, max: number | null | undefined) {
+  if (min != null && max != null && min > max) {
+    throw apiError(
+      HttpStatus.BAD_REQUEST,
+      'INVALID_WEIGHT_RANGE',
+      'Cân nặng tối thiểu phải nhỏ hơn hoặc bằng cân nặng tối đa.',
+    );
+  }
+}
+
+function ageAtRace(dob: Date | null | undefined, raceDate: Date): number {
+  if (!dob || isNaN(new Date(dob).getTime())) return 4;
+  return Math.floor((raceDate.getTime() - new Date(dob).getTime()) / (365.25 * 86400000));
 }
 
 /**
@@ -199,6 +236,7 @@ export class TournamentsService {
   async create(dto: CreateTournamentDto, actor: TournamentActor) {
     const raceDate = new Date(dto.raceDate);
     const deadline = new Date(dto.registrationDeadline);
+    assertWeightRange(dto.minWeightKg, dto.maxWeightKg);
 
     if (deadline > raceDate) {
       throw apiError(
@@ -252,6 +290,8 @@ export class TournamentsService {
         distanceMeters: dto.distanceMeters,
         trackType: dto.trackType ?? TrackSurface.TURF,
         prizePool: dto.prizePool ?? 0,
+        minWeightKg: dto.minWeightKg ?? null,
+        maxWeightKg: dto.maxWeightKg ?? null,
         registrationDeadline: deadline,
         status: initialStatus,
       },
@@ -365,6 +405,11 @@ export class TournamentsService {
       );
     }
 
+    assertWeightRange(
+      dto.minWeightKg !== undefined ? dto.minWeightKg : existing.minWeightKg,
+      dto.maxWeightKg !== undefined ? dto.maxWeightKg : existing.maxWeightKg,
+    );
+
     if (dto.status) {
       this.validateStatusTransition(existing.status, dto.status, deadline);
     }
@@ -379,6 +424,8 @@ export class TournamentsService {
         ...(dto.trackType && { trackType: dto.trackType }),
         ...(dto.prizePool !== undefined && { prizePool: dto.prizePool }),
         ...(dto.registrationDeadline && { registrationDeadline: deadline }),
+        ...(dto.minWeightKg !== undefined && { minWeightKg: dto.minWeightKg }),
+        ...(dto.maxWeightKg !== undefined && { maxWeightKg: dto.maxWeightKg }),
         ...(dto.status && { status: dto.status }),
       },
     });
@@ -497,6 +544,36 @@ export class TournamentsService {
    * Rà soát điều kiện tham gia giải của toàn bộ đàn ngựa trong CLB
    * Phục vụ SC-5.02 (Race Eligibility Check)
    */
+  /**
+   * BR-RAC-04: ngựa đã có lượt đăng ký còn hiệu lực ở giải khác (chưa hủy) diễn ra cùng ngày (giờ CLB).
+   * Trả về Map horseId -> tên giải trùng ngày.
+   */
+  private async sameDayRaces(
+    tournament: { id: string; raceDate: Date },
+    horseIds: string[],
+  ): Promise<Map<string, string>> {
+    if (horseIds.length === 0 || !this.prisma.tournamentRegistration?.findMany) return new Map();
+    const day = clubDate(tournament.raceDate);
+    const t = tournament.raceDate.getTime();
+    const regs = await this.prisma.tournamentRegistration.findMany({
+      where: {
+        horseId: { in: horseIds },
+        tournamentId: { not: tournament.id },
+        status: { in: [RegistrationStatus.REGISTERED, RegistrationStatus.CONFIRMED] },
+        tournament: {
+          status: { not: TournamentStatus.CANCELLED },
+          raceDate: { gte: new Date(t - 86400000), lte: new Date(t + 86400000) },
+        },
+      },
+      select: { horseId: true, tournament: { select: { name: true, raceDate: true } } },
+    });
+    return new Map(
+      (regs ?? [])
+        .filter((r) => clubDate(r.tournament.raceDate) === day)
+        .map((r) => [r.horseId, r.tournament.name]),
+    );
+  }
+
   async getEligibility(tournamentId: string, actor?: CurrentUserPayload) {
     const tournament = await this.prisma.tournament.findUnique({
       where: { id: tournamentId },
@@ -539,6 +616,12 @@ export class TournamentsService {
 
     const eligible: any[] = [];
     const ineligible: any[] = [];
+    const raceDate = new Date(tournament.raceDate);
+    const minAge = tournament.minAgeYears ?? 2;
+    const sameDay = await this.sameDayRaces(
+      { id: tournament.id, raceDate },
+      horses.map((h) => h.id),
+    );
 
     for (const h of horses) {
       const isRegistered = registeredHorseMap.has(h.id);
@@ -571,6 +654,20 @@ export class TournamentsService {
           `Insufficient recent training sessions (${completedWorkouts}/4 required in past 30 days)`,
         );
       }
+
+      // BR-RAC-03: tuổi và cân nặng theo quy định của giải
+      const age = ageAtRace(h.dob, raceDate);
+      if (age < minAge) reasons.push(`Mới ${age} tuổi, giải yêu cầu tối thiểu ${minAge} tuổi`);
+      const weightIssue = weightLimitIssue(
+        h.weightKg,
+        tournament.minWeightKg,
+        tournament.maxWeightKg,
+      );
+      if (weightIssue) reasons.push(weightIssue);
+
+      // BR-RAC-04: không đăng ký hai giải cùng ngày
+      const clash = sameDay.get(h.id);
+      if (clash) reasons.push(`Đã đăng ký giải "${clash}" cùng ngày thi đấu`);
 
       const horseData = {
         id: h.id,
@@ -606,6 +703,9 @@ export class TournamentsService {
         trackType: tournament.trackType,
         status: tournament.status,
         registrationDeadline: tournament.registrationDeadline,
+        minAgeYears: minAge,
+        minWeightKg: tournament.minWeightKg,
+        maxWeightKg: tournament.maxWeightKg,
       },
       eligible,
       ineligible,
@@ -669,6 +769,8 @@ export class TournamentsService {
       key:
         | 'STATUS'
         | 'AGE'
+        | 'WEIGHT'
+        | 'SAME_DAY_RACE'
         | 'MEDICAL_LOCK'
         | 'DEBT_IMPOUND'
         | 'WITHDRAWAL_PERIOD'
@@ -724,6 +826,36 @@ export class TournamentsService {
     if (!agePassed) {
       blockingReasons.push(
         `Chiến mã ${horse.name} hiện ${ageYears} tuổi, chưa đạt độ tuổi tối thiểu ${minAge} tuổi của giải đấu.`,
+      );
+    }
+
+    // 2b. Cân nặng theo giới hạn của giải (BR-RAC-03)
+    const weightIssue = weightLimitIssue(
+      horse.weightKg,
+      tournament.minWeightKg,
+      tournament.maxWeightKg,
+    );
+    checks.push({
+      key: 'WEIGHT',
+      label: 'Cân nặng theo quy định giải',
+      passed: !weightIssue,
+      details: weightIssue ?? 'Đạt giới hạn cân nặng của giải',
+    });
+    if (weightIssue) blockingReasons.push(`Chiến mã ${horse.name}: ${weightIssue}.`);
+
+    // 2c. Không đăng ký hai giải cùng ngày (BR-RAC-04)
+    const clash = (await this.sameDayRaces({ id: tournament.id, raceDate }, [horse.id])).get(
+      horse.id,
+    );
+    checks.push({
+      key: 'SAME_DAY_RACE',
+      label: 'Không trùng ngày thi đấu',
+      passed: !clash,
+      details: clash ? `Đã đăng ký giải "${clash}" cùng ngày` : 'Không có giải khác cùng ngày',
+    });
+    if (clash) {
+      blockingReasons.push(
+        `Chiến mã ${horse.name} đã đăng ký giải "${clash}" diễn ra cùng ngày thi đấu.`,
       );
     }
 

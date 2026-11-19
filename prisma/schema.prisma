@@ -723,7 +723,6 @@ model InjuryLog {
   @@index([medicalRecordId])
 }
 
-
 model MedicalLock {
   id                   String         @id @default(uuid())
   lockCode             String?        @unique // e.g. KH-000001
@@ -752,7 +751,6 @@ model MedicalLock {
   @@index([horseId, isLocked])
   @@index([medicalRecordId])
 }
-
 
 model PreventiveTypeCatalog {
   id                String         @id @default(uuid())
@@ -880,6 +878,9 @@ model Tournament {
   trackCondition       String?          @default("GOOD")
   maxFieldSize         Int              @default(12)
   minAgeYears          Int              @default(2)
+  /// BR-RAC-03: giới hạn cân nặng ngựa (kg); null = không giới hạn
+  minWeightKg          Float?
+  maxWeightKg          Float?
   registrationDeadline DateTime
   status               TournamentStatus @default(UPCOMING)
   createdAt            DateTime         @default(now())

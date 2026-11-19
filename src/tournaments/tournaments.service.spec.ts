@@ -1455,9 +1455,103 @@ describe('TournamentsService', () => {
       });
 
       expect(result.eligible).toBe(true);
-      expect(result.checks).toHaveLength(6);
+      expect(result.checks).toHaveLength(8);
       expect(result.checks.every((c: any) => c.passed)).toBe(true);
       expect(result.blockingReasons).toHaveLength(0);
+    });
+
+    it('blocks a horse outside the tournament weight limit (BR-RAC-03)', async () => {
+      prisma.tournament.findUnique.mockResolvedValue({
+        id: 't-1',
+        name: 'Spring Cup',
+        raceDate: new Date('2026-11-20T09:00:00Z'),
+        minAgeYears: 2,
+        minWeightKg: 420,
+        maxWeightKg: 520,
+        registrations: [],
+      });
+      prisma.horse.findUnique.mockResolvedValue({
+        id: 'h-1',
+        name: 'Thunder',
+        dob: new Date('2022-01-01'),
+        weightKg: 540,
+        status: HorseStatus.ACTIVE,
+        isMedicalLocked: false,
+        isDebtImpounded: false,
+        ownerId: 'owner-1',
+        workoutSessions: [{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }, { id: 'w4' }],
+      });
+      prisma.medicalRecord.findMany.mockResolvedValue([]);
+      prisma.tournamentRegistration.findMany.mockResolvedValue([]);
+
+      const result = await service.checkHorseEligibility('t-1', 'h-1', {
+        id: 'owner-1',
+        name: 'Owner',
+        role: 'HORSE_OWNER',
+      });
+
+      expect(result.eligible).toBe(false);
+      expect(result.checks.find((c: any) => c.key === 'WEIGHT')?.passed).toBe(false);
+      expect(result.blockingReasons.join(' ')).toContain('420–520 kg');
+    });
+
+    it('blocks a horse already registered in another race on the same club day (BR-RAC-04)', async () => {
+      prisma.tournament.findUnique.mockResolvedValue({
+        id: 't-1',
+        name: 'Spring Cup',
+        raceDate: new Date('2026-11-20T09:00:00Z'),
+        minAgeYears: 2,
+        registrations: [],
+      });
+      prisma.horse.findUnique.mockResolvedValue({
+        id: 'h-1',
+        name: 'Thunder',
+        dob: new Date('2022-01-01'),
+        status: HorseStatus.ACTIVE,
+        isMedicalLocked: false,
+        isDebtImpounded: false,
+        ownerId: 'owner-1',
+        workoutSessions: [{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }, { id: 'w4' }],
+      });
+      prisma.medicalRecord.findMany.mockResolvedValue([]);
+      // 20/11 21:00 UTC = 21/11 04:00 giờ CLB -> khác ngày, không tính; 20/11 01:00 UTC = cùng ngày.
+      prisma.tournamentRegistration.findMany.mockResolvedValue([
+        {
+          horseId: 'h-1',
+          tournament: { name: 'Night Cup', raceDate: new Date('2026-11-20T21:00:00Z') },
+        },
+        {
+          horseId: 'h-1',
+          tournament: { name: 'Morning Cup', raceDate: new Date('2026-11-20T01:00:00Z') },
+        },
+      ]);
+
+      const result = await service.checkHorseEligibility('t-1', 'h-1', {
+        id: 'owner-1',
+        name: 'Owner',
+        role: 'HORSE_OWNER',
+      });
+
+      expect(result.eligible).toBe(false);
+      expect(result.blockingReasons.join(' ')).toContain('Morning Cup');
+      expect(result.blockingReasons.join(' ')).not.toContain('Night Cup');
+    });
+
+    it('rejects a tournament whose minimum weight exceeds the maximum', async () => {
+      await expect(
+        service.create(
+          {
+            name: 'Cup',
+            raceDate: '2026-12-20T09:00:00Z',
+            location: 'Track',
+            distanceMeters: 1600,
+            registrationDeadline: '2026-12-10T09:00:00Z',
+            minWeightKg: 560,
+            maxWeightKg: 420,
+          } as any,
+          { id: 'cm', name: 'CM', role: 'CLUB_MANAGER' },
+        ),
+      ).rejects.toThrow('Cân nặng tối thiểu phải nhỏ hơn hoặc bằng cân nặng tối đa.');
     });
 
     it('detects active medication in withdrawal period and blocks registration', async () => {
