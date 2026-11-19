@@ -35,24 +35,25 @@ export interface PrizeSplit {
   netOwnerPayout: number;
 }
 
-/** BR-RAC-03: lý do ngựa không đạt giới hạn cân nặng của giải; null = đạt (hoặc giải không giới hạn). */
+/**
+ * BR-RAC-03: ngựa có đạt giới hạn cân nặng của giải không; null = đạt (hoặc giải không giới hạn).
+ * range viết bằng ký hiệu (≥, ≤, –) để câu Việt/Anh của FE dịch được nguyên khoảng.
+ */
 export function weightLimitIssue(
   weightKg: number | null | undefined,
   minWeightKg: number | null | undefined,
   maxWeightKg: number | null | undefined,
-): string | null {
+): { range: string; missing: boolean } | null {
   if (minWeightKg == null && maxWeightKg == null) return null;
   const range =
     minWeightKg != null && maxWeightKg != null
       ? `${minWeightKg}–${maxWeightKg} kg`
       : minWeightKg != null
-        ? `từ ${minWeightKg} kg`
-        : `đến ${maxWeightKg} kg`;
-  if (weightKg == null) return `Chưa cập nhật cân nặng (giải yêu cầu ${range})`;
-  if (minWeightKg != null && weightKg < minWeightKg)
-    return `Nặng ${weightKg} kg, giải yêu cầu ${range}`;
-  if (maxWeightKg != null && weightKg > maxWeightKg)
-    return `Nặng ${weightKg} kg, giải yêu cầu ${range}`;
+        ? `≥ ${minWeightKg} kg`
+        : `≤ ${maxWeightKg} kg`;
+  if (weightKg == null) return { range, missing: true };
+  if (minWeightKg != null && weightKg < minWeightKg) return { range, missing: false };
+  if (maxWeightKg != null && weightKg > maxWeightKg) return { range, missing: false };
   return null;
 }
 
@@ -663,7 +664,12 @@ export class TournamentsService {
         tournament.minWeightKg,
         tournament.maxWeightKg,
       );
-      if (weightIssue) reasons.push(weightIssue);
+      if (weightIssue)
+        reasons.push(
+          weightIssue.missing
+            ? `Chưa cập nhật cân nặng, giải yêu cầu ${weightIssue.range}`
+            : `Nặng ${h.weightKg} kg, giải yêu cầu ${weightIssue.range}`,
+        );
 
       // BR-RAC-04: không đăng ký hai giải cùng ngày
       const clash = sameDay.get(h.id);
@@ -839,9 +845,15 @@ export class TournamentsService {
       key: 'WEIGHT',
       label: 'Cân nặng theo quy định giải',
       passed: !weightIssue,
-      details: weightIssue ?? 'Đạt giới hạn cân nặng của giải',
+      details: weightIssue ? `Giải yêu cầu ${weightIssue.range}` : 'Đạt giới hạn cân nặng của giải',
     });
-    if (weightIssue) blockingReasons.push(`Chiến mã ${horse.name}: ${weightIssue}.`);
+    if (weightIssue) {
+      blockingReasons.push(
+        weightIssue.missing
+          ? `Chiến mã ${horse.name} chưa cập nhật cân nặng, giải yêu cầu ${weightIssue.range}.`
+          : `Chiến mã ${horse.name} nặng ${horse.weightKg} kg, giải yêu cầu ${weightIssue.range}.`,
+      );
+    }
 
     // 2c. Không đăng ký hai giải cùng ngày (BR-RAC-04)
     const clash = (await this.sameDayRaces({ id: tournament.id, raceDate }, [horse.id])).get(
