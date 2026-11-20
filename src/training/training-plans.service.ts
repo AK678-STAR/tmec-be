@@ -12,6 +12,7 @@ import {
   clubDate,
   GROOM_BUFFER_MINUTES,
   isHeavy,
+  MAX_HORSES_PER_TRAINER,
   MAX_PLAN_WEEKS,
   PENDING_WORKOUT_STATUSES,
   PlanPhase,
@@ -196,6 +197,7 @@ export class TrainingPlansService {
       );
     }
     await this.assertNoOtherTrainer(horse.id, horse.name, user.userId);
+    await this.assertTrainerCapacity(horse.id, horse.name, user.userId);
 
     if (
       dto.phaseName &&
@@ -597,6 +599,60 @@ export class TrainingPlansService {
     }
   }
 
+  /**
+   * #5: một HLV phụ trách tối đa 3 ngựa (giáo án Nháp / Đang áp dụng).
+   * #6: các ngựa đó phải ở cùng một khu chuồng.
+   */
+  private async assertTrainerCapacity(horseId: string, horseName: string, userId: string) {
+    const plans = await this.prisma.trainingPlan.findMany({
+      where: {
+        trainerUserId: userId,
+        status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] },
+        horseId: { not: horseId },
+        horse: { deletedAt: null },
+      },
+      select: { horseId: true, horse: { select: { name: true } } },
+    });
+    const others = [...new Map(plans.map((p) => [p.horseId, p.horse.name])).entries()];
+    if (others.length >= MAX_HORSES_PER_TRAINER) {
+      const horses = others.map(([, name]) => name).join(', ');
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'TRAINER_HORSE_LIMIT',
+        `Mỗi HLV chỉ phụ trách tối đa ${MAX_HORSES_PER_TRAINER} ngựa. Bạn đang phụ trách: ${horses}.`,
+        { max: MAX_HORSES_PER_TRAINER, horses },
+      );
+    }
+    if (others.length === 0) return;
+    const allocs = await this.prisma.stallAllocation.findMany({
+      where: { isActive: true, horseId: { in: [horseId, ...others.map(([id]) => id)] } },
+      select: {
+        horseId: true,
+        stall: { select: { zoneId: true, zoneRef: { select: { name: true } } } },
+      },
+    });
+    const zoneOf = new Map(allocs.map((a) => [a.horseId, a.stall]));
+    const mine = zoneOf.get(horseId);
+    // shortcut: ngựa chưa có ô chuồng thì chưa so được khu -> cho qua, khi xếp chuồng mới biết.
+    if (!mine?.zoneId) return;
+    const other = others
+      .map(([id, name]) => ({ name, stall: zoneOf.get(id) }))
+      .find((o) => o.stall?.zoneId && o.stall.zoneId !== mine.zoneId);
+    if (other) {
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'TRAINER_ZONE_MISMATCH',
+        `${horseName} ở khu ${mine.zoneRef?.name ?? ''}, còn ${other.name} bạn đang phụ trách ở khu ${other.stall?.zoneRef?.name ?? ''}. Một HLV chỉ phụ trách ngựa trong cùng một khu chuồng.`,
+        {
+          horse: horseName,
+          zone: mine.zoneRef?.name,
+          otherHorse: other.name,
+          otherZone: other.stall?.zoneRef?.name,
+        },
+      );
+    }
+  }
+
   /** Các dòng ✖ của DL-2.02 (chặn) và dòng ⚠ (cần xác nhận đã trao đổi với VET). */
   private async assertCanActivate(
     tx: Tx,
@@ -723,6 +779,7 @@ export class TrainingPlansService {
       );
     }
     await this.assertNoOtherTrainer(horse.id, horse.name, user.userId);
+    await this.assertTrainerCapacity(horse.id, horse.name, user.userId);
 
     const now = new Date();
     const startDate = dto.startDate ? new Date(dto.startDate) : addDays(startOfClubDay(now), 1);
@@ -730,7 +787,7 @@ export class TrainingPlansService {
     const shift = startDate.getTime() - source.startDate.getTime();
     const copyWorkouts = dto.copyWorkouts !== false;
 
-    // Bản sao giữ nguyên groom + giờ -> phải bỏ các buổi trùng lịch groom (thời lượng + 15 phút đệm)
+    // Bản sao do HLV đang thao tác dẫn + cưỡi -> phải bỏ các buổi trùng lịch HLV (thời lượng + 15 phút đệm)
     // hoặc trùng giờ của ngựa đích, như kiểm tra khi tạo buổi tập lẻ.
     const MIN = 60 * 1000;
     const span = (start: number, type?: string | null) =>
@@ -743,13 +800,10 @@ export class TrainingPlansService {
     const copies: typeof candidates = [];
     if (candidates.length > 0) {
       const times = candidates.map(({ date }) => date.getTime());
-      const grooms = [
-        ...new Set(candidates.map(({ w }) => w.assignedStaffUserId).filter(Boolean)),
-      ] as string[];
       const taken = await this.prisma.workoutSession.findMany({
         where: {
           status: { not: WorkoutStatus.CANCELLED },
-          OR: [{ assignedStaffUserId: { in: grooms } }, { horseId: horse.id }],
+          OR: [{ trainingPlan: { trainerUserId: user.userId } }, { horseId: horse.id }],
           scheduledDate: {
             gte: new Date(Math.min(...times) - 120 * MIN),
             lte: new Date(Math.max(...times) + 120 * MIN),
@@ -757,14 +811,14 @@ export class TrainingPlansService {
         },
         select: {
           horseId: true,
-          assignedStaffUserId: true,
+          trainingPlan: { select: { trainerUserId: true } },
           scheduledDate: true,
           workoutType: true,
         },
       });
       const busy = (taken ?? []).map((t) => ({
         horseId: t.horseId,
-        groom: t.assignedStaffUserId,
+        trainer: t.trainingPlan?.trainerUserId,
         start: t.scheduledDate.getTime(),
         type: t.workoutType,
       }));
@@ -773,7 +827,7 @@ export class TrainingPlansService {
         const [aStart, aEnd] = span(start, c.w.workoutType);
         const clash = busy.some((b) => {
           if (b.horseId === horse.id && Math.abs(b.start - start) < 30 * MIN) return true;
-          if (!c.w.assignedStaffUserId || b.groom !== c.w.assignedStaffUserId) return false;
+          if (b.trainer !== user.userId) return false;
           const [bStart, bEnd] = span(b.start, b.type);
           return aStart < bEnd && bStart < aEnd;
         });
@@ -781,7 +835,7 @@ export class TrainingPlansService {
         copies.push(c);
         busy.push({
           horseId: horse.id,
-          groom: c.w.assignedStaffUserId,
+          trainer: user.userId,
           start,
           type: c.w.workoutType,
         });
@@ -814,7 +868,7 @@ export class TrainingPlansService {
               const blocked = horse.isMedicalLocked && isHeavy(w.workoutType, w.intensity);
               return {
                 horseId: horse.id,
-                assignedStaffUserId: w.assignedStaffUserId,
+                assignedStaffUserId: user.userId,
                 phaseId: w.phaseId,
                 scheduledDate: date,
                 distanceMeters: w.distanceMeters,
@@ -824,7 +878,7 @@ export class TrainingPlansService {
                 workoutType: w.workoutType,
                 intensity: w.intensity,
                 trackSurface: w.trackSurface,
-                jockeyName: w.jockeyName,
+                jockeyName: user.fullName,
                 trainerNotes: w.trainerNotes,
                 status: blocked ? WorkoutStatus.BLOCKED : WorkoutStatus.SCHEDULED,
                 statusReason: blocked ? 'Ngựa đang bị Khóa huấn luyện y tế' : null,

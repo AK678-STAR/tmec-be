@@ -67,17 +67,17 @@ export class CreateWorkoutSessionDto {
   @IsIn([...WORKOUT_SURFACES], { message: 'Vui lòng chọn mặt sân.' })
   trackSurface: string;
 
-  @ApiPropertyOptional({ description: 'Tên nài ngựa (bắt buộc với BREEZE, TRIAL)' })
+  @ApiPropertyOptional({ description: 'Bỏ qua: HLV của giáo án luôn là nài (#7)' })
   @IsOptional()
   @IsString()
   @Length(2, 100, { message: 'Tên nài ngựa phải từ 2 đến 100 ký tự.' })
   @Transform(trimString)
   jockeyName?: string;
 
-  @ApiProperty({ description: 'Nhân viên chăm sóc (GROOM) phụ trách' })
-  @IsNotEmpty({ message: 'Vui lòng chọn nhân viên chăm sóc.' })
+  @ApiPropertyOptional({ description: 'Bỏ qua: HLV của giáo án tự dẫn buổi tập (#4)' })
+  @IsOptional()
   @IsString()
-  assignedStaffUserId: string;
+  assignedStaffUserId?: string;
 
   @ApiPropertyOptional({ description: 'Ghi chú chỉ dẫn (≤ 500 ký tự)' })
   @IsOptional()

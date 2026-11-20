@@ -88,7 +88,7 @@ export interface WorkoutDraft {
   repetitions: number;
   targetSpeedKmh?: number | null;
   jockeyName?: string | null;
-  assignedStaffUserId: string;
+  assignedStaffUserId?: string | null;
   vetConsulted?: boolean;
 }
 
@@ -96,6 +96,7 @@ export type PlanForCheck = {
   id: string;
   status: PlanStatus;
   horseId: string;
+  trainerUserId: string;
   startDate: Date;
   endDate: Date;
   phases: Prisma.JsonValue;
