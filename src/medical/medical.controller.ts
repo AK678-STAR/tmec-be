@@ -233,6 +233,13 @@ export class MedicalController {
     return this.records.getMedicalRecordDetail(id, user);
   }
 
+  @Get('records/:id/medication-log')
+  @RequirePermission('viewMedical')
+  @ApiOperation({ summary: 'Nhật ký cho thuốc của bệnh án (đã cho / bỏ lỡ / sắp tới)' })
+  getMedicationLog(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
+    return this.records.getMedicationLog(id, user);
+  }
+
   @Put('records/:id')
   @Roles(UserRole.VETERINARIAN)
   @ApiOperation({ summary: 'Chỉnh sửa bệnh án' })
