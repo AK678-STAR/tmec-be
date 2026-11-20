@@ -177,7 +177,7 @@ export class HealthOverviewService {
         dob: horse.dob?.toISOString(),
         gender: horse.gender,
         color: horse.color,
-        stallCode: horse.stallAllocations[0]?.stall?.code || 'Unassigned',
+        stallCode: horse.stallAllocations[0]?.stall?.code || null,
         healthStatus: horse.status || 'RESTING',
         isMedicalLocked,
         activeLock,

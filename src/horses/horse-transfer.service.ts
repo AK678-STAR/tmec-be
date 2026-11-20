@@ -10,7 +10,32 @@ import { TransferHorseOwnerDto } from './dto/transfer-owner.dto';
 
 const person = { select: { id: true, fullName: true, email: true } };
 const REQUEST_INCLUDE = {
-  horse: { select: { id: true, name: true, horseCode: true } },
+  // Tóm tắt tình trạng + vòng đời để chủ mới biết mình sắp nhận con ngựa thế nào.
+  horse: {
+    select: {
+      id: true,
+      name: true,
+      horseCode: true,
+      breed: true,
+      gender: true,
+      dob: true,
+      color: true,
+      avatarUrl: true,
+      status: true,
+      isMedicalLocked: true,
+      isDebtImpounded: true,
+      createdAt: true,
+      _count: {
+        select: {
+          medicalRecords: true,
+          injuryLogs: true,
+          workoutSessions: true,
+          tournamentRegistrations: true,
+          incidents: true,
+        },
+      },
+    },
+  },
   fromOwner: person,
   toOwner: person,
   requestedBy: person,
