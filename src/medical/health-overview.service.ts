@@ -4,6 +4,7 @@ import { CurrentUserPayload } from '../common/decorators/current-user.decorator'
 import { Role, HorseStatus, Prisma, PreventiveStatus } from '@prisma/client';
 import { HealthBoardQueryDto } from './dto/health-board-query.dto';
 import { PrismaService } from '../prisma/prisma.service';
+import { groomZoneIds, horsesInZones } from '../shift-rosters/groom-zones';
 import { MedicalAccessService } from './medical-access.service';
 import { getClubDateBounds } from './preventive-care.service';
 
@@ -286,16 +287,12 @@ export class HealthOverviewService {
     const now = new Date();
     const { startOfTodayClub, endOf30Days } = getClubDateBounds(now);
     const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    // C-03: OWNER chỉ thấy ngựa mình sở hữu, GROOM chỉ thấy ngựa mình đang chăm (giống getMedicalRecords).
+    // C-03: OWNER chỉ thấy ngựa mình sở hữu, GROOM chỉ thấy ngựa trong khu mình trực hôm nay (giống getMedicalRecords).
     const scope: Prisma.HorseWhereInput =
       currentUser.role === Role.HORSE_OWNER
         ? { ownerId: currentUser.userId }
         : currentUser.role === Role.GROOM
-          ? {
-              stallAllocations: {
-                some: { isActive: true, assignedGroomUserId: currentUser.userId },
-              },
-            }
+          ? horsesInZones(await groomZoneIds(this.prisma, currentUser.userId))
           : {};
     const horses = await this.prisma.horse.findMany({
       where: { deletedAt: null, status: { not: HorseStatus.RETIRED }, ...scope },

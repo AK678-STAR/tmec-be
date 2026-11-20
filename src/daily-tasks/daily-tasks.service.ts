@@ -507,11 +507,7 @@ export class DailyTasksService {
 
     // Nếu người dùng bật cờ "Chỉ việc của tôi" hoặc là Groom xem mặc định (khi cả onlyMine và onlyMyTasks chưa được truyền)
     const isOnlyMine =
-      query.onlyMine === true ||
-      query.onlyMyTasks === true ||
-      (currentUser.role === Role.GROOM &&
-        query.onlyMine === undefined &&
-        query.onlyMyTasks === undefined);
+      query.onlyMine === true || query.onlyMyTasks === true || currentUser.role === Role.GROOM;
 
     if (isOnlyMine && currentUser.userId) {
       const myRosters = await this.prisma.shiftRoster.findMany({
@@ -523,10 +519,7 @@ export class DailyTasksService {
       });
       const myZoneIds = myRosters.map((r) => r.zoneId);
 
-      const groomOrConditions: any[] = [
-        { assignedGroomUserId: currentUser.userId },
-        { completedById: currentUser.userId },
-      ];
+      const groomOrConditions: any[] = [{ completedById: currentUser.userId }];
       if (myZoneIds.length > 0) {
         groomOrConditions.push({ stallZoneId: { in: myZoneIds } });
       }
@@ -534,10 +527,7 @@ export class DailyTasksService {
       if (query.zoneId) {
         where.stallZoneId = query.zoneId;
         if (!myZoneIds.includes(query.zoneId)) {
-          where.OR = [
-            { assignedGroomUserId: currentUser.userId },
-            { completedById: currentUser.userId },
-          ];
+          where.OR = [{ completedById: currentUser.userId }];
         }
       } else {
         where.OR = groomOrConditions;
@@ -594,28 +584,23 @@ export class DailyTasksService {
       return task; // Đã xong rồi, trả về idempotent
     }
 
-    if (
-      currentUser.role === Role.GROOM &&
-      task.assignedGroomUserId &&
-      task.assignedGroomUserId !== currentUser.userId
-    ) {
-      const hasZoneRoster =
-        task.date && task.stallZoneId
-          ? await this.prisma.shiftRoster?.findFirst?.({
-              where: {
-                date: task.date,
-                zoneId: task.stallZoneId,
-                groomUserId: currentUser.userId,
-              },
-              select: { id: true },
-            })
-          : null;
+    // #1: Groom chỉ làm việc ở khu mình trực trong ngày của việc đó.
+    // shortcut: việc chưa gắn khu / ngày (dữ liệu cũ) thì chưa kiểm được khu nên cho qua.
+    if (currentUser.role === Role.GROOM && task.date && task.stallZoneId) {
+      const hasZoneRoster = await this.prisma.shiftRoster?.findFirst?.({
+        where: {
+          date: task.date,
+          zoneId: task.stallZoneId,
+          groomUserId: currentUser.userId,
+        },
+        select: { id: true },
+      });
 
       if (!hasZoneRoster) {
         throw apiError(
           HttpStatus.FORBIDDEN,
           'TASK_NOT_ASSIGNED_TO_YOU',
-          'Bạn chỉ có thể hoàn thành công việc chăm sóc được phân công cho mình hoặc tại khu trực của mình.',
+          'Bạn chỉ hoàn thành được công việc chăm sóc ở khu mình trực trong ngày đó.',
         );
       }
     }

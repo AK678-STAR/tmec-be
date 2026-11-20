@@ -18,6 +18,7 @@ import {
   MedicalLockQueryDto,
 } from './dto/medical-lock.dto';
 import { PrismaService } from '../prisma/prisma.service';
+import { groomZoneIds, horsesInZones } from '../shift-rosters/groom-zones';
 import { AuditService } from '../audit/audit.service';
 import { MedicalAccessService } from './medical-access.service';
 import { SimulatorRealtimeService } from '../simulator/simulator-realtime.service';
@@ -581,14 +582,7 @@ export class MedicalLocksService {
     } else if (currentUser.role === Role.HORSE_OWNER) {
       where.horse = { ownerId: currentUser.userId };
     } else if (currentUser.role === Role.GROOM) {
-      where.horse = {
-        stallAllocations: {
-          some: {
-            assignedGroomUserId: currentUser.userId,
-            isActive: true,
-          },
-        },
-      };
+      where.horse = horsesInZones(await groomZoneIds(this.prisma, currentUser.userId));
     }
 
     if (tab === 'ACTIVE') {

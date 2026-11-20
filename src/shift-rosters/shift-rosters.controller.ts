@@ -35,6 +35,15 @@ export class ShiftRostersController {
     return this.service.findAll(query);
   }
 
+  @Get('overview')
+  @Roles(UserRole.CLUB_MANAGER)
+  @ApiOperation({
+    summary: '#2 Tổng quan ca trực trong ngày: ai trực khu nào, việc xong bao nhiêu',
+  })
+  overview(@Query('date') date?: string) {
+    return this.service.overview(date);
+  }
+
   @Get('my')
   @Roles(UserRole.GROOM)
   @ApiOperation({ summary: 'SC-4.01 / SC-4.05 Ca trực của tôi và ngựa phụ trách (Groom)' })

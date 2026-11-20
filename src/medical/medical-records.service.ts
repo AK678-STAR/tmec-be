@@ -16,6 +16,7 @@ import { CreateFollowUpDto } from './dto/follow-up.dto';
 import { CloseMedicalRecordDto, ReopenMedicalRecordDto } from './dto/close-record.dto';
 import { FinalizeRecordDto } from './dto/finalize-record.dto';
 import { PrismaService } from '../prisma/prisma.service';
+import { groomZoneIds, horsesInZones } from '../shift-rosters/groom-zones';
 import { AuditService } from '../audit/audit.service';
 import { MedicalAccessService } from './medical-access.service';
 import { MedicalLocksService } from './medical-locks.service';
@@ -196,14 +197,7 @@ export class MedicalRecordsService {
     } else if (currentUser.role === Role.HORSE_OWNER) {
       where.horse = { ownerId: currentUser.userId };
     } else if (currentUser.role === Role.GROOM) {
-      where.horse = {
-        stallAllocations: {
-          some: {
-            assignedGroomUserId: currentUser.userId,
-            isActive: true,
-          },
-        },
-      };
+      where.horse = horsesInZones(await groomZoneIds(this.prisma, currentUser.userId));
     }
 
     if (status) {

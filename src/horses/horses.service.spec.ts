@@ -438,9 +438,10 @@ describe('HorsesService', () => {
         name: 'Thunderbolt',
         microchip: '123456789012345',
         microchipRfid: '123456789012345',
-        stallAllocations: [{ assignedGroomUserId: 'groom-1', isActive: true }],
+        stallAllocations: [{ stall: { zoneId: 'zone-a' }, isActive: true }],
       };
       prisma.horse.findUnique.mockResolvedValue(horse);
+      prisma.shiftRoster = { findMany: jest.fn().mockResolvedValue([{ zoneId: 'zone-a' }]) };
 
       const res = await service.findOne('h-1', mockGroom);
       expect(res.microchip).toBe('***********2345');
