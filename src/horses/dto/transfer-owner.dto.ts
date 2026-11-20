@@ -1,5 +1,6 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { HorseTransferStatus } from '@prisma/client';
+import { IsBoolean, IsEnum, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class TransferHorseOwnerDto {
   @ApiProperty({
@@ -18,4 +19,23 @@ export class TransferHorseOwnerDto {
   @IsOptional()
   @IsString({ message: 'Transfer reason must be a string.' })
   reason?: string;
+}
+
+export class RespondTransferDto {
+  @ApiProperty({ description: 'true = đồng ý, false = từ chối' })
+  @IsBoolean()
+  accept: boolean;
+
+  @ApiPropertyOptional({ description: 'Lý do từ chối (không bắt buộc)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
+export class QueryTransferRequestDto {
+  @ApiPropertyOptional({ enum: HorseTransferStatus })
+  @IsOptional()
+  @IsEnum(HorseTransferStatus)
+  status?: HorseTransferStatus;
 }

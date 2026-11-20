@@ -1,19 +1,11 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import {
-  HorseCatalogType,
-  HorseStatus,
-  Prisma,
-  Role,
-  StallStatus,
-  UserStatus,
-} from '@prisma/client';
+import { HorseCatalogType, HorseStatus, Prisma, Role, UserStatus } from '@prisma/client';
 import { apiError } from '../common/exceptions/api-error';
 import { UserRole } from '../common/enums/role.enum';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { CreateHorseDto } from './dto/create-horse.dto';
 import { UpdateHorseDto } from './dto/update-horse.dto';
 import { QueryHorseDto } from './dto/query-horse.dto';
-import { TransferHorseOwnerDto } from './dto/transfer-owner.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CounterService } from '../audit/counter.service';
@@ -116,31 +108,12 @@ export class HorsesService {
     return cloned;
   }
 
-  /** Ô chuồng phải tồn tại, không bảo trì và chưa có ngựa. Gọi sau khi đã khóa dòng Stall. */
-  private async assertStallFree(tx: Prisma.TransactionClient, stallId: string): Promise<void> {
-    const stall = await tx.stall.findUnique({
-      where: { id: stallId },
-      include: { allocations: { where: { isActive: true }, take: 1 } },
-    });
-    if (!stall) {
-      throw apiError(HttpStatus.NOT_FOUND, 'STALL_NOT_FOUND', 'Không tìm thấy ô chuồng.');
-    }
-    if (stall.status === StallStatus.MAINTENANCE || stall.status === StallStatus.INACTIVE) {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'STALL_UNAVAILABLE',
-        `Ô chuồng ${stall.code} đang bảo trì hoặc ngừng sử dụng.`,
-      );
-    }
-    if (stall.allocations.length > 0) {
-      throw apiError(HttpStatus.CONFLICT, 'STALL_OCCUPIED', 'Ô chuồng đã có ngựa.');
-    }
-  }
-
   /**
    * Tạo hồ sơ ngựa mới (FR-1.01).
    */
-  async create(dto: CreateHorseDto, user: CurrentUserPayload) {
+  async create(input: CreateHorseDto, user: CurrentUserPayload) {
+    // Chủ ngựa tự đăng ký ngựa của mình; ô chuồng do Club Manager xếp sau ở trang Chuồng.
+    const dto: CreateHorseDto = { ...input, ownerId: user.userId };
     const dob = new Date(dto.dob);
     const now = new Date();
     const twelveYearsAgo = new Date();
@@ -234,14 +207,8 @@ export class HorsesService {
       );
     }
 
-    // Hồ sơ mới luôn ở Nghỉ ngơi. Nếu chọn ô chuồng ngay khi tạo: khóa dòng ô (FOR UPDATE),
-    // kiểm ô còn trống rồi đặt OCCUPIED, tất cả trong một transaction -> 2 người không gán trùng 1 ô.
+    // Hồ sơ mới luôn ở Nghỉ ngơi, chưa có ô chuồng.
     const horse = await this.prisma.$transaction(async (tx) => {
-      if (dto.stallId) {
-        await tx.$queryRaw`SELECT "id" FROM "Stall" WHERE "id" = ${dto.stallId} FOR UPDATE`;
-        await this.assertStallFree(tx, dto.stallId);
-      }
-
       const created = await tx.horse.create({
         data: {
           horseCode,
@@ -257,17 +224,6 @@ export class HorsesService {
           isMedicalLocked: false,
           ownerId: dto.ownerId || null,
           avatarUrl: dto.avatarUrl || null,
-          ...(dto.stallId
-            ? {
-                stallAllocations: {
-                  create: {
-                    stallId: dto.stallId,
-                    startDate: now,
-                    isActive: true,
-                  },
-                },
-              }
-            : {}),
         },
         include: {
           owner: { select: { id: true, fullName: true, email: true } },
@@ -277,13 +233,6 @@ export class HorsesService {
           },
         },
       });
-
-      if (dto.stallId) {
-        await tx.stall.update({
-          where: { id: dto.stallId },
-          data: { status: StallStatus.OCCUPIED },
-        });
-      }
       return created;
     });
 
@@ -314,6 +263,10 @@ export class HorsesService {
 
     if (!horse) {
       throw apiError(HttpStatus.NOT_FOUND, 'HORSE_NOT_FOUND', 'Không tìm thấy hồ sơ ngựa.');
+    }
+
+    if (horse.ownerId !== user.userId) {
+      throw apiError(HttpStatus.FORBIDDEN, 'NOT_HORSE_OWNER', 'You can only edit horses you own.');
     }
 
     if (horse.status === HorseStatus.RETIRED) {
@@ -388,17 +341,6 @@ export class HorsesService {
       ? await this.catalogs.resolveName(HorseCatalogType.COLOR, dto.color, horse.color)
       : undefined;
 
-    if (dto.ownerId) {
-      const owner = await this.prisma.user.findUnique({ where: { id: dto.ownerId } });
-      if (!owner || owner.role !== Role.HORSE_OWNER) {
-        throw apiError(
-          HttpStatus.BAD_REQUEST,
-          'INVALID_OWNER',
-          'The specified owner does not exist or does not hold the Horse Owner role.',
-        );
-      }
-    }
-
     const updated = await this.prisma.horse.update({
       where: { id },
       data: {
@@ -416,7 +358,6 @@ export class HorsesService {
               microchipRfid: dto.microchip,
             }
           : {}),
-        ...(dto.ownerId !== undefined ? { ownerId: dto.ownerId || null } : {}),
         ...(dto.avatarUrl !== undefined ? { avatarUrl: dto.avatarUrl } : {}),
       },
       include: {
@@ -439,122 +380,6 @@ export class HorsesService {
         newValues: { name: updated.name, status: updated.status, microchip: updated.microchip },
       },
     );
-
-    return this.applyRolePolicy(updated, user);
-  }
-
-  /**
-   * Chuyển quyền sở hữu ngựa sang chủ mới (FR-1.02, Flow 1 Governance).
-   * Chỉ Club Manager được phép thực hiện.
-   */
-  async transferOwner(id: string, dto: TransferHorseOwnerDto, user: CurrentUserPayload) {
-    const horse = await this.prisma.horse.findUnique({
-      where: { id, deletedAt: null },
-      include: {
-        owner: { select: { id: true, fullName: true, email: true } },
-      },
-    });
-
-    if (!horse) {
-      throw apiError(HttpStatus.NOT_FOUND, 'HORSE_NOT_FOUND', 'Horse profile not found.');
-    }
-
-    if (horse.status === HorseStatus.RETIRED) {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'HORSE_RETIRED',
-        'Cannot transfer ownership of a retired horse. Please reactivate the horse profile first.',
-      );
-    }
-
-    if (horse.isDebtImpounded) {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'DEBT_IMPOUNDED',
-        'Ngựa đang bị lưu giữ do nợ phí quá hạn. Không thể chuyển nhượng hoặc xuất chuồng.',
-      );
-    }
-
-    if (horse.ownerId === dto.newOwnerId) {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'ALREADY_OWNED',
-        'Horse is already assigned to this owner.',
-      );
-    }
-
-    const newOwner = await this.prisma.user.findUnique({
-      where: { id: dto.newOwnerId },
-      select: {
-        id: true,
-        fullName: true,
-        email: true,
-        role: true,
-        status: true,
-        isBadDebtFlagged: true,
-      },
-    });
-
-    if (!newOwner || newOwner.role !== Role.HORSE_OWNER) {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'INVALID_NEW_OWNER',
-        'The specified account does not exist or is not registered as a Horse Owner.',
-      );
-    }
-
-    if (newOwner.isBadDebtFlagged) {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'OWNER_BAD_DEBT',
-        'Chủ ngựa mới đang bị đánh dấu nợ xấu. Không thể tiếp nhận chuyển nhượng.',
-      );
-    }
-
-    if (newOwner.status !== UserStatus.ACTIVE) {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'INACTIVE_OWNER',
-        'New owner account is not currently active.',
-      );
-    }
-
-    const previousOwnerName = horse.owner ? horse.owner.fullName : 'Unassigned';
-
-    const updated = await this.prisma.horse.update({
-      where: { id },
-      data: {
-        ownerId: newOwner.id,
-      },
-      include: {
-        owner: { select: { id: true, fullName: true, email: true } },
-        stallAllocations: {
-          where: { isActive: true },
-          include: { stall: true, assignedGroom: { select: { id: true, fullName: true } } },
-        },
-      },
-    });
-
-    await this.auditService.record(
-      { id: user.userId, name: user.fullName || user.email },
-      'HORSE_OWNERSHIP_TRANSFERRED',
-      `Transferred ownership of horse ${horse.name} (${horse.horseCode || horse.id}) from ${previousOwnerName} to ${newOwner.fullName}. Reason: ${dto.reason || 'None specified'}`,
-      horse.id,
-      {
-        entityName: 'Horse',
-        oldValues: { ownerId: horse.ownerId, ownerName: previousOwnerName },
-        newValues: { ownerId: newOwner.id, ownerName: newOwner.fullName, reason: dto.reason },
-      },
-    );
-    await this.notifications.notifyUsers([newOwner.id], {
-      type: 'HORSE_OWNER_ASSIGNED',
-      category: 'HORSE',
-      title: 'A horse was assigned to you',
-      message: `You are now the registered owner of ${horse.name}.`,
-      params: { horse: horse.name },
-      link: `/horses/${horse.id}`,
-      senderName: user.fullName,
-    });
 
     return this.applyRolePolicy(updated, user);
   }
