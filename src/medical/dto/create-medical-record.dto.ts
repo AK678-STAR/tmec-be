@@ -60,6 +60,11 @@ export class CreateMedicalRecordDto {
   @IsUUID('4', { message: 'Please select a valid horse' })
   horseId: string;
 
+  /** Sự cố dẫn tới bệnh án này: bệnh án phải đúng ngựa của sự cố (#9). */
+  @IsOptional()
+  @IsString()
+  incidentId?: string;
+
   @IsOptional()
   @IsString()
   examinationDate?: string;

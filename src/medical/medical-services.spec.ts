@@ -296,6 +296,127 @@ describe('Medical services', () => {
     });
   });
 
+  describe('lecturer notes: prescriptions, incidents, follow-ups (#9-#14)', () => {
+    const openRecord = {
+      id: 'rec-1',
+      horseId: 'horse-1',
+      status: 'OPEN',
+      veterinarianUserId: mockVetUser.userId,
+      treatmentProtocol: 'x',
+      prescriptions: null,
+      prescriptionDetails: null,
+      followUps: null,
+    };
+    const antiseptic = {
+      id: 'sup-1',
+      name: 'Sát khuẩn Povidine',
+      category: 'MEDICINE',
+      unit: 'BOTTLE',
+      isActive: true,
+    };
+    const rxInput = {
+      supplyId: 'sup-1',
+      medicationName: 'typed name',
+      dosage: 3,
+      unit: 'mg',
+      frequencyPerDay: 1,
+      daysCount: 2,
+      startDate: '2026-11-20',
+    };
+
+    beforeEach(() => {
+      mockPrismaService.supplyCatalog = { findUnique: jest.fn().mockResolvedValue(antiseptic) };
+      mockPrismaService.stallAllocation = {
+        findFirst: jest.fn().mockResolvedValue({
+          stall: { zoneId: 'zone-a', zoneRef: { name: 'Khu A' } },
+        }),
+      };
+      mockPrismaService.stockBalance = {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ quantity: 10, supply: { name: antiseptic.name } }),
+      };
+      mockPrismaService.incidentReport = {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      };
+      mockPrismaService.medicalRecord.findUnique.mockResolvedValue(openRecord);
+      mockPrismaService.medicalRecord.findMany.mockResolvedValue([]);
+      mockPrismaService.medicalRecord.update.mockImplementation((a: any) =>
+        Promise.resolve({ ...openRecord, ...a.data }),
+      );
+      mockPrismaService.horse.findUnique.mockResolvedValue({ id: 'horse-1', name: 'Thunder' });
+    });
+
+    it('#10: the unit always comes from the catalog medicine, not from the request', async () => {
+      const res = await records.addPrescription('rec-1', mockVetUser, rxInput as any);
+      expect(res.prescription.unit).toBe('bottles');
+      expect(res.prescription.medicationName).toBe(antiseptic.name);
+    });
+
+    it('#14: a medicine outside the catalog is refused', async () => {
+      await expect(
+        records.addPrescription('rec-1', mockVetUser, { ...rxInput, supplyId: undefined } as any),
+      ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'SUPPLY_REQUIRED' }) });
+    });
+
+    it('#10: dose must be a positive number', async () => {
+      await expect(
+        records.addPrescription('rec-1', mockVetUser, { ...rxInput, dosage: 'abc' } as any),
+      ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'INVALID_DOSAGE' }) });
+    });
+
+    it('#14: warns and tells the manager when zone stock cannot cover the course', async () => {
+      mockPrismaService.stockBalance.findUnique.mockResolvedValue({
+        quantity: 2,
+        supply: { name: antiseptic.name },
+      });
+      const res = await records.addPrescription('rec-1', mockVetUser, rxInput as any);
+      expect(res.warning).toContain('Kho Khu A chỉ còn 2 bottles, đơn thuốc cần 6 bottles');
+      expect(notifications.notifyRoles).toHaveBeenCalledWith(
+        ['CLUB_MANAGER'],
+        expect.objectContaining({ type: 'RX_STOCK_SHORT' }),
+      );
+    });
+
+    it('#11: the owner and the groom are told about the new prescription', async () => {
+      await records.addPrescription('rec-1', mockVetUser, rxInput as any);
+      expect(notifications.notifyHorse).toHaveBeenCalledWith(
+        'horse-1',
+        { owner: true, groom: true },
+        expect.objectContaining({ type: 'PRESCRIPTION_ADDED', link: '/medical/records/rec-1' }),
+        mockVetUser.userId,
+      );
+    });
+
+    it('#9: a record opened from an incident must be for the incident horse', async () => {
+      mockPrismaService.incidentReport.findUnique.mockResolvedValue({ horseId: 'horse-2' });
+      await expect(
+        records.createMedicalRecord(mockVetUser, {
+          horseId: 'horse-1',
+          incidentId: 'inc-1',
+          examinationType: 'Khám bệnh',
+          reason: 'Lý do khám bệnh chi tiết',
+        } as any),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'INCIDENT_HORSE_MISMATCH' }),
+      });
+    });
+
+    it('#12: a future follow-up is announced to owner, groom and the record vet', async () => {
+      (notifications.horseAudience as jest.Mock).mockResolvedValue(['owner-1', 'groom-1']);
+      await records.addFollowUp('rec-1', mockVetUser, {
+        progressNotes: 'Đỡ sốt, cần tái khám',
+        followUpDate: '2099-01-02',
+      } as any);
+      expect(notifications.notifyUsers).toHaveBeenCalledWith(
+        ['owner-1', 'groom-1', mockVetUser.userId],
+        expect.objectContaining({ type: 'FOLLOW_UP_SCHEDULED' }),
+        mockVetUser.userId,
+      );
+    });
+  });
+
   describe('updateMedicalRecord', () => {
     it('rejects editing a record that has already been closed', async () => {
       mockPrismaService.medicalRecord.findUnique.mockResolvedValue({
