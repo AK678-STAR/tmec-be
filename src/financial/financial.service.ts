@@ -478,14 +478,12 @@ export class FinancialService {
       throw apiError(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', 'Không tìm thấy hóa đơn.');
     }
 
-    if (
-      user.role === 'HORSE_OWNER' &&
-      (status !== InvoiceStatus.PAID || existing.ownerId !== user.id)
-    ) {
+    // Chủ ngựa không tự đổi trạng thái (kể cả PAID): báo chuyển khoản qua POST :id/pay, CM đối soát.
+    if (user.role === 'HORSE_OWNER') {
       throw apiError(
         HttpStatus.FORBIDDEN,
-        'FORBIDDEN',
-        'Chủ ngựa chỉ được thanh toán hóa đơn của mình.',
+        'PAYMENT_NEEDS_RECONCILIATION',
+        'Owners report a transfer; the Club Manager confirms the payment.',
       );
     }
 
@@ -511,6 +509,12 @@ export class FinancialService {
       where: { id },
       data: {
         status,
+        ...(status === InvoiceStatus.PAID &&
+          existing.status !== InvoiceStatus.PAID && {
+            paidAt: new Date(),
+            paidConfirmedById: user.id,
+            paidConfirmedByName: user.name,
+          }),
         ...(status === InvoiceStatus.SENT &&
           existing.status === InvoiceStatus.DRAFT &&
           !existing.dueAt && {
@@ -606,15 +610,42 @@ export class FinancialService {
       );
     }
 
+    const method = paymentData?.paymentMethod || 'BANK_TRANSFER';
+    const ref = paymentData?.transactionRef?.trim().slice(0, 100) || null;
+
+    // Chủ ngựa: chỉ báo đã chuyển khoản => "Chờ đối soát". Gửi lại = cập nhật mã tham chiếu, không đổi trạng thái.
+    if (user.role === 'HORSE_OWNER') {
+      const reported = await this.prisma.financialInvoice.update({
+        where: { id },
+        data: { paymentReportedAt: new Date(), paymentMethod: method, paymentRef: ref },
+      });
+      await this.audit.record(
+        { id: user.id, name: user.name },
+        'INVOICE_PAYMENT_REPORTED',
+        `Owner reported a ${method} payment for invoice ${id} (${existing.billingPeriod}); awaiting reconciliation`,
+        id,
+        { entityName: 'FinancialInvoice', newValues: { paymentMethod: method, paymentRef: ref } },
+      );
+      return serializeInvoice(reported);
+    }
+
+    // Club Manager đối soát: tiền đã vào => PAID, rồi đánh giá lại hạn chế do nợ.
     const updated = await this.prisma.financialInvoice.update({
       where: { id },
-      data: { status: InvoiceStatus.PAID },
+      data: {
+        status: InvoiceStatus.PAID,
+        paidAt: new Date(),
+        paidConfirmedById: user.id,
+        paidConfirmedByName: user.name,
+        paymentMethod: existing.paymentMethod ?? method,
+        paymentRef: existing.paymentRef ?? ref,
+      },
     });
 
     await this.audit.record(
       { id: user.id, name: user.name },
       'INVOICE_PAID',
-      `Invoice ${id} (${existing.billingPeriod}) for horse ${existing.horse.name} was paid via ${paymentData?.paymentMethod || 'VietQR'}`,
+      `Invoice ${id} (${existing.billingPeriod}) for horse ${existing.horse.name}: payment confirmed by ${user.name}`,
       id,
       {
         entityName: 'FinancialInvoice',

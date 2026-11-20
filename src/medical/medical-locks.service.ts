@@ -193,6 +193,8 @@ export class MedicalLocksService {
 
     // Tự động rút đăng ký các giải đấu chưa diễn ra khi ngựa bị khóa y tế (STT 1: F3 → F5).
     // Thực hiện NGOÀI transaction chính để nếu có lỗi bảng giải đấu thì không làm hỏng transaction đặt khóa.
+    // Kết quả được trả về cho người đặt khóa: lỗi không còn bị nuốt im lặng trong log.
+    const raceWithdrawal = { scratched: 0, failed: false, error: null as string | null };
     try {
       const upcomingRegs = await (this.prisma as any).tournamentRegistration?.findMany({
         where: {
@@ -223,8 +225,11 @@ export class MedicalLocksService {
           reg.id,
           { entityName: 'TournamentRegistration', oldValues: reg, newValues: scratched },
         );
+        raceWithdrawal.scratched += 1;
       }
     } catch (err: any) {
+      raceWithdrawal.failed = true;
+      raceWithdrawal.error = String(err?.message || err).slice(0, 200);
       this.logger.warn(
         `Không thể tự động rút đăng ký giải đấu cho ngựa ${dto.horseId}: ${err?.message || err}`,
       );
@@ -237,6 +242,7 @@ export class MedicalLocksService {
       newStatus: appliedStatus,
       blockedWorkoutsMessage: 'Các buổi tập nặng sắp tới sẽ tự động bị chặn',
       suspendedRegistrationsMessage: 'Đăng ký thi đấu chưa diễn ra sẽ tạm treo',
+      raceWithdrawal,
       notificationRecipients: [
         'Huấn luyện viên Trưởng',
         'Quản lý Câu lạc bộ',

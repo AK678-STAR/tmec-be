@@ -777,47 +777,11 @@ export class DailyTasksService {
       );
     }
 
-    // Tương tự: hai lần hoàn tác đồng thời chỉ hoàn kho một lần.
-    const updated = await this.prisma.dailyCareTask
-      .update({
-        where: { id, isCompleted: true },
-        data: {
-          isCompleted: false,
-          completedAt: null,
-          completedById: null,
-          undoUntil: null,
-        },
-        include: TASK_DETAIL_INCLUDE,
-      })
-      .catch((err: unknown) => {
-        if (lostRace(err)) return null;
-        throw err;
-      });
-    if (!updated) {
-      return this.prisma.dailyCareTask.findUniqueOrThrow({
-        where: { id },
-        include: TASK_DETAIL_INCLUDE,
-      });
-    }
-
-    await this.auditService.record(
-      { id: currentUser.userId, name: currentUser.fullName } as any,
-      'UNCOMPLETE_DAILY_TASK',
-      `Hoàn tác công việc: ${task.title} cho ngựa ${task.horse.name}`,
-      task.id,
-      {
-        entityName: 'DailyCareTask',
-        newValues: {
-          taskCode: task.taskCode,
-          horseName: task.horse.name,
-          uncompletedAt: now,
-        },
-      },
-    );
-
-    // Hoàn lại kho nếu hoàn tác việc cho ăn (FEEDING) hoặc cho uống thuốc (MEDICATION)
+    // Hoàn lại kho nếu hoàn tác việc cho ăn (FEEDING) hoặc cho uống thuốc (MEDICATION): chuẩn bị trước, ghi trong transaction.
+    let targetZoneId: string | null = null;
+    let itemsToRestore: any[] | null = null;
     if (task.taskType === DailyTaskType.FEEDING || task.taskType === DailyTaskType.MEDICATION) {
-      let targetZoneId = task.stallZoneId;
+      targetZoneId = task.stallZoneId;
       if (!targetZoneId && task.horseId) {
         const alloc = await this.prisma.stallAllocation.findFirst({
           where: { horseId: task.horseId, isActive: true },
@@ -826,7 +790,7 @@ export class DailyTasksService {
         targetZoneId = alloc?.stall?.zoneId || null;
       }
 
-      let itemsToRestore = Array.isArray(task.itemsSnapshotJson)
+      itemsToRestore = Array.isArray(task.itemsSnapshotJson)
         ? (task.itemsSnapshotJson as any[])
         : typeof task.itemsSnapshotJson === 'string'
           ? (() => {
@@ -865,11 +829,51 @@ export class DailyTasksService {
           ];
         }
       }
-
-      if (targetZoneId && itemsToRestore && itemsToRestore.length > 0) {
-        await this.inventoryService.restoreStockForFeeding(targetZoneId, itemsToRestore as any);
-      }
     }
+
+    // Tương tự: hai lần hoàn tác đồng thời chỉ hoàn kho một lần.
+    const updated = await this.prisma
+      .$transaction(async (tx) => {
+        const reopened = await tx.dailyCareTask.update({
+          where: { id, isCompleted: true },
+          data: {
+            isCompleted: false,
+            completedAt: null,
+            completedById: null,
+            undoUntil: null,
+          },
+          include: TASK_DETAIL_INCLUDE,
+        });
+        if (targetZoneId && itemsToRestore && itemsToRestore.length > 0) {
+          await this.inventoryService.restoreStockForFeeding(targetZoneId, itemsToRestore, tx);
+        }
+        return reopened;
+      })
+      .catch((err: unknown) => {
+        if (lostRace(err)) return null;
+        throw err;
+      });
+    if (!updated) {
+      return this.prisma.dailyCareTask.findUniqueOrThrow({
+        where: { id },
+        include: TASK_DETAIL_INCLUDE,
+      });
+    }
+
+    await this.auditService.record(
+      { id: currentUser.userId, name: currentUser.fullName } as any,
+      'UNCOMPLETE_DAILY_TASK',
+      `Hoàn tác công việc: ${task.title} cho ngựa ${task.horse.name}`,
+      task.id,
+      {
+        entityName: 'DailyCareTask',
+        newValues: {
+          taskCode: task.taskCode,
+          horseName: task.horse.name,
+          uncompletedAt: now,
+        },
+      },
+    );
 
     return updated;
   }

@@ -145,9 +145,9 @@ describe('Financial billing lifecycle', () => {
     await expect(service.update('invoice', { medicalFee: 1 }, manager)).rejects.toThrow();
     expect(db.financialInvoice.update).not.toHaveBeenCalled();
   });
-  it('still permits an owner to pay an overdue invoice without a penalty', async () => {
+  it('still permits settling an overdue invoice without a penalty', async () => {
     db.financialInvoice.findUnique.mockResolvedValue({ ...base, status: 'OVERDUE' });
-    const result = await service.payInvoice('invoice', {}, owner);
+    const result = await service.payInvoice('invoice', {}, manager);
     expect(result.status).toBe('PAID');
     expect(result.netAmount).toBe(6000000);
   });

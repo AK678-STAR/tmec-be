@@ -975,6 +975,13 @@ model FinancialInvoice {
   netAmount           Decimal       @default(0) @db.Decimal(10, 2)
   status              InvoiceStatus @default(DRAFT)
   invoiceUrl          String?
+  // Chủ ngựa báo đã chuyển khoản => chờ Club Manager đối soát; chỉ CM chuyển sang PAID.
+  paymentReportedAt   DateTime?
+  paymentMethod       String?
+  paymentRef          String?
+  paidAt              DateTime?
+  paidConfirmedById   String?
+  paidConfirmedByName String?
   createdAt           DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
 

@@ -909,8 +909,10 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
       amount?: number;
       unit?: string;
     }>,
+    tx?: Prisma.TransactionClient,
   ) {
     if (!zoneId || !items || !Array.isArray(items) || items.length === 0) return;
+    const db = tx || this.prisma;
 
     for (const item of items) {
       if (!item.amount || Number(item.amount) <= 0) continue;
@@ -919,7 +921,7 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
 
       if (!supplyId && (item as any).supplyCode) {
         try {
-          const found = await this.prisma.supplyCatalog.findFirst({
+          const found = await db.supplyCatalog.findFirst({
             where: {
               code: { equals: (item as any).supplyCode, mode: 'insensitive' },
               isActive: true,
@@ -934,7 +936,7 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
 
       if (!supplyId && item.supplyName) {
         try {
-          const found = await this.prisma.supplyCatalog.findFirst({
+          const found = await db.supplyCatalog.findFirst({
             where: {
               OR: [
                 { name: { equals: item.supplyName, mode: 'insensitive' } },
@@ -953,7 +955,7 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
       if (!supplyId) continue;
 
       try {
-        const balance = await this.prisma.stockBalance.findUnique({
+        const balance = await db.stockBalance.findUnique({
           where: {
             zoneId_supplyId: {
               zoneId,
@@ -963,7 +965,7 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
         });
 
         if (balance) {
-          await this.prisma.stockBalance.update({
+          await db.stockBalance.update({
             where: {
               zoneId_supplyId: {
                 zoneId,

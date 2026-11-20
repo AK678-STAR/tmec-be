@@ -17,6 +17,7 @@ export class FinancialController {
   constructor(private readonly financialService: FinancialService) {}
 
   @Get()
+  @Roles(UserRole.CLUB_MANAGER, UserRole.HORSE_OWNER)
   @ApiOperation({
     summary: 'Lấy danh sách hóa đơn sổ tài chính (Chủ ngựa chỉ thấy hóa đơn của mình)',
   })
@@ -66,6 +67,7 @@ export class FinancialController {
   }
 
   @Get(':id')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.HORSE_OWNER)
   @ApiOperation({ summary: 'Xem chi tiết một hóa đơn' })
   async findOne(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
     return this.financialService.findOne(id, {
