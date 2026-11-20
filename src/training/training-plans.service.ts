@@ -26,6 +26,7 @@ import { AuditService } from '../audit/audit.service';
 import { CounterService } from '../audit/counter.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { TrainingCommonService } from './training-common.service';
+import { TRAINING_MONTHLY_RATE } from '../financial/financial.service';
 
 /** P2-06: giáo án — danh sách, tạo, sửa, kích hoạt / hoàn thành / hủy, nhân bản, xóa (FR-2.02 → FR-2.08, FR-2.18, FR-2.19). */
 @Injectable()
@@ -104,6 +105,8 @@ export class TrainingPlansService {
         horse: {
           select: {
             ...PLAN_INCLUDE.horse.select,
+            dob: true,
+            weightKg: true,
             medicalLocks: {
               where: { isLocked: true },
               take: 1,
@@ -134,7 +137,19 @@ export class TrainingPlansService {
       due: 0,
       overdue: 0,
     };
-    return { ...plan, progress };
+    // needFix #8: chủ ngựa thấy trước chi phí — phí huấn luyện tính theo tháng có tập (xem bảng kê).
+    const s = plan.startDate;
+    const e = plan.endDate;
+    const billedMonths = Math.max(1, (e.getUTCFullYear() - s.getUTCFullYear()) * 12 + e.getUTCMonth() - s.getUTCMonth() + 1);
+    return {
+      ...plan,
+      progress,
+      cost: {
+        monthlyTrainingRate: TRAINING_MONTHLY_RATE,
+        billedMonths,
+        estimatedTrainingFee: billedMonths * TRAINING_MONTHLY_RATE,
+      },
+    };
   }
 
   /** Ngày bắt đầu / kết thúc hợp lệ (SC-2.03): kết thúc ≥ bắt đầu, tối thiểu 7 ngày, tối đa 52 tuần. */
