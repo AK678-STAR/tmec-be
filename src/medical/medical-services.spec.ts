@@ -24,6 +24,8 @@ describe('Medical services', () => {
   let notifications: NotificationsService;
 
   const mockPrismaService: any = {
+    // #1: Groom trực khu zone-a hôm nay.
+    shiftRoster: { findMany: jest.fn().mockResolvedValue([{ zoneId: 'zone-a' }]) },
     $transaction: jest.fn((fn: (tx: any) => unknown) => fn(mockPrismaService)),
     $queryRaw: jest.fn().mockResolvedValue([]),
     horse: {
@@ -168,10 +170,10 @@ describe('Medical services', () => {
       expect(whereOf().ownerId).toBe('owner-1');
     });
 
-    it('should limit a Groom to the horses in their care', async () => {
+    it('should limit a Groom to the horses in the zone they are on duty in today', async () => {
       await overview.getHealthBoard({}, user('GROOM', 'groom-1'));
       expect(whereOf().stallAllocations).toEqual({
-        some: { isActive: true, assignedGroomUserId: 'groom-1' },
+        some: { isActive: true, stall: { zoneId: { in: ['zone-a'] } } },
       });
     });
 
@@ -1586,7 +1588,7 @@ describe('Medical services', () => {
       );
     });
 
-    it('should filter horses by assigned groom when user is GROOM', async () => {
+    it('should filter horses by the zone the groom is on duty in', async () => {
       mockPrismaService.horse.findMany.mockResolvedValue([]);
       const groomUser: CurrentUserPayload = {
         userId: 'groom-1',
@@ -1602,12 +1604,7 @@ describe('Medical services', () => {
         expect.objectContaining({
           where: expect.objectContaining({
             deletedAt: null,
-            stallAllocations: {
-              some: {
-                assignedGroomUserId: 'groom-1',
-                isActive: true,
-              },
-            },
+            stallAllocations: { some: { isActive: true, stall: { zoneId: { in: ['zone-a'] } } } },
           }),
         }),
       );

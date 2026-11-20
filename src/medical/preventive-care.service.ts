@@ -13,6 +13,7 @@ import {
   CreatePreventiveScheduleDto,
 } from './dto/preventive-care.dto';
 import { PrismaService } from '../prisma/prisma.service';
+import { groomZoneIds, horsesInZones } from '../shift-rosters/groom-zones';
 import { AuditService } from '../audit/audit.service';
 import { MedicalAccessService } from './medical-access.service';
 
@@ -256,14 +257,7 @@ export class PreventiveCareService {
     } else if (currentUser.role === Role.HORSE_OWNER) {
       where.horse = { ownerId: currentUser.userId };
     } else if (currentUser.role === Role.GROOM) {
-      where.horse = {
-        stallAllocations: {
-          some: {
-            assignedGroomUserId: currentUser.userId,
-            isActive: true,
-          },
-        },
-      };
+      where.horse = horsesInZones(await groomZoneIds(this.prisma, currentUser.userId));
     }
 
     const andConditions: any[] = [];

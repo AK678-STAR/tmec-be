@@ -44,7 +44,9 @@ export class DailyTasksController {
   @Post(':id/complete')
   @Roles(UserRole.GROOM, UserRole.CLUB_MANAGER)
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Groom đánh dấu hoàn thành 1 công việc (kèm cửa sổ hoàn tác 15 phút)' })
+  @ApiOperation({
+    summary: 'Nhân viên chăm sóc đánh dấu hoàn thành 1 công việc (kèm cửa sổ hoàn tác 15 phút)',
+  })
   completeTask(
     @Param('id') id: string,
     @Body() dto: CompleteDailyTaskDto,

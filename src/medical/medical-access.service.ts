@@ -3,6 +3,7 @@ import { apiError } from '../common/exceptions/api-error';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { groomZoneIds } from '../shift-rosters/groom-zones';
 
 /** Kiểm tra dùng chung của Flow 3: chỉ VET được ghi; OWNER/GROOM chỉ xem ngựa trong phạm vi. */
 @Injectable()
@@ -33,6 +34,7 @@ export class MedicalAccessService {
       include: {
         stallAllocations: {
           where: { isActive: true },
+          include: { stall: { select: { zoneId: true } } },
         },
       },
     });
@@ -53,14 +55,15 @@ export class MedicalAccessService {
     }
 
     if (currentUser.role === Role.GROOM) {
+      const zones = await groomZoneIds(this.prisma, currentUser.userId);
       const isAssigned = horse.stallAllocations.some(
-        (allocation) => allocation.assignedGroomUserId === currentUser.userId,
+        (allocation) => !!allocation.stall?.zoneId && zones.includes(allocation.stall.zoneId),
       );
       if (!isAssigned) {
         throw apiError(
           HttpStatus.FORBIDDEN,
           'HORSE_OUT_OF_SCOPE',
-          'You can only view the medical file of horses in your care.',
+          'You can only view the medical file of horses in the zone you are on duty in.',
         );
       }
       return;

@@ -537,7 +537,7 @@ export class StallsService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'INVALID_GROOM',
-        'Người chăm sóc phải là nhân viên Groom đang hoạt động.',
+        'Người được chọn phải là nhân viên chăm sóc đang hoạt động.',
       );
     }
   }

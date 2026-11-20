@@ -5,6 +5,7 @@ import { AuditService } from '../audit/audit.service';
 import { apiError } from '../common/exceptions/api-error';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { DailyTasksService } from '../daily-tasks/daily-tasks.service';
+import { rosterDay } from './groom-zones';
 import {
   AssignShiftRosterDto,
   CopyWeekRosterDto,
@@ -33,6 +34,70 @@ export class ShiftRostersService {
     private readonly auditService: AuditService,
     @Optional() private readonly dailyTasks?: DailyTasksService,
   ) {}
+
+  /**
+   * #2: Tổng quan ca trực trong ngày cho Club Manager: mỗi khu × ca có ai trực,
+   * bao nhiêu ngựa, việc chăm sóc xong bao nhiêu và còn bao nhiêu sự cố chưa xử lý.
+   */
+  async overview(date?: string) {
+    const day = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? parseDateOnly(date) : rosterDay();
+    const [zones, shifts, rosters, horses, tasks, incidents] = await Promise.all([
+      this.prisma.stallZone.findMany({
+        where: { isActive: true },
+        orderBy: [{ sortOrder: 'asc' }, { code: 'asc' }],
+        select: { id: true, code: true, name: true },
+      }),
+      this.prisma.shiftCatalog.findMany({
+        where: { isActive: true },
+        orderBy: [{ sortOrder: 'asc' }, { startTime: 'asc' }],
+        select: { id: true, name: true, startTime: true, endTime: true },
+      }),
+      this.prisma.shiftRoster.findMany({
+        where: { date: day },
+        select: {
+          zoneId: true,
+          shiftId: true,
+          groom: { select: { id: true, fullName: true, email: true, phoneNumber: true } },
+        },
+      }),
+      this.prisma.stall.groupBy({
+        by: ['zoneId'],
+        where: { status: 'OCCUPIED' },
+        _count: { _all: true },
+      }),
+      this.prisma.dailyCareTask.groupBy({
+        by: ['stallZoneId', 'shiftId', 'isCompleted'],
+        where: { date: day },
+        _count: { _all: true },
+      }),
+      this.prisma.incidentReport.groupBy({
+        by: ['stallZoneId'],
+        where: { status: { in: ['REPORTED', 'UNDER_REVIEW'] } },
+        _count: { _all: true },
+      }),
+    ]);
+    const count = (rows: { _count: { _all: number } }[]) =>
+      rows.reduce((sum, r) => sum + r._count._all, 0);
+    return {
+      date: day.toISOString().slice(0, 10),
+      zones: zones.map((z) => ({
+        ...z,
+        horses: count(horses.filter((h) => h.zoneId === z.id)),
+        openIncidents: count(incidents.filter((i) => i.stallZoneId === z.id)),
+        shifts: shifts.map((s) => {
+          const mine = tasks.filter((t) => t.stallZoneId === z.id && t.shiftId === s.id);
+          return {
+            ...s,
+            grooms: rosters
+              .filter((r) => r.zoneId === z.id && r.shiftId === s.id)
+              .map((r) => r.groom),
+            tasksDone: count(mine.filter((t) => t.isCompleted)),
+            tasksTotal: count(mine),
+          };
+        }),
+      })),
+    };
+  }
 
   /**
    * SC-4.01 Danh sách phân ca theo khoảng ngày và khu.
@@ -233,7 +298,7 @@ export class ShiftRostersService {
         throw apiError(
           HttpStatus.CONFLICT,
           'GROOM_ALREADY_ASSIGNED_IN_SHIFT',
-          `Nhân viên ${conflict.groom?.fullName || 'Groom'} đã được phân công trực tại ${conflict.zone.name} (${conflict.zone.code}) trong ${conflict.shift.name} ngày ${conflictDateStr}. Trong một ca trực, mỗi Groom chỉ được phân công trực tại 1 khu chuồng.`,
+          `Nhân viên ${conflict.groom?.fullName || 'Nhân viên chăm sóc'} đã được phân công trực tại ${conflict.zone.name} (${conflict.zone.code}) trong ${conflict.shift.name} ngày ${conflictDateStr}. Trong một ca trực, mỗi nhân viên chăm sóc chỉ được phân công trực tại 1 khu chuồng.`,
           {
             groomName: conflict.groom?.fullName,
             zoneName: conflict.zone.name,

@@ -1,6 +1,7 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { NotificationCategory, Prisma, Role, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { zoneGroomIds } from '../shift-rosters/groom-zones';
 import { apiError } from '../common/exceptions/api-error';
 import { defaultNotify, NotifyKey } from '../users/permissions';
 
@@ -87,13 +88,16 @@ export class NotificationsService {
     }
   }
 
-  /** Người liên quan tới 1 con ngựa: các vai trò được chọn + chủ ngựa + groom đang chăm (tùy chọn). */
+  /** Người liên quan tới 1 con ngựa: các vai trò được chọn + chủ ngựa + groom đang trực khu của ngựa hôm nay (tùy chọn). */
   async horseAudience(horseId: string, opts: { roles?: Role[]; owner?: boolean; groom?: boolean }) {
     const horse = await this.prisma.horse.findUnique({
       where: { id: horseId },
       select: {
         ownerId: true,
-        stallAllocations: { where: { isActive: true }, select: { assignedGroomUserId: true } },
+        stallAllocations: {
+          where: { isActive: true },
+          select: { stall: { select: { zoneId: true } } },
+        },
       },
     });
     const ids: (string | null | undefined)[] = [];
@@ -106,7 +110,7 @@ export class NotificationsService {
     }
     if (opts.owner && horse?.ownerId) ids.push(horse.ownerId);
     if (opts.groom && horse?.stallAllocations?.length) {
-      ids.push(...horse.stallAllocations.map((a) => a.assignedGroomUserId));
+      ids.push(...(await zoneGroomIds(this.prisma, horse.stallAllocations[0].stall?.zoneId)));
     }
     return ids;
   }

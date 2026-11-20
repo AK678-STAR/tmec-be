@@ -7,6 +7,7 @@ import { CreateHorseDto } from './dto/create-horse.dto';
 import { UpdateHorseDto } from './dto/update-horse.dto';
 import { QueryHorseDto } from './dto/query-horse.dto';
 import { PrismaService } from '../prisma/prisma.service';
+import { groomZoneIds, horsesInZones } from '../shift-rosters/groom-zones';
 import { AuditService } from '../audit/audit.service';
 import { CounterService } from '../audit/counter.service';
 import { HorseCatalogsService } from '../horse-catalogs/horse-catalogs.service';
@@ -95,6 +96,19 @@ export class HorsesService {
       cloned.stallCode = activeStall?.stall?.code || null;
       cloned.zone = activeStall?.stall?.zone || null;
       cloned.primaryGroom = activeStall?.assignedGroom?.fullName || null;
+    }
+
+    if (cloned.trainingPlans) {
+      const p = cloned.trainingPlans[0];
+      cloned.activePlan = p
+        ? {
+            id: p.id,
+            name: p.phaseName,
+            endDate: p.endDate,
+            trainerName: p.trainer?.fullName ?? null,
+          }
+        : null;
+      delete cloned.trainingPlans;
     }
 
     // 3. Ẩn thông tin chủ sở hữu đối với VET và GROOM (CL-1.07)
@@ -407,12 +421,8 @@ export class HorsesService {
     if (user.role === UserRole.HORSE_OWNER) {
       where.ownerId = user.userId;
     } else if (user.role === UserRole.GROOM) {
-      where.stallAllocations = {
-        some: {
-          assignedGroomUserId: user.userId,
-          isActive: true,
-        },
-      };
+      // #1: Groom chỉ thấy ngựa trong khu mình trực hôm nay.
+      Object.assign(where, horsesInZones(await groomZoneIds(this.prisma, user.userId)));
     }
 
     // Bộ lọc tìm kiếm tự do (Tên, Mã ngựa, Microchip)
@@ -494,6 +504,17 @@ export class HorsesService {
             take: 1,
             select: { id: true, isLocked: true, lockReason: true, lockedAt: true },
           },
+          // Cho màn tạo giáo án biết ngay ngựa đang chạy giáo án nào (mỗi ngựa tối đa 1 giáo án ACTIVE).
+          trainingPlans: {
+            where: { status: 'ACTIVE' },
+            take: 1,
+            select: {
+              id: true,
+              phaseName: true,
+              endDate: true,
+              trainer: { select: { fullName: true } },
+            },
+          },
         },
       }),
       this.prisma.horse.count({ where }),
@@ -549,8 +570,9 @@ export class HorsesService {
 
     if (user.role === UserRole.GROOM) {
       const allocations = (horse as any).stallAllocations || [];
+      const zones = await groomZoneIds(this.prisma, user.userId);
       const isAssigned = allocations.some(
-        (a: any) => a.assignedGroomUserId === user.userId && a.isActive,
+        (a: any) => a.isActive && zones.includes(a.stall?.zoneId),
       );
       if (!isAssigned) {
         throw apiError(

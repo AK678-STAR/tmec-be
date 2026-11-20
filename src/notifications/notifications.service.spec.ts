@@ -6,6 +6,10 @@ describe('NotificationsService', () => {
   const prisma = {
     user: { findMany: jest.fn() },
     horse: { findUnique: jest.fn() },
+    // Groom nhận thông báo = Groom đang trực khu của ngựa hôm nay (#1).
+    shiftRoster: {
+      findMany: jest.fn().mockResolvedValue([{ zoneId: 'zone-a', groomUserId: 'groom-1' }]),
+    },
     notification: {
       createMany: jest.fn().mockResolvedValue({ count: 0 }),
       findMany: jest.fn(),
@@ -92,11 +96,11 @@ describe('NotificationsService', () => {
   });
 
   describe('horseAudience & notifyHorse', () => {
-    it('returns owning owner and assigned active groom when requested', async () => {
+    it('returns owning owner and the groom on duty in the horse zone today', async () => {
       prisma.horse.findUnique.mockResolvedValue({
         id: 'horse-1',
         ownerId: 'owner-1',
-        stallAllocations: [{ assignedGroomUserId: 'groom-1' }],
+        stallAllocations: [{ stall: { zoneId: 'zone-a' } }],
       });
       prisma.user.findMany.mockResolvedValue([{ id: 'ht-1' }]);
 
@@ -110,7 +114,10 @@ describe('NotificationsService', () => {
         where: { id: 'horse-1' },
         select: {
           ownerId: true,
-          stallAllocations: { where: { isActive: true }, select: { assignedGroomUserId: true } },
+          stallAllocations: {
+            where: { isActive: true },
+            select: { stall: { select: { zoneId: true } } },
+          },
         },
       });
       expect(audience).toEqual(['ht-1', 'owner-1', 'groom-1']);
@@ -120,7 +127,7 @@ describe('NotificationsService', () => {
       prisma.horse.findUnique.mockResolvedValue({
         id: 'horse-1',
         ownerId: 'owner-1',
-        stallAllocations: [{ assignedGroomUserId: 'groom-1' }],
+        stallAllocations: [{ stall: { zoneId: 'zone-a' } }],
       });
 
       const audience = await service.horseAudience('horse-1', { owner: true, groom: true });
@@ -148,7 +155,7 @@ describe('NotificationsService', () => {
       prisma.horse.findUnique.mockResolvedValue({
         id: 'horse-1',
         ownerId: 'owner-1',
-        stallAllocations: [{ assignedGroomUserId: 'groom-1' }],
+        stallAllocations: [{ stall: { zoneId: 'zone-a' } }],
       });
 
       const ownerOnly = await service.horseAudience('horse-1', { owner: true, groom: false });
@@ -179,7 +186,7 @@ describe('NotificationsService', () => {
       prisma.horse.findUnique.mockResolvedValue({
         id: 'horse-1',
         ownerId: 'owner-1',
-        stallAllocations: [{ assignedGroomUserId: 'groom-1' }],
+        stallAllocations: [{ stall: { zoneId: 'zone-a' } }],
       });
       prisma.user.findMany.mockResolvedValue([
         { id: 'owner-1', role: Role.HORSE_OWNER, notify: null },

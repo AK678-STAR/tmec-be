@@ -279,6 +279,8 @@ model User {
   horsesDeleted            Horse[]                  @relation("HorseDeletedBy")
   stallAllocations         StallAllocation[]        @relation("GroomStalls")
   trainingPlansCreated     TrainingPlan[]           @relation("TrainerPlans")
+  trainerReviewsReceived   TrainerReview[]          @relation("TrainerReviewsReceived")
+  trainerReviewsWritten    TrainerReview[]          @relation("TrainerReviewsWritten")
   workoutSessionsStaff     WorkoutSession[]         @relation("StaffWorkouts")
   workoutResultsRecorded   WorkoutSession[]         @relation("WorkoutResultRecorder")
   workoutResultsEdited     WorkoutSession[]         @relation("WorkoutResultEditor")
@@ -575,9 +577,28 @@ model TrainingPlan {
   updatedAt         DateTime     @updatedAt
 
   workoutSessions WorkoutSession[]
+  review          TrainerReview?
 
   @@index([horseId])
   @@index([trainerUserId])
+}
+
+// Chủ ngựa đánh giá HLV theo từng giáo án (1 đánh giá / giáo án, sửa được).
+model TrainerReview {
+  id             String       @id @default(uuid())
+  trainingPlanId String       @unique
+  trainingPlan   TrainingPlan @relation(fields: [trainingPlanId], references: [id], onDelete: Cascade)
+  trainerUserId  String
+  trainer        User         @relation("TrainerReviewsReceived", fields: [trainerUserId], references: [id], onDelete: Restrict)
+  ownerUserId    String
+  owner          User         @relation("TrainerReviewsWritten", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  rating         Int // 1..5
+  comment        String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([trainerUserId])
+  @@index([ownerUserId])
 }
 
 model WorkoutSession {
