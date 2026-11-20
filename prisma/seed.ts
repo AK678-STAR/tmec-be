@@ -1417,6 +1417,32 @@ async function seedTraining(tx: Tx) {
     skipDuplicates: true,
   });
 
+  // Chủ ngựa đánh giá HLV cho vài giáo án đang chạy / đã xong (xóa theo giáo án nhờ onDelete: Cascade).
+  const reviewable = await tx.trainingPlan.findMany({
+    where: { status: { in: [PlanStatus.ACTIVE, PlanStatus.COMPLETED] }, horse: { ownerId: { not: null } } },
+    select: { id: true, trainerUserId: true, horse: { select: { ownerId: true } } },
+    orderBy: { planCode: 'asc' },
+    take: 6,
+  });
+  const reviewTexts: Array<[number, string | null]> = [
+    [5, 'Ngựa tiến bộ rõ, HLV báo cáo đều đặn sau mỗi buổi.'],
+    [4, 'Giáo án hợp lý, mong được cập nhật số liệu nhanh hơn.'],
+    [3, 'Ngựa có lúc quá tải, cần điều chỉnh cường độ.'],
+    [5, null],
+    [4, 'Tốc độ cải thiện tốt trước giải.'],
+    [2, 'Ít trao đổi với chủ ngựa, kết quả chưa như kỳ vọng.'],
+  ];
+  await tx.trainerReview.createMany({
+    data: reviewable.map((p, i) => ({
+      trainingPlanId: p.id,
+      trainerUserId: p.trainerUserId,
+      ownerUserId: p.horse.ownerId as string,
+      rating: reviewTexts[i][0],
+      comment: reviewTexts[i][1],
+    })),
+    skipDuplicates: true,
+  });
+
   // Build rich WorkoutSessions spanning T7–today + upcoming 5 days
   const workouts: Prisma.WorkoutSessionCreateManyInput[] = [];
   const activeRunners = [
