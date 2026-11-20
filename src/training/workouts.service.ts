@@ -1074,8 +1074,8 @@ export class WorkoutsService {
       // Giáo án còn Nháp chưa phải lịch thật: groom chỉ thấy khi HT đã kích hoạt.
       where.assignedStaffUserId = user.userId;
       where.trainingPlan = { status: { not: PlanStatus.DRAFT } };
-    } else if (user.role === UserRole.HEAD_TRAINER && query.scope !== 'club') {
-      // scope=club (Lịch tuần): HT xem toàn CLB, chỉ đọc; sửa vẫn chỉ trên giáo án của mình.
+    } else if (user.role === UserRole.HEAD_TRAINER) {
+      // HLV chỉ xem lịch các ngựa mình phụ trách (kể cả Lịch tuần).
       where.trainingPlan = { trainerUserId: user.userId };
     }
 

@@ -1,5 +1,12 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { HorseCatalogType, HorseStatus, Prisma, Role, UserStatus } from '@prisma/client';
+import {
+  HorseCatalogType,
+  HorseStatus,
+  PlanStatus,
+  Prisma,
+  Role,
+  UserStatus,
+} from '@prisma/client';
 import { apiError } from '../common/exceptions/api-error';
 import { UserRole } from '../common/enums/role.enum';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
@@ -423,6 +430,8 @@ export class HorsesService {
     } else if (user.role === UserRole.GROOM) {
       // #1: Groom chỉ thấy ngựa trong khu mình trực hôm nay.
       Object.assign(where, horsesInZones(await groomZoneIds(this.prisma, user.userId)));
+    } else if (user.role === UserRole.HEAD_TRAINER) {
+      where.AND = [trainerHorseScope(user.userId, query.assignable === 'true')];
     }
 
     // Bộ lọc tìm kiếm tự do (Tên, Mã ngựa, Microchip)
@@ -559,7 +568,19 @@ export class HorsesService {
       );
     }
 
-    // Kiểm tra phạm vi dữ liệu đối với OWNER và GROOM
+    // Kiểm tra phạm vi dữ liệu đối với OWNER, GROOM và HLV
+    if (
+      user.role === UserRole.HEAD_TRAINER &&
+      !(await this.prisma.horse.count({
+        where: { id: horse.id, ...trainerHorseScope(user.userId) },
+      }))
+    ) {
+      throw apiError(
+        HttpStatus.NOT_FOUND,
+        'HORSE_NOT_FOUND',
+        'Không tìm thấy hồ sơ ngựa hoặc bạn không có quyền xem.',
+      );
+    }
     if (user.role === UserRole.HORSE_OWNER && horse.ownerId !== user.userId) {
       throw apiError(
         HttpStatus.NOT_FOUND,
@@ -585,4 +606,17 @@ export class HorsesService {
 
     return this.applyRolePolicy(horse, user);
   }
+}
+
+/**
+ * Ngựa HLV được xem: ngựa có giáo án Nháp/Đang áp dụng của HLV.
+ * withUnclaimed: thêm ngựa chưa có HLV nào phụ trách (chỉ dùng khi chọn ngựa cho giáo án mới).
+ */
+export function trainerHorseScope(
+  trainerUserId: string,
+  withUnclaimed = false,
+): Prisma.HorseWhereInput {
+  const live = { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] };
+  const mine: Prisma.HorseWhereInput = { trainingPlans: { some: { trainerUserId, status: live } } };
+  return withUnclaimed ? { OR: [mine, { trainingPlans: { none: { status: live } } }] } : mine;
 }

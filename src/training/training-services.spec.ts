@@ -1524,12 +1524,14 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
         );
       });
 
-      it('lets HEAD_TRAINER read the whole club calendar with scope=club', async () => {
-        prisma.workoutSession.findMany.mockResolvedValue([workoutA, workoutB]);
+      it('keeps HEAD_TRAINER on own plans even when scope=club is sent', async () => {
+        prisma.workoutSession.findMany.mockResolvedValue([workoutA]);
         await workouts.findAllWorkouts({ scope: 'club' }, trainerA);
         expect(prisma.workoutSession.findMany).toHaveBeenCalledWith(
           expect.objectContaining({
-            where: expect.not.objectContaining({ trainingPlan: expect.anything() }),
+            where: expect.objectContaining({
+              trainingPlan: { trainerUserId: trainerA.userId },
+            }),
           }),
         );
       });

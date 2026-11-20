@@ -1,4 +1,4 @@
-import { IsEnum, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, IsString, Max, Min, IsIn } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -59,4 +59,11 @@ export class QueryHorseDto {
   @Min(1)
   @Max(100)
   limit?: number = 20;
+
+  @ApiPropertyOptional({
+    description: 'HLV: thêm ngựa chưa có HLV phụ trách (chọn ngựa cho giáo án mới)',
+  })
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  assignable?: string;
 }
