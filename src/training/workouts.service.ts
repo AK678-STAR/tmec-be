@@ -484,7 +484,7 @@ export class WorkoutsService {
       throw apiError(
         HttpStatus.CONFLICT,
         'GROOM_TIME_CONFLICT',
-        `Nhân viên ${groom.fullName} đã được giao buổi tập của ${busy.horse.name} lúc ${c.time} ngày ${c.date} (HLV ${c.trainer}). Chọn người chăm sóc khác, hoặc chọn giờ bắt đầu từ ${c.before} trở về trước hoặc từ ${c.after} trở đi.`,
+        `Nhân viên ${groom.fullName} đã được giao buổi tập của ${busy.horse.name} lúc ${c.time} ngày ${c.date} (HLV ${c.trainer}). Chọn nhân viên chăm sóc khác, hoặc chọn giờ bắt đầu từ ${c.before} trở về trước hoặc từ ${c.after} trở đi.`,
         { workoutId: busy.id, groom: groom.fullName, horse: busy.horse.name, ...c },
       );
     }

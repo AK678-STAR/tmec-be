@@ -46,7 +46,7 @@ export class ShiftRostersController {
 
   @Get('my')
   @Roles(UserRole.GROOM)
-  @ApiOperation({ summary: 'SC-4.01 / SC-4.05 Ca trực của tôi và ngựa phụ trách (Groom)' })
+  @ApiOperation({ summary: 'SC-4.01 / SC-4.05 Ca trực của tôi và ngựa phụ trách' })
   getMyShifts(@CurrentUser() user: CurrentUserPayload, @Query() query: QueryShiftRosterDto) {
     return this.service.getMyShifts(user, query);
   }

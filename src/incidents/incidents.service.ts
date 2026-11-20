@@ -115,7 +115,7 @@ export class IncidentsService {
         type: isCritical ? 'CRITICAL_INCIDENT_REPORTED' : 'HEALTH_ANOMALY_LOGGED',
         category: 'MEDICAL',
         title: `${titlePrefix} ${horse.name} (${horse.horseCode || ''})`,
-        message: `Groom ${reporter.fullName} báo cáo: ${symptomsText}. Nội dung: "${incidentNotificationText(dto.description)}"`,
+        message: `Nhân viên chăm sóc ${reporter.fullName} báo cáo: ${symptomsText}. Nội dung: "${incidentNotificationText(dto.description)}"`,
         params: {
           incidentNumber,
           horseId: horse.id,

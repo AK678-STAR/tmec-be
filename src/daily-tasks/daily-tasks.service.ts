@@ -636,7 +636,7 @@ export class DailyTasksService {
           completedById: currentUser.userId,
           undoUntil,
           description: dto.notes
-            ? `${task.description || ''}\n[Ghi chú Groom: ${dto.notes}]`
+            ? `${task.description || ''}\n[Ghi chú nhân viên chăm sóc: ${dto.notes}]`
             : task.description,
         },
         include: TASK_DETAIL_INCLUDE,

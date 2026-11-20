@@ -54,7 +54,11 @@ export class ShiftRostersService {
       }),
       this.prisma.shiftRoster.findMany({
         where: { date: day },
-        select: { zoneId: true, shiftId: true, groom: { select: { id: true, fullName: true } } },
+        select: {
+          zoneId: true,
+          shiftId: true,
+          groom: { select: { id: true, fullName: true, email: true, phoneNumber: true } },
+        },
       }),
       this.prisma.stall.groupBy({
         by: ['zoneId'],
@@ -294,7 +298,7 @@ export class ShiftRostersService {
         throw apiError(
           HttpStatus.CONFLICT,
           'GROOM_ALREADY_ASSIGNED_IN_SHIFT',
-          `Nhân viên ${conflict.groom?.fullName || 'Groom'} đã được phân công trực tại ${conflict.zone.name} (${conflict.zone.code}) trong ${conflict.shift.name} ngày ${conflictDateStr}. Trong một ca trực, mỗi Groom chỉ được phân công trực tại 1 khu chuồng.`,
+          `Nhân viên ${conflict.groom?.fullName || 'Nhân viên chăm sóc'} đã được phân công trực tại ${conflict.zone.name} (${conflict.zone.code}) trong ${conflict.shift.name} ngày ${conflictDateStr}. Trong một ca trực, mỗi nhân viên chăm sóc chỉ được phân công trực tại 1 khu chuồng.`,
           {
             groomName: conflict.groom?.fullName,
             zoneName: conflict.zone.name,
