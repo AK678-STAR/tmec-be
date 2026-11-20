@@ -306,6 +306,9 @@ model User {
   restockRequestsCreated   RestockRequest[]         @relation("RestockRequestedBy")
   restockRequestsReviewed  RestockRequest[]         @relation("RestockReviewedBy")
   restockRequestsDelivered RestockRequest[]         @relation("RestockDeliveredBy")
+  transfersFrom            HorseTransferRequest[]   @relation("TransferFromOwner")
+  transfersTo              HorseTransferRequest[]   @relation("TransferToOwner")
+  transfersRequested       HorseTransferRequest[]   @relation("TransferRequestedBy")
 
   @@index([email])
   @@index([role])
@@ -459,6 +462,7 @@ model Horse {
   incidents               IncidentReport[]         @relation("HorseIncidents")
   tournamentRegistrations TournamentRegistration[]
   financialInvoices       FinancialInvoice[]
+  transferRequests        HorseTransferRequest[]
 
   @@index([horseCode])
   @@index([microchip])
@@ -1192,4 +1196,37 @@ model SimulatorSession {
 
   @@index([status, updatedAt])
   @@index([medicalRecordId])
+}
+
+enum HorseTransferStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+/// Chuyển nhượng ngựa: Club Manager tạo yêu cầu, chủ cũ và chủ mới cùng xác nhận thì mới đổi chủ.
+model HorseTransferRequest {
+  id              String              @id @default(uuid())
+  horseId         String
+  horse           Horse               @relation(fields: [horseId], references: [id], onDelete: Cascade)
+  fromOwnerId     String?
+  fromOwner       User?               @relation("TransferFromOwner", fields: [fromOwnerId], references: [id], onDelete: SetNull)
+  toOwnerId       String
+  toOwner         User                @relation("TransferToOwner", fields: [toOwnerId], references: [id], onDelete: Cascade)
+  requestedById   String
+  requestedBy     User                @relation("TransferRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
+  reason          String?
+  status          HorseTransferStatus @default(PENDING)
+  fromConfirmedAt DateTime?
+  toConfirmedAt   DateTime?
+  rejectedById    String?
+  rejectReason    String?
+  decidedAt       DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([horseId, status])
+  @@index([fromOwnerId, status])
+  @@index([toOwnerId, status])
 }
