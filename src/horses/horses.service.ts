@@ -106,6 +106,19 @@ export class HorsesService {
       cloned.primaryGroom = activeStall?.assignedGroom?.fullName || null;
     }
 
+    if (cloned.trainingPlans) {
+      const p = cloned.trainingPlans[0];
+      cloned.activePlan = p
+        ? {
+            id: p.id,
+            name: p.phaseName,
+            endDate: p.endDate,
+            trainerName: p.trainer?.fullName ?? null,
+          }
+        : null;
+      delete cloned.trainingPlans;
+    }
+
     // 3. Ẩn thông tin chủ sở hữu đối với VET và GROOM (CL-1.07)
     if (user.role === UserRole.VETERINARIAN || user.role === UserRole.GROOM) {
       delete cloned.owner;
@@ -665,6 +678,17 @@ export class HorsesService {
             where: { isLocked: true },
             take: 1,
             select: { id: true, isLocked: true, lockReason: true, lockedAt: true },
+          },
+          // Cho màn tạo giáo án biết ngay ngựa đang chạy giáo án nào (mỗi ngựa tối đa 1 giáo án ACTIVE).
+          trainingPlans: {
+            where: { status: 'ACTIVE' },
+            take: 1,
+            select: {
+              id: true,
+              phaseName: true,
+              endDate: true,
+              trainer: { select: { fullName: true } },
+            },
           },
         },
       }),

@@ -722,7 +722,7 @@ export class FinancialService {
       data: {
         isDebtImpounded: true,
         debtImpoundedAt: new Date(),
-        debtImpoundReason: 'Quá hạn thanh toán chi phí nuôi dưỡng / lưu chuồng.',
+        debtImpoundReason: 'Overdue boarding / stabling fees.',
       },
     });
   }

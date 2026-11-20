@@ -484,7 +484,7 @@ const HORSES: HorseSpec[] = [
     stallId: stallIds.H[0],
     groomId: userIds.grooms[8],
     isDebtImpounded: true,
-    debtImpoundReason: 'Quá hạn thanh toán chi phí lưu chuồng & điều trị T8-T10/2026',
+    debtImpoundReason: 'Overdue stabling and treatment fees (Aug-Oct 2026).',
   },
   {
     id: horseIds[17],
@@ -3520,7 +3520,7 @@ async function seedRacingAndInvoices(tx: Tx) {
     data: {
       isDebtImpounded: true,
       debtImpoundedAt: days(-20),
-      debtImpoundReason: 'Quá hạn thanh toán chi phí nuôi dưỡng / lưu chuồng.',
+      debtImpoundReason: 'Overdue boarding / stabling fees.',
     },
   });
 }
