@@ -1419,7 +1419,10 @@ async function seedTraining(tx: Tx) {
 
   // Chủ ngựa đánh giá HLV cho vài giáo án đang chạy / đã xong (xóa theo giáo án nhờ onDelete: Cascade).
   const reviewable = await tx.trainingPlan.findMany({
-    where: { status: { in: [PlanStatus.ACTIVE, PlanStatus.COMPLETED] }, horse: { ownerId: { not: null } } },
+    where: {
+      status: { in: [PlanStatus.ACTIVE, PlanStatus.COMPLETED] },
+      horse: { ownerId: { not: null } },
+    },
     select: { id: true, trainerUserId: true, horse: { select: { ownerId: true } } },
     orderBy: { planCode: 'asc' },
     take: 6,

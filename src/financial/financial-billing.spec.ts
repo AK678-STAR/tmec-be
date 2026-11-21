@@ -6,7 +6,8 @@ import { NotificationsService } from '../notifications/notifications.service';
 
 describe('Financial billing lifecycle', () => {
   const manager = { id: 'manager', name: 'Manager', role: 'CLUB_MANAGER' };
-  const owner = { id: 'owner', name: 'Owner', role: 'HORSE_OWNER' };
+  const _owner = { id: 'owner', name: 'Owner', role: 'HORSE_OWNER' };
+  void _owner;
   const now = new Date('2027-01-01T03:00:00Z');
   const base = {
     id: 'invoice',

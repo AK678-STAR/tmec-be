@@ -105,19 +105,25 @@ describe('OtpService', () => {
     const error = await fail(service.resend('anh@gmail.com', OtpPurpose.SIGNUP));
     expect(error.getResponse()).toEqual(expect.objectContaining({ code: 'OTP_COOLDOWN' }));
   });
-it('should tell an already-activated account to sign in instead of pretending to resend (needFix #16)', async () => {
+  it('should tell an already-activated account to sign in instead of pretending to resend (needFix #16)', async () => {
     mockPrisma.user.findUnique.mockResolvedValue({ status: 'ACTIVE' });
     const signup = await fail(service.resend('anh@gmail.com', OtpPurpose.SIGNUP));
-    expect(signup.getResponse()).toEqual(expect.objectContaining({ code: 'ACCOUNT_ALREADY_ACTIVE' }));
+    expect(signup.getResponse()).toEqual(
+      expect.objectContaining({ code: 'ACCOUNT_ALREADY_ACTIVE' }),
+    );
     const invite = await fail(service.times('anh@gmail.com', OtpPurpose.INVITE));
-    expect(invite.getResponse()).toEqual(expect.objectContaining({ code: 'ACCOUNT_ALREADY_ACTIVE' }));
+    expect(invite.getResponse()).toEqual(
+      expect.objectContaining({ code: 'ACCOUNT_ALREADY_ACTIVE' }),
+    );
     expect(mockMail.sendOtp).not.toHaveBeenCalled();
   });
 
   it('should say a verified sign-up is waiting for approval', async () => {
     mockPrisma.user.findUnique.mockResolvedValue({ status: 'PENDING_APPROVAL' });
     const error = await fail(service.times('anh@gmail.com', OtpPurpose.SIGNUP));
-    expect(error.getResponse()).toEqual(expect.objectContaining({ code: 'EMAIL_ALREADY_VERIFIED' }));
+    expect(error.getResponse()).toEqual(
+      expect.objectContaining({ code: 'EMAIL_ALREADY_VERIFIED' }),
+    );
   });
 
   it('should keep password reset neutral for active accounts', async () => {

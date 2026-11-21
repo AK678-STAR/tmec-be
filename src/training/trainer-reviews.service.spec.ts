@@ -3,9 +3,24 @@ import { TrainerReviewsService } from './trainer-reviews.service';
 import { UserRole } from '../common/enums/role.enum';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 
-const owner: CurrentUserPayload = { userId: 'own-1', email: 'o@x', role: UserRole.HORSE_OWNER, fullName: 'O' };
-const trainer: CurrentUserPayload = { userId: 'ht-1', email: 't@x', role: UserRole.HEAD_TRAINER, fullName: 'T' };
-const manager: CurrentUserPayload = { userId: 'cm-1', email: 'm@x', role: UserRole.CLUB_MANAGER, fullName: 'M' };
+const owner: CurrentUserPayload = {
+  userId: 'own-1',
+  email: 'o@x',
+  role: UserRole.HORSE_OWNER,
+  fullName: 'O',
+};
+const trainer: CurrentUserPayload = {
+  userId: 'ht-1',
+  email: 't@x',
+  role: UserRole.HEAD_TRAINER,
+  fullName: 'T',
+};
+const manager: CurrentUserPayload = {
+  userId: 'cm-1',
+  email: 'm@x',
+  role: UserRole.CLUB_MANAGER,
+  fullName: 'M',
+};
 
 async function codeOf(p: Promise<unknown>): Promise<string> {
   try {
@@ -40,13 +55,20 @@ describe('TrainerReviewsService', () => {
     expect(prisma.trainerReview.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { trainingPlanId: 'p-1' },
-        create: expect.objectContaining({ trainerUserId: 'ht-1', ownerUserId: 'own-1', rating: 4, comment: 'Tốt' }),
+        create: expect.objectContaining({
+          trainerUserId: 'ht-1',
+          ownerUserId: 'own-1',
+          rating: 4,
+          comment: 'Tốt',
+        }),
       }),
     );
   });
 
   it('hides plans of horses the owner does not own', async () => {
-    prisma.trainingPlan.findUnique.mockResolvedValue(plan({ horse: { ownerId: 'other', deletedAt: null } }));
+    prisma.trainingPlan.findUnique.mockResolvedValue(
+      plan({ horse: { ownerId: 'other', deletedAt: null } }),
+    );
     expect(await codeOf(service.upsert('p-1', { rating: 5 }, owner))).toBe('PLAN_NOT_FOUND');
   });
 
@@ -77,14 +99,29 @@ describe('TrainerReviewsService', () => {
 
   it('manager summary: plan counts and rounded average per trainer', async () => {
     prisma.trainerReview.findMany.mockResolvedValue([]);
-    prisma.user.findMany.mockResolvedValue([{ id: 'ht-1', fullName: 'A' }, { id: 'ht-2', fullName: 'B' }]);
+    prisma.user.findMany.mockResolvedValue([
+      { id: 'ht-1', fullName: 'A' },
+      { id: 'ht-2', fullName: 'B' },
+    ]);
     prisma.trainingPlan.groupBy.mockResolvedValue([
       { trainerUserId: 'ht-1', status: PlanStatus.ACTIVE, _count: { _all: 2 } },
       { trainerUserId: 'ht-1', status: PlanStatus.COMPLETED, _count: { _all: 3 } },
     ]);
-    prisma.trainerReview.groupBy.mockResolvedValue([{ trainerUserId: 'ht-1', _count: { _all: 3 }, _avg: { rating: 4.333 } }]);
+    prisma.trainerReview.groupBy.mockResolvedValue([
+      { trainerUserId: 'ht-1', _count: { _all: 3 }, _avg: { rating: 4.333 } },
+    ]);
     const res = await service.list(manager);
-    expect(res.trainers[0]).toMatchObject({ activePlans: 2, completedPlans: 3, reviewCount: 3, avgRating: 4.3 });
-    expect(res.trainers[1]).toMatchObject({ activePlans: 0, completedPlans: 0, reviewCount: 0, avgRating: null });
+    expect(res.trainers[0]).toMatchObject({
+      activePlans: 2,
+      completedPlans: 3,
+      reviewCount: 3,
+      avgRating: 4.3,
+    });
+    expect(res.trainers[1]).toMatchObject({
+      activePlans: 0,
+      completedPlans: 0,
+      reviewCount: 0,
+      avgRating: null,
+    });
   });
 });

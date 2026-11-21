@@ -140,7 +140,10 @@ export class TrainingPlansService {
     // needFix #8: chủ ngựa thấy trước chi phí — phí huấn luyện tính theo tháng có tập (xem bảng kê).
     const s = plan.startDate;
     const e = plan.endDate;
-    const billedMonths = Math.max(1, (e.getUTCFullYear() - s.getUTCFullYear()) * 12 + e.getUTCMonth() - s.getUTCMonth() + 1);
+    const billedMonths = Math.max(
+      1,
+      (e.getUTCFullYear() - s.getUTCFullYear()) * 12 + e.getUTCMonth() - s.getUTCMonth() + 1,
+    );
     return {
       ...plan,
       progress,

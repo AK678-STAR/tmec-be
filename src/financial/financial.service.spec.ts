@@ -561,7 +561,8 @@ describe('FinancialService', () => {
     });
 
     it('should automatically release horse impound and clear owner bad debt when all overdue invoices are paid', async () => {
-      const owner = { id: 'o-1', name: 'Owner', role: 'HORSE_OWNER' };
+      const _owner = { id: 'o-1', name: 'Owner', role: 'HORSE_OWNER' };
+      void _owner;
       const invoice = {
         id: 'inv-od-1',
         horseId: 'h-1',

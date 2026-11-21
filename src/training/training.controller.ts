@@ -72,8 +72,13 @@ export class TrainingController {
 
   @Get('trainer-reviews')
   @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.HORSE_OWNER)
-  @ApiOperation({ summary: 'Đánh giá HLV: CM tổng hợp mọi HLV, HT của mình, OWNER đánh giá đã viết' })
-  async listTrainerReviews(@CurrentUser() user: CurrentUserPayload, @Query('trainerId') trainerId?: string) {
+  @ApiOperation({
+    summary: 'Đánh giá HLV: CM tổng hợp mọi HLV, HT của mình, OWNER đánh giá đã viết',
+  })
+  async listTrainerReviews(
+    @CurrentUser() user: CurrentUserPayload,
+    @Query('trainerId') trainerId?: string,
+  ) {
     return this.reviews.list(user, trainerId || undefined);
   }
 

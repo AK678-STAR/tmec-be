@@ -38,7 +38,12 @@ export class TrainerReviewsService {
   async upsert(planId: string, dto: UpsertTrainerReviewDto, user: CurrentUserPayload) {
     const plan = await this.prisma.trainingPlan.findUnique({
       where: { id: planId },
-      select: { id: true, status: true, trainerUserId: true, horse: { select: { ownerId: true, deletedAt: true } } },
+      select: {
+        id: true,
+        status: true,
+        trainerUserId: true,
+        horse: { select: { ownerId: true, deletedAt: true } },
+      },
     });
     if (!plan || plan.horse.deletedAt || plan.horse.ownerId !== user.userId) {
       throw apiError(HttpStatus.NOT_FOUND, 'PLAN_NOT_FOUND', 'Training plan not found');
@@ -91,7 +96,10 @@ export class TrainerReviewsService {
       where:
         user.role === UserRole.HEAD_TRAINER
           ? { id: user.userId }
-          : { role: Role.HEAD_TRAINER, status: { in: [UserStatus.ACTIVE, UserStatus.LOCKED, UserStatus.INACTIVE] } },
+          : {
+              role: Role.HEAD_TRAINER,
+              status: { in: [UserStatus.ACTIVE, UserStatus.LOCKED, UserStatus.INACTIVE] },
+            },
       select: { id: true, fullName: true, email: true, avatarUrl: true },
       orderBy: { fullName: 'asc' },
     });
