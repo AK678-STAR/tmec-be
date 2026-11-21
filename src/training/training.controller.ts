@@ -91,8 +91,8 @@ export class TrainingController {
   @Get('overview')
   @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.VETERINARIAN)
   @ApiOperation({ summary: 'SC-2.01 Tổng quan huấn luyện: 4 thẻ chỉ số + bảng ngựa' })
-  async getOverview() {
-    return this.insights.getOverview();
+  async getOverview(@CurrentUser() user: CurrentUserPayload) {
+    return this.insights.getOverview(user);
   }
 
   // ------------------------------------------------------------ Giáo án

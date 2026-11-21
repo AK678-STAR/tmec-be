@@ -22,6 +22,8 @@ const REVIEW_SELECT = {
       planCode: true,
       phaseName: true,
       status: true,
+      startDate: true,
+      endDate: true,
       horse: { select: { id: true, name: true, horseCode: true } },
     },
   },

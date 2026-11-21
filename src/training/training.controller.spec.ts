@@ -73,8 +73,8 @@ describe('TrainingController', () => {
   });
 
   it('should delegate overview to insights service', async () => {
-    const res = await controller.getOverview();
-    expect(insightsService.getOverview).toHaveBeenCalled();
+    const res = await controller.getOverview(mockUser);
+    expect(insightsService.getOverview).toHaveBeenCalledWith(mockUser);
     expect(res).toBeDefined();
   });
 

@@ -25,6 +25,65 @@ const REQUEST_INCLUDE = {
       isMedicalLocked: true,
       isDebtImpounded: true,
       createdAt: true,
+      weightKg: true,
+      stallAllocations: {
+        where: { isActive: true },
+        take: 1,
+        select: { startDate: true, stall: { select: { code: true, zone: true } } },
+      },
+      medicalLocks: {
+        where: { isLocked: true },
+        take: 1,
+        select: { lockCode: true, lockReason: true, lockedAt: true, recheckDate: true },
+      },
+      medicalRecords: {
+        orderBy: { examinationDate: 'desc' },
+        take: 3,
+        select: {
+          recordNumber: true,
+          examinationDate: true,
+          clinicalDiagnosis: true,
+          severity: true,
+          status: true,
+        },
+      },
+      injuryLogs: {
+        orderBy: { discoveryDate: 'desc' },
+        take: 3,
+        select: {
+          anatomicalZone: true,
+          injuryType: true,
+          severity: true,
+          status: true,
+          discoveryDate: true,
+        },
+      },
+      incidents: {
+        orderBy: { createdAt: 'desc' },
+        take: 3,
+        select: { incidentNumber: true, createdAt: true, severity: true, status: true },
+      },
+      trainingPlans: {
+        orderBy: { startDate: 'desc' },
+        take: 3,
+        select: {
+          planCode: true,
+          phaseName: true,
+          status: true,
+          startDate: true,
+          endDate: true,
+          trainer: { select: { fullName: true } },
+        },
+      },
+      tournamentRegistrations: {
+        where: { result: { isNot: null } },
+        orderBy: { registrationDate: 'desc' },
+        take: 5,
+        select: {
+          tournament: { select: { name: true, raceDate: true } },
+          result: { select: { finalRank: true, finishTimeSeconds: true, prizeMoneyWon: true } },
+        },
+      },
       _count: {
         select: {
           medicalRecords: true,
@@ -32,6 +91,7 @@ const REQUEST_INCLUDE = {
           workoutSessions: true,
           tournamentRegistrations: true,
           incidents: true,
+          preventiveSchedules: { where: { status: 'OVERDUE' } },
         },
       },
     },
