@@ -4,6 +4,7 @@ import { HorseStatus, Role, UserStatus } from '@prisma/client';
 import { HorsesService } from './horses.service';
 import { HorseHistoryService } from './horse-history.service';
 import { HorseLifecycleService } from './horse-lifecycle.service';
+import { HorseTransferService } from './horse-transfer.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CounterService } from '../audit/counter.service';
@@ -11,6 +12,7 @@ import { HorseCatalogsService } from '../horse-catalogs/horse-catalogs.service';
 import { UserRole } from '../common/enums/role.enum';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { notificationsMock } from '../notifications/notifications.testing';
+import { NotificationsService } from '../notifications/notifications.service';
 
 describe('HorsesService', () => {
   let service: HorsesService;
@@ -20,6 +22,7 @@ describe('HorsesService', () => {
   let audit: any;
   let counter: { next: jest.Mock };
   let catalogs: { resolveName: jest.Mock };
+  let notifications: any;
 
   const mockManager: CurrentUserPayload = {
     userId: 'manager-1',
@@ -109,6 +112,7 @@ describe('HorsesService', () => {
     }).compile();
 
     service = module.get<HorsesService>(HorsesService);
+    notifications = module.get(NotificationsService);
     history = module.get(HorseHistoryService);
     lifecycle = module.get(HorseLifecycleService);
   });
@@ -232,14 +236,9 @@ describe('HorsesService', () => {
       });
     });
 
-    it('should occupy the chosen stall inside the same transaction', async () => {
+    it('registers the horse for the signed-in owner and leaves stall assignment to the club', async () => {
       prisma.horse.findFirst.mockResolvedValue(null);
       prisma.horse.findUnique.mockResolvedValue(null);
-      prisma.stall.findUnique.mockResolvedValue({
-        id: 'st-1',
-        status: 'AVAILABLE',
-        allocations: [],
-      });
       prisma.horse.create.mockResolvedValue({ id: 'h-2', name: 'Gió Bấc', stallAllocations: [] });
 
       await service.create(
@@ -251,20 +250,14 @@ describe('HorsesService', () => {
           gender: 'Colt',
           color: 'Bay',
           microchip: '123456789012346',
-          ownerId: 'owner-1',
-          stallId: 'st-1',
+          ownerId: 'someone-else',
         },
-        mockManager,
+        mockOwner,
       );
 
-      expect(prisma.$queryRaw).toHaveBeenCalled();
-      expect(prisma.horse.create).toHaveBeenCalledWith(
-        expect.objectContaining({ data: expect.objectContaining({ status: 'RESTING' }) }),
-      );
-      expect(prisma.stall.update).toHaveBeenCalledWith({
-        where: { id: 'st-1' },
-        data: { status: 'OCCUPIED' },
-      });
+      const data = prisma.horse.create.mock.calls[0][0].data;
+      expect(data.ownerId).toBe('owner-1');
+      expect(data.stallAllocations).toBeUndefined();
     });
 
     it('should reject creating horse for an owner flagged with bad debt', async () => {
@@ -351,37 +344,6 @@ describe('HorsesService', () => {
       });
     });
 
-    it('should throw 409 STALL_OCCUPIED when the chosen stall already has a horse', async () => {
-      prisma.horse.findFirst.mockResolvedValue(null);
-      prisma.horse.findUnique.mockResolvedValue(null);
-      prisma.stall.findUnique.mockResolvedValue({
-        id: 'st-1',
-        status: 'OCCUPIED',
-        allocations: [{ id: 'a-1' }],
-      });
-
-      await expect(
-        service.create(
-          {
-            name: 'Gió Bấc',
-            breed: 'Thoroughbred',
-            dob: '2021-01-01',
-            weightKg: 490,
-            gender: 'Colt',
-            color: 'Bay',
-            microchip: '123456789012346',
-            ownerId: 'owner-1',
-            stallId: 'st-1',
-          },
-          mockManager,
-        ),
-      ).rejects.toMatchObject({
-        status: HttpStatus.CONFLICT,
-        response: expect.objectContaining({ code: 'STALL_OCCUPIED' }),
-      });
-      expect(prisma.horse.create).not.toHaveBeenCalled();
-    });
-
     it('should throw 409 DUPLICATE_NAME if horse name exists', async () => {
       prisma.horse.findFirst.mockResolvedValueOnce({ id: 'h-existing', name: 'Thunderbolt' });
 
@@ -438,9 +400,10 @@ describe('HorsesService', () => {
         name: 'Thunderbolt',
         microchip: '123456789012345',
         microchipRfid: '123456789012345',
-        stallAllocations: [{ assignedGroomUserId: 'groom-1', isActive: true }],
+        stallAllocations: [{ stall: { zoneId: 'zone-a' }, isActive: true }],
       };
       prisma.horse.findUnique.mockResolvedValue(horse);
+      prisma.shiftRoster = { findMany: jest.fn().mockResolvedValue([{ zoneId: 'zone-a' }]) };
 
       const res = await service.findOne('h-1', mockGroom);
       expect(res.microchip).toBe('***********2345');
@@ -478,159 +441,126 @@ describe('HorsesService', () => {
     });
   });
 
-  describe('transferOwner', () => {
-    it('should transfer ownership to a valid new owner and record audit log', async () => {
-      const existingHorse = {
-        id: 'h-1',
-        name: 'Thunderbolt',
-        status: HorseStatus.ACTIVE,
-        ownerId: 'owner-old',
-        owner: { id: 'owner-old', fullName: 'Old Owner', email: 'old@gmail.com' },
-      };
-      const newOwner = {
-        id: 'owner-new',
-        fullName: 'New Owner',
-        email: 'new@gmail.com',
-        role: Role.HORSE_OWNER,
-        status: UserStatus.ACTIVE,
-      };
-      const updatedHorse = {
-        ...existingHorse,
-        ownerId: 'owner-new',
-        owner: newOwner,
-        stallAllocations: [],
-      };
+  describe('transfer requests (both owners confirm)', () => {
+    let transfers: HorseTransferService;
+    const horse = {
+      id: 'h-1',
+      name: 'Thunderbolt',
+      horseCode: 'HR-000001',
+      status: HorseStatus.ACTIVE,
+      ownerId: 'owner-old',
+      isDebtImpounded: false,
+    };
+    const newOwner = {
+      id: 'owner-new',
+      fullName: 'New Owner',
+      role: Role.HORSE_OWNER,
+      status: UserStatus.ACTIVE,
+      isBadDebtFlagged: false,
+    };
+    const pending = {
+      id: 'tr-1',
+      horseId: 'h-1',
+      fromOwnerId: 'owner-old',
+      toOwnerId: 'owner-new',
+      requestedById: 'manager-1',
+      reason: null,
+      status: 'PENDING',
+      fromConfirmedAt: null,
+      toConfirmedAt: null,
+      horse: { id: 'h-1', name: 'Thunderbolt', horseCode: 'HR-000001' },
+      fromOwner: { id: 'owner-old', fullName: 'Old Owner' },
+      toOwner: { id: 'owner-new', fullName: 'New Owner' },
+    };
+    const as = (userId: string): CurrentUserPayload => ({ ...mockOwner, userId });
 
-      prisma.horse.findUnique.mockResolvedValue(existingHorse);
+    beforeEach(() => {
+      prisma.horseTransferRequest = {
+        findFirst: jest.fn().mockResolvedValue(null),
+        findUnique: jest.fn().mockResolvedValue(pending),
+        create: jest.fn((args: any) => Promise.resolve({ id: 'tr-1', ...args.data })),
+        update: jest.fn((args: any) => Promise.resolve({ ...pending, ...args.data })),
+      };
+      prisma.horse.findUnique.mockResolvedValue(horse);
       prisma.user.findUnique.mockResolvedValue(newOwner);
-      prisma.horse.update.mockResolvedValue(updatedHorse);
+      transfers = new HorseTransferService(prisma, audit, notifications);
+    });
 
-      const res = await service.transferOwner(
-        'h-1',
-        { newOwnerId: 'owner-new', reason: 'Syndicate sale agreement' },
-        mockManager,
-      );
-
-      expect(res.ownerId).toBe('owner-new');
-      expect(prisma.horse.update).toHaveBeenCalledWith(
+    it('creates a pending request and does not change the owner yet', async () => {
+      await transfers.requestTransfer('h-1', { newOwnerId: 'owner-new' }, mockManager);
+      expect(prisma.horseTransferRequest.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'h-1' },
-          data: { ownerId: 'owner-new' },
+          data: expect.objectContaining({ fromOwnerId: 'owner-old', toOwnerId: 'owner-new' }),
         }),
       );
+      expect(prisma.horse.update).not.toHaveBeenCalled();
+      expect(notifications.notifyUsers).toHaveBeenCalledWith(
+        ['owner-old', 'owner-new'],
+        expect.objectContaining({ type: 'HORSE_TRANSFER_REQUESTED' }),
+      );
+    });
+
+    it('rejects a second request while one is pending', async () => {
+      prisma.horseTransferRequest.findFirst.mockResolvedValue(pending);
+      await expect(
+        transfers.requestTransfer('h-1', { newOwnerId: 'owner-new' }, mockManager),
+      ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'TRANSFER_PENDING' }) });
+    });
+
+    it('keeps the old owner when only one side confirmed', async () => {
+      await transfers.respond('tr-1', true, undefined, as('owner-new'));
+      expect(prisma.horse.update).not.toHaveBeenCalled();
+      expect(prisma.horseTransferRequest.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ toConfirmedAt: expect.any(Date) }),
+        }),
+      );
+    });
+
+    it('transfers the horse once both owners confirmed', async () => {
+      prisma.horseTransferRequest.findUnique.mockResolvedValue({
+        ...pending,
+        toConfirmedAt: new Date(),
+      });
+      const res = await transfers.respond('tr-1', true, undefined, as('owner-old'));
+      expect(prisma.horse.update).toHaveBeenCalledWith({
+        where: { id: 'h-1' },
+        data: { ownerId: 'owner-new' },
+      });
+      expect(res.status).toBe('APPROVED');
       expect(audit.record).toHaveBeenCalledWith(
         expect.anything(),
         'HORSE_OWNERSHIP_TRANSFERRED',
-        expect.stringContaining('Transferred ownership of horse'),
+        expect.any(String),
         'h-1',
         expect.anything(),
       );
     });
 
-    it('should throw 400 ALREADY_OWNED if horse already belongs to newOwnerId', async () => {
-      const existingHorse = {
-        id: 'h-1',
-        name: 'Thunderbolt',
-        status: HorseStatus.ACTIVE,
-        ownerId: 'owner-same',
-        owner: { id: 'owner-same', fullName: 'Same Owner' },
-      };
-
-      prisma.horse.findUnique.mockResolvedValue(existingHorse);
-
-      await expect(
-        service.transferOwner('h-1', { newOwnerId: 'owner-same' }, mockManager),
-      ).rejects.toMatchObject({
-        status: HttpStatus.BAD_REQUEST,
-        response: expect.objectContaining({ code: 'ALREADY_OWNED' }),
-      });
+    it('closes the request when one owner declines', async () => {
+      const res = await transfers.respond('tr-1', false, 'Not sold', as('owner-old'));
+      expect(res.status).toBe('REJECTED');
+      expect(prisma.horse.update).not.toHaveBeenCalled();
     });
 
-    it('should throw 400 HORSE_RETIRED if horse status is RETIRED', async () => {
-      const retiredHorse = {
-        id: 'h-1',
-        name: 'Thunderbolt',
-        status: HorseStatus.RETIRED,
-        ownerId: 'owner-1',
-      };
-
-      prisma.horse.findUnique.mockResolvedValue(retiredHorse);
-
+    it('only the two owners can respond', async () => {
       await expect(
-        service.transferOwner('h-1', { newOwnerId: 'owner-new' }, mockManager),
-      ).rejects.toMatchObject({
-        status: HttpStatus.BAD_REQUEST,
-        response: expect.objectContaining({ code: 'HORSE_RETIRED' }),
-      });
+        transfers.respond('tr-1', true, undefined, as('someone-else')),
+      ).rejects.toMatchObject({ status: HttpStatus.FORBIDDEN });
     });
 
-    it('should throw 400 DEBT_IMPOUNDED if horse is impounded due to debt', async () => {
-      const impoundedHorse = {
-        id: 'h-1',
-        name: 'Thunderbolt',
-        status: HorseStatus.ACTIVE,
-        ownerId: 'owner-1',
-        isDebtImpounded: true,
-      };
-
-      prisma.horse.findUnique.mockResolvedValue(impoundedHorse);
-
+    it.each([
+      ['HORSE_RETIRED', { ...horse, status: HorseStatus.RETIRED }, newOwner],
+      ['DEBT_IMPOUNDED', { ...horse, isDebtImpounded: true }, newOwner],
+      ['ALREADY_OWNED', { ...horse, ownerId: 'owner-new' }, newOwner],
+      ['OWNER_BAD_DEBT', horse, { ...newOwner, isBadDebtFlagged: true }],
+      ['INVALID_NEW_OWNER', horse, { ...newOwner, role: Role.HEAD_TRAINER }],
+    ])('refuses to request when %s', async (code, h, owner) => {
+      prisma.horse.findUnique.mockResolvedValue(h);
+      prisma.user.findUnique.mockResolvedValue(owner);
       await expect(
-        service.transferOwner('h-1', { newOwnerId: 'owner-new' }, mockManager),
-      ).rejects.toMatchObject({
-        status: HttpStatus.BAD_REQUEST,
-        response: expect.objectContaining({ code: 'DEBT_IMPOUNDED' }),
-      });
-    });
-
-    it('should throw 400 OWNER_BAD_DEBT if new owner has bad debt', async () => {
-      const normalHorse = {
-        id: 'h-1',
-        name: 'Thunderbolt',
-        status: HorseStatus.ACTIVE,
-        ownerId: 'owner-1',
-        isDebtImpounded: false,
-      };
-      const badDebtOwner = {
-        id: 'owner-bad',
-        role: Role.HORSE_OWNER,
-        status: UserStatus.ACTIVE,
-        isBadDebtFlagged: true,
-      };
-
-      prisma.horse.findUnique.mockResolvedValue(normalHorse);
-      prisma.user.findUnique.mockResolvedValue(badDebtOwner);
-
-      await expect(
-        service.transferOwner('h-1', { newOwnerId: 'owner-bad' }, mockManager),
-      ).rejects.toMatchObject({
-        status: HttpStatus.BAD_REQUEST,
-        response: expect.objectContaining({ code: 'OWNER_BAD_DEBT' }),
-      });
-    });
-
-    it('should throw 400 INVALID_NEW_OWNER if new owner does not have HORSE_OWNER role', async () => {
-      const existingHorse = {
-        id: 'h-1',
-        name: 'Thunderbolt',
-        status: HorseStatus.ACTIVE,
-        ownerId: 'owner-1',
-      };
-      const invalidRoleUser = {
-        id: 'user-trainer',
-        role: Role.HEAD_TRAINER,
-        status: UserStatus.ACTIVE,
-      };
-
-      prisma.horse.findUnique.mockResolvedValue(existingHorse);
-      prisma.user.findUnique.mockResolvedValue(invalidRoleUser);
-
-      await expect(
-        service.transferOwner('h-1', { newOwnerId: 'user-trainer' }, mockManager),
-      ).rejects.toMatchObject({
-        status: HttpStatus.BAD_REQUEST,
-        response: expect.objectContaining({ code: 'INVALID_NEW_OWNER' }),
-      });
+        transfers.requestTransfer('h-1', { newOwnerId: 'owner-new' }, mockManager),
+      ).rejects.toMatchObject({ response: expect.objectContaining({ code }) });
     });
   });
 

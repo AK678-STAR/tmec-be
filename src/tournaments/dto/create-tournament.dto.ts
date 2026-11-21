@@ -56,6 +56,20 @@ export class CreateTournamentDto {
   @IsOptional()
   prizePool?: number = 0;
 
+  @ApiPropertyOptional({ description: 'Cân nặng ngựa tối thiểu (kg), BR-RAC-03', example: 420 })
+  @IsNumber()
+  @Min(200)
+  @Max(900)
+  @IsOptional()
+  minWeightKg?: number;
+
+  @ApiPropertyOptional({ description: 'Cân nặng ngựa tối đa (kg), BR-RAC-03', example: 560 })
+  @IsNumber()
+  @Min(200)
+  @Max(900)
+  @IsOptional()
+  maxWeightKg?: number;
+
   @ApiProperty({ description: 'Hạn chót đăng ký (ISO string)', example: '2026-11-15T23:59:59Z' })
   @IsDateString()
   @IsNotEmpty()

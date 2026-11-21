@@ -100,6 +100,8 @@ describe('5-Role Parameterized Matrix: Scope & Permission Enforcement (RULE-RBAC
     trainingLock: {
       create: jest.fn().mockResolvedValue({ id: 'l-1', status: 'ACTIVE' }),
     },
+    shiftRoster: { findMany: jest.fn().mockResolvedValue([{ zoneId: 'zone-a' }]) },
+    groomAssignment: { findMany: jest.fn().mockResolvedValue([{ zoneId: 'zone-a' }]) },
     $queryRaw: jest.fn().mockResolvedValue([]),
     $transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(prisma)),
   };
@@ -156,7 +158,13 @@ describe('5-Role Parameterized Matrix: Scope & Permission Enforcement (RULE-RBAC
         expect(lastFindManyWhere?.ownerId).toBeUndefined();
         expect(lastFindManyWhere?.stallAllocations).toBeUndefined();
       } else if (expectedScope === 'ASSIGNED_ONLY') {
-        expect(lastFindManyWhere?.stallAllocations?.some?.assignedGroomUserId).toBe('u-groom');
+        const some = lastFindManyWhere?.stallAllocations?.some;
+        expect(some?.stall?.zoneId?.in || some?.assignedGroomUserId).toBeTruthy();
+        if (some?.stall?.zoneId?.in) {
+          expect(some.stall.zoneId.in).toEqual(['zone-a']);
+        } else {
+          expect(some.assignedGroomUserId).toBe('u-groom');
+        }
       } else if (expectedScope === 'OWNED_ONLY') {
         expect(lastFindManyWhere?.ownerId).toBe('u-owner');
       }

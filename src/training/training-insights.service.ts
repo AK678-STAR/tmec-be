@@ -15,6 +15,7 @@ import {
 } from './training-rules';
 import { WORKOUT_INCLUDE, phasesOf } from './training-shared';
 import { PrismaService } from '../prisma/prisma.service';
+import { trainerHorseScope } from '../horses/horses.service';
 import { AuditService } from '../audit/audit.service';
 import { TrainingCommonService } from './training-common.service';
 
@@ -157,12 +158,18 @@ export class TrainingInsightsService {
    * SC-2.01 Tổng quan huấn luyện (CM, HT, VET): 4 thẻ chỉ số và một dòng cho mỗi ngựa đang quản lý.
    * Tải 7 ngày "tăng đột ngột" khi > 130% trung bình tuần của 4 tuần trước (Q-2.10).
    */
-  async getOverview() {
+  async getOverview(user?: CurrentUserPayload) {
     await this.common.sweepOverdue();
     const now = new Date();
     const today = startOfClubDay(now);
+    // HLV chỉ thấy ngựa mình đang có giáo án (DRAFT/ACTIVE), tối đa 3 con — không thấy ngựa HLV khác.
+    const trainerId = user?.role === UserRole.HEAD_TRAINER ? user.userId : null;
     const horses = await this.prisma.horse.findMany({
-      where: { deletedAt: null, status: { not: HorseStatus.RETIRED } },
+      where: {
+        deletedAt: null,
+        status: { not: HorseStatus.RETIRED },
+        ...(trainerId ? trainerHorseScope(trainerId) : {}),
+      },
       select: {
         id: true,
         name: true,
@@ -187,6 +194,7 @@ export class TrainingInsightsService {
           where: {
             horseId: { in: horseIds },
             status: { in: [PlanStatus.ACTIVE, PlanStatus.DRAFT] },
+            ...(trainerId ? { trainerUserId: trainerId } : {}),
           },
           select: {
             id: true,

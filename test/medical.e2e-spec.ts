@@ -64,6 +64,8 @@ describe('Flow 3 medical HTTP contract (mock database, real JWT/guards)', () => 
     workoutSession: { updateMany: jest.fn().mockResolvedValue({ count: 2 }) },
     auditLog: { create: jest.fn().mockResolvedValue({}) },
     notification: { createMany: jest.fn().mockResolvedValue({ count: 0 }) },
+    shiftRoster: { findMany: jest.fn().mockResolvedValue([{ zoneId: 'zone-a' }]) },
+    groomAssignment: { findMany: jest.fn().mockResolvedValue([{ zoneId: 'zone-a' }]) },
     $queryRaw: jest.fn().mockResolvedValue([]),
     $transaction: jest.fn((arg: any) =>
       typeof arg === 'function' ? arg(prisma) : Promise.all(arg),
@@ -207,7 +209,7 @@ describe('Flow 3 medical HTTP contract (mock database, real JWT/guards)', () => 
       .auth(token(), { type: 'bearer' })
       .expect(200);
     expect(prisma.horse.findMany.mock.calls[0][0].where.stallAllocations).toEqual({
-      some: { isActive: true, assignedGroomUserId: 'actor' },
+      some: { isActive: true, stall: { zoneId: { in: ['zone-a'] } } },
     });
   });
 

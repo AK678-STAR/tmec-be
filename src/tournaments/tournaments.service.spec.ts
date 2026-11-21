@@ -190,7 +190,7 @@ describe('TournamentsService', () => {
       };
       const actor = { id: 'u1', name: 'Manager', role: 'CLUB_MANAGER' };
       await expect(service.create(dto as any, actor)).rejects.toThrow(
-        'Tournaments cannot be directly created as COMPLETED',
+        'Không thể tạo giải ở trạng thái COMPLETED. Hãy ghi đủ kết quả rồi chốt kết quả',
       );
       expect(prisma.tournament.create).not.toHaveBeenCalled();
       expect(audit.record).not.toHaveBeenCalled();
@@ -208,7 +208,7 @@ describe('TournamentsService', () => {
           } as any,
           actor,
         ),
-      ).rejects.toThrow('Cannot create a tournament directly in CANCELLED status');
+      ).rejects.toThrow('Không thể tạo giải ở trạng thái CANCELLED');
 
       await expect(
         service.create(
@@ -220,7 +220,7 @@ describe('TournamentsService', () => {
           } as any,
           actor,
         ),
-      ).rejects.toThrow('Cannot create a tournament directly in CLOSED_REGISTRATION status');
+      ).rejects.toThrow('Không thể tạo giải ở trạng thái CLOSED_REGISTRATION');
     });
   });
 
@@ -259,7 +259,7 @@ describe('TournamentsService', () => {
           name: 'Mgr',
           role: 'CLUB_MANAGER',
         }),
-      ).rejects.toThrow('Tournaments cannot be directly marked as COMPLETED');
+      ).rejects.toThrow('Không thể chuyển thẳng sang COMPLETED');
       expect(prisma.tournament.update).not.toHaveBeenCalled();
     });
 
@@ -299,7 +299,7 @@ describe('TournamentsService', () => {
           { status: TournamentStatus.COMPLETED },
           { id: 'u1', name: 'Mgr', role: 'CLUB_MANAGER' },
         ),
-      ).rejects.toThrow('Tournaments cannot be directly marked as COMPLETED');
+      ).rejects.toThrow('Không thể chuyển thẳng sang COMPLETED');
       expect(prisma.tournament.update).not.toHaveBeenCalled();
     });
 
@@ -317,9 +317,7 @@ describe('TournamentsService', () => {
           { status: TournamentStatus.OPEN_REGISTRATION },
           { id: 'u1', name: 'Mgr', role: 'CLUB_MANAGER' },
         ),
-      ).rejects.toThrow(
-        'Cannot set Open for Registration when registration deadline is in the past',
-      );
+      ).rejects.toThrow('Không thể mở đăng ký khi hạn đăng ký đã qua');
       expect(prisma.tournament.update).not.toHaveBeenCalled();
     });
 
@@ -336,7 +334,7 @@ describe('TournamentsService', () => {
           { status: TournamentStatus.CLOSED_REGISTRATION },
           { id: 'u1', name: 'Mgr', role: 'CLUB_MANAGER' },
         ),
-      ).rejects.toThrow('Cannot transition tournament status from UPCOMING to CLOSED_REGISTRATION');
+      ).rejects.toThrow('Không thể chuyển trạng thái giải từ UPCOMING sang CLOSED_REGISTRATION');
 
       prisma.tournament.findUnique.mockResolvedValueOnce({
         id: 't-2',
@@ -350,7 +348,7 @@ describe('TournamentsService', () => {
           { status: TournamentStatus.UPCOMING },
           { id: 'u1', name: 'Mgr', role: 'CLUB_MANAGER' },
         ),
-      ).rejects.toThrow('Cannot transition tournament status from CANCELLED to UPCOMING');
+      ).rejects.toThrow('Không thể chuyển trạng thái giải từ CANCELLED sang UPCOMING');
 
       prisma.tournament.findUnique.mockResolvedValueOnce({
         id: 't-3',
@@ -364,7 +362,7 @@ describe('TournamentsService', () => {
           { status: TournamentStatus.UPCOMING },
           { id: 'u1', name: 'Mgr', role: 'CLUB_MANAGER' },
         ),
-      ).rejects.toThrow('Cannot transition tournament status from OPEN_REGISTRATION to UPCOMING');
+      ).rejects.toThrow('Không thể chuyển trạng thái giải từ OPEN_REGISTRATION sang UPCOMING');
       expect(prisma.tournament.update).not.toHaveBeenCalled();
     });
 
@@ -423,7 +421,7 @@ describe('TournamentsService', () => {
           { id: 'u1', name: 'Mgr', role: 'CLUB_MANAGER' },
         ),
       ).rejects.toThrow(
-        'Cannot transition tournament status from CLOSED_REGISTRATION to OPEN_REGISTRATION',
+        'Không thể chuyển trạng thái giải từ CLOSED_REGISTRATION sang OPEN_REGISTRATION',
       );
       expect(prisma.tournament.update).not.toHaveBeenCalled();
     });
@@ -442,7 +440,7 @@ describe('TournamentsService', () => {
           { status: TournamentStatus.OPEN_REGISTRATION },
           { id: 'u1', name: 'Mgr', role: 'CLUB_MANAGER' },
         ),
-      ).rejects.toThrow('Cannot transition tournament status from CANCELLED to OPEN_REGISTRATION');
+      ).rejects.toThrow('Không thể chuyển trạng thái giải từ CANCELLED sang OPEN_REGISTRATION');
       expect(prisma.tournament.update).not.toHaveBeenCalled();
     });
 
@@ -491,7 +489,7 @@ describe('TournamentsService', () => {
 
       await expect(
         service.delete('t-1', { id: 'u1', name: 'Mgr', role: 'CLUB_MANAGER' }),
-      ).rejects.toThrow('Cannot delete tournament with existing horse registrations');
+      ).rejects.toThrow('Không thể xóa giải đã có ngựa đăng ký');
       expect(prisma.tournament.delete).not.toHaveBeenCalled();
     });
 
@@ -504,7 +502,7 @@ describe('TournamentsService', () => {
 
       await expect(
         service.delete('t-1', { id: 'u1', name: 'Mgr', role: 'CLUB_MANAGER' }),
-      ).rejects.toThrow('Cannot delete a completed tournament');
+      ).rejects.toThrow('Không thể xóa giải đã hoàn thành');
       expect(prisma.tournament.delete).not.toHaveBeenCalled();
     });
 
@@ -517,9 +515,7 @@ describe('TournamentsService', () => {
 
       await expect(
         service.delete('t-1', { id: 'u1', name: 'Mgr', role: 'CLUB_MANAGER' }),
-      ).rejects.toThrow(
-        'Cannot delete a cancelled tournament. Cancelled tournaments must be preserved for audit history.',
-      );
+      ).rejects.toThrow('Không thể xóa giải đã hủy. Giải đã hủy được giữ lại để tra cứu lịch sử');
       expect(prisma.tournament.delete).not.toHaveBeenCalled();
     });
 
@@ -532,7 +528,7 @@ describe('TournamentsService', () => {
 
       await expect(
         service.delete('t-1', { id: 'u1', name: 'Mgr', role: 'CLUB_MANAGER' }),
-      ).rejects.toThrow('Cannot delete a closed tournament');
+      ).rejects.toThrow('Không thể xóa giải đã đóng đăng ký');
       expect(prisma.tournament.delete).not.toHaveBeenCalled();
     });
   });
@@ -556,7 +552,7 @@ describe('TournamentsService', () => {
       const actor = { id: 'u2', name: 'Trainer', role: 'HEAD_TRAINER' };
 
       await expect(service.registerHorse('t-1', { horseId: 'h-locked' }, actor)).rejects.toThrow(
-        'Medical Lock is currently in force',
+        'Không thể đăng ký ngựa Thunderbolt: ngựa đang bị bác sĩ thú y khóa y tế',
       );
     });
 
@@ -653,7 +649,7 @@ describe('TournamentsService', () => {
 
       const actor = { id: 'u2', name: 'Trainer', role: 'HEAD_TRAINER' };
       await expect(service.registerHorse('t-upcoming', { horseId: 'h-1' }, actor)).rejects.toThrow(
-        'registration is only permitted in OPEN_REGISTRATION',
+        'Giải không ở trạng thái mở đăng ký',
       );
     });
 
@@ -666,7 +662,7 @@ describe('TournamentsService', () => {
 
       const actor = { id: 'u2', name: 'Trainer', role: 'HEAD_TRAINER' };
       await expect(service.registerHorse('t-closed', { horseId: 'h-1' }, actor)).rejects.toThrow(
-        'registration is only permitted in OPEN_REGISTRATION',
+        'Giải không ở trạng thái mở đăng ký',
       );
     });
 
@@ -679,7 +675,7 @@ describe('TournamentsService', () => {
 
       const actor = { id: 'u2', name: 'Trainer', role: 'HEAD_TRAINER' };
       await expect(service.registerHorse('t-open', { horseId: 'h-1' }, actor)).rejects.toThrow(
-        'Registration deadline for this tournament has passed',
+        'Đã quá hạn đăng ký giải này',
       );
     });
 
@@ -693,7 +689,7 @@ describe('TournamentsService', () => {
 
       const actor = { id: 'u2', name: 'Trainer', role: 'HEAD_TRAINER' };
       await expect(service.cancelRegistration('t-1', 'reg-1', '', actor)).rejects.toThrow(
-        'A reason is required to scratch a horse from a tournament',
+        'Cần nhập lý do khi rút ngựa khỏi giải',
       );
     });
 
@@ -708,7 +704,7 @@ describe('TournamentsService', () => {
       const actor = { id: 'u2', name: 'Trainer', role: 'HEAD_TRAINER' };
       await expect(
         service.cancelRegistration('t-1', 'reg-1', 'Vet scratch', actor),
-      ).rejects.toThrow('Cannot scratch a horse from a cancelled or completed tournament');
+      ).rejects.toThrow('Không thể rút ngựa khỏi giải đã hủy hoặc đã hoàn thành');
     });
 
     it('should reject cancelRegistration when tournament is in UPCOMING status', async () => {
@@ -722,7 +718,7 @@ describe('TournamentsService', () => {
       const actor = { id: 'u2', name: 'Trainer', role: 'HEAD_TRAINER' };
       await expect(
         service.cancelRegistration('t-1', 'reg-1', 'Vet scratch', actor),
-      ).rejects.toThrow('Cannot scratch a horse from an upcoming tournament');
+      ).rejects.toThrow('Không thể rút ngựa khỏi giải chưa mở đăng ký');
     });
 
     it('should allow cancelRegistration in CLOSED_REGISTRATION status', async () => {
@@ -778,7 +774,7 @@ describe('TournamentsService', () => {
 
       const actor = { id: 'u2', name: 'Trainer', role: 'HEAD_TRAINER' };
       await expect(service.cancelRegistration('t-1', 'reg-1', '    ', actor)).rejects.toThrow(
-        'A reason is required to scratch a horse from a tournament',
+        'Cần nhập lý do khi rút ngựa khỏi giải',
       );
       expect(prisma.tournamentRegistration.update).not.toHaveBeenCalled();
       expect(audit.record).not.toHaveBeenCalled();
@@ -796,7 +792,7 @@ describe('TournamentsService', () => {
       const actor = { id: 'u2', name: 'Trainer', role: 'HEAD_TRAINER' };
       await expect(
         service.cancelRegistration('t-1', 'reg-scratched', 'Second scratch', actor),
-      ).rejects.toThrow('Cannot scratch registration reg-scratched with status SCRATCHED_MEDICAL');
+      ).rejects.toThrow('Không thể rút lượt đăng ký reg-scratched ở trạng thái SCRATCHED_MEDICAL');
       expect(prisma.tournamentRegistration.update).not.toHaveBeenCalled();
       expect(audit.record).not.toHaveBeenCalled();
     });
@@ -813,7 +809,7 @@ describe('TournamentsService', () => {
       const actor = { id: 'u2', name: 'Trainer', role: 'HEAD_TRAINER' };
       await expect(
         service.cancelRegistration('t-1', 'reg-dq', 'Late scratch', actor),
-      ).rejects.toThrow('Cannot scratch registration reg-dq with status DISQUALIFIED');
+      ).rejects.toThrow('Không thể rút lượt đăng ký reg-dq ở trạng thái DISQUALIFIED');
       expect(prisma.tournamentRegistration.update).not.toHaveBeenCalled();
       expect(audit.record).not.toHaveBeenCalled();
     });
@@ -910,7 +906,7 @@ describe('TournamentsService', () => {
           { results: [] },
           { id: 'u1', name: 'Manager', role: 'CLUB_MANAGER' },
         ),
-      ).rejects.toThrow('Cannot record results for a cancelled tournament');
+      ).rejects.toThrow('Không thể ghi kết quả cho giải đã hủy');
     });
 
     it('should reject recording results on COMPLETED tournament (already locked)', async () => {
@@ -926,7 +922,7 @@ describe('TournamentsService', () => {
           { results: [] },
           { id: 'u1', name: 'Manager', role: 'CLUB_MANAGER' },
         ),
-      ).rejects.toThrow('Results for this tournament have already been locked by the Club Manager');
+      ).rejects.toThrow('Kết quả giải này đã được Quản lý CLB chốt');
     });
 
     it('should reject recording results on OPEN_REGISTRATION tournament', async () => {
@@ -943,7 +939,7 @@ describe('TournamentsService', () => {
           { results: [] },
           { id: 'u1', name: 'Manager', role: 'CLUB_MANAGER' },
         ),
-      ).rejects.toThrow('Results can only be recorded after registration has closed');
+      ).rejects.toThrow('Chỉ ghi kết quả sau khi giải đã đóng đăng ký');
     });
 
     it('should reject recording results before race date', async () => {
@@ -960,7 +956,7 @@ describe('TournamentsService', () => {
           { results: [] },
           { id: 'u1', name: 'Manager', role: 'CLUB_MANAGER' },
         ),
-      ).rejects.toThrow('Results cannot be recorded before the race has occurred');
+      ).rejects.toThrow('Không thể ghi kết quả trước khi giải diễn ra');
     });
 
     it('should reject recording results with lockResults=true for non-Club Manager', async () => {
@@ -990,9 +986,7 @@ describe('TournamentsService', () => {
           },
           actor,
         ),
-      ).rejects.toThrow(
-        'Only the Club Manager has the authority to record or edit tournament results',
-      );
+      ).rejects.toThrow('Chỉ Quản lý CLB được ghi hoặc sửa kết quả giải');
       expect(prisma.tournamentResult.upsert).not.toHaveBeenCalled();
       expect(audit.record).not.toHaveBeenCalled();
     });
@@ -1024,9 +1018,7 @@ describe('TournamentsService', () => {
           },
           actor,
         ),
-      ).rejects.toThrow(
-        'Only the Club Manager has the authority to record or edit tournament results',
-      );
+      ).rejects.toThrow('Chỉ Quản lý CLB được ghi hoặc sửa kết quả giải');
       expect(prisma.tournamentResult.upsert).not.toHaveBeenCalled();
       expect(audit.record).not.toHaveBeenCalled();
     });
@@ -1084,7 +1076,7 @@ describe('TournamentsService', () => {
           actor,
         ),
       ).rejects.toThrow(
-        'Cannot record result for registration reg-scratched with status SCRATCHED_MEDICAL',
+        'Không thể ghi kết quả cho lượt đăng ký reg-scratched ở trạng thái SCRATCHED_MEDICAL. Chỉ ghi kết quả cho lượt đăng ký còn hiệu lực',
       );
       expect(prisma.tournamentResult.upsert).not.toHaveBeenCalled();
       expect(audit.record).not.toHaveBeenCalled();
@@ -1110,7 +1102,7 @@ describe('TournamentsService', () => {
           },
           actor,
         ),
-      ).rejects.toThrow('Cannot record result for registration reg-dq with status DISQUALIFIED');
+      ).rejects.toThrow('Không thể ghi kết quả cho lượt đăng ký reg-dq ở trạng thái DISQUALIFIED');
       expect(prisma.tournamentResult.upsert).not.toHaveBeenCalled();
       expect(audit.record).not.toHaveBeenCalled();
     });
@@ -1138,7 +1130,7 @@ describe('TournamentsService', () => {
           },
           actor,
         ),
-      ).rejects.toThrow('Cannot lock results: 1 registered horse(s) still lack finish results');
+      ).rejects.toThrow('Không thể chốt kết quả: còn 1 ngựa chưa có kết quả');
 
       expect(prisma.tournamentResult.upsert).not.toHaveBeenCalled();
       expect(prisma.tournament.update).not.toHaveBeenCalled();
@@ -1208,12 +1200,11 @@ describe('TournamentsService', () => {
       expect(prisma.horse.update).toHaveBeenCalledWith(
         expect.objectContaining({ data: { status: HorseStatus.RESTING } }),
       );
-      expect(prisma.financialInvoice.create).toHaveBeenCalledWith(
+      // Tiền thưởng chỉ vào hóa đơn khi chốt tháng (theo settledAt), không tạo hóa đơn kỳ đang chạy.
+      expect(prisma.financialInvoice.create).not.toHaveBeenCalled();
+      expect(prisma.tournamentResult.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({
-            ownerId: 'o-1',
-            prizeCredit: 8500000,
-          }),
+          create: expect.objectContaining({ netOwnerPayout: 8500000, settledAt: expect.any(Date) }),
         }),
       );
       expect(audit.record).toHaveBeenCalledWith(
@@ -1229,7 +1220,7 @@ describe('TournamentsService', () => {
       const actor = { id: 'u2', name: 'Trainer', role: 'HEAD_TRAINER' };
 
       await expect(service.lockResults('t-1', actor)).rejects.toThrow(
-        'Only the Club Manager has the authority to lock tournament results',
+        'Chỉ Quản lý CLB được chốt kết quả giải',
       );
     });
 
@@ -1242,7 +1233,7 @@ describe('TournamentsService', () => {
 
       const actor = { id: 'u1', name: 'Manager', role: 'CLUB_MANAGER' };
       await expect(service.lockResults('t-cancelled', actor)).rejects.toThrow(
-        'Cannot lock results for a cancelled tournament',
+        'Không thể chốt kết quả của giải đã hủy',
       );
     });
 
@@ -1256,7 +1247,7 @@ describe('TournamentsService', () => {
 
       const actor = { id: 'u1', name: 'Manager', role: 'CLUB_MANAGER' };
       await expect(service.lockResults('t-open', actor)).rejects.toThrow(
-        'Results can only be locked when tournament is in CLOSED_REGISTRATION status',
+        'Chỉ chốt kết quả khi giải đã đóng đăng ký',
       );
     });
 
@@ -1270,7 +1261,7 @@ describe('TournamentsService', () => {
 
       const actor = { id: 'u1', name: 'Manager', role: 'CLUB_MANAGER' };
       await expect(service.lockResults('t-future', actor)).rejects.toThrow(
-        'Results cannot be locked before the race date',
+        'Không thể chốt kết quả trước ngày thi đấu',
       );
     });
 
@@ -1428,7 +1419,7 @@ describe('TournamentsService', () => {
           role: UserRole.HORSE_OWNER,
           fullName: 'Owner',
         }),
-      ).rejects.toThrow('Tournament non-existent not found');
+      ).rejects.toThrow('Không tìm thấy giải đấu');
     });
   });
   describe('checkHorseEligibility & Withdrawal Period', () => {
@@ -1464,9 +1455,103 @@ describe('TournamentsService', () => {
       });
 
       expect(result.eligible).toBe(true);
-      expect(result.checks).toHaveLength(6);
+      expect(result.checks).toHaveLength(8);
       expect(result.checks.every((c: any) => c.passed)).toBe(true);
       expect(result.blockingReasons).toHaveLength(0);
+    });
+
+    it('blocks a horse outside the tournament weight limit (BR-RAC-03)', async () => {
+      prisma.tournament.findUnique.mockResolvedValue({
+        id: 't-1',
+        name: 'Spring Cup',
+        raceDate: new Date('2026-11-20T09:00:00Z'),
+        minAgeYears: 2,
+        minWeightKg: 420,
+        maxWeightKg: 520,
+        registrations: [],
+      });
+      prisma.horse.findUnique.mockResolvedValue({
+        id: 'h-1',
+        name: 'Thunder',
+        dob: new Date('2022-01-01'),
+        weightKg: 540,
+        status: HorseStatus.ACTIVE,
+        isMedicalLocked: false,
+        isDebtImpounded: false,
+        ownerId: 'owner-1',
+        workoutSessions: [{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }, { id: 'w4' }],
+      });
+      prisma.medicalRecord.findMany.mockResolvedValue([]);
+      prisma.tournamentRegistration.findMany.mockResolvedValue([]);
+
+      const result = await service.checkHorseEligibility('t-1', 'h-1', {
+        id: 'owner-1',
+        name: 'Owner',
+        role: 'HORSE_OWNER',
+      });
+
+      expect(result.eligible).toBe(false);
+      expect(result.checks.find((c: any) => c.key === 'WEIGHT')?.passed).toBe(false);
+      expect(result.blockingReasons.join(' ')).toContain('420–520 kg');
+    });
+
+    it('blocks a horse already registered in another race on the same club day (BR-RAC-04)', async () => {
+      prisma.tournament.findUnique.mockResolvedValue({
+        id: 't-1',
+        name: 'Spring Cup',
+        raceDate: new Date('2026-11-20T09:00:00Z'),
+        minAgeYears: 2,
+        registrations: [],
+      });
+      prisma.horse.findUnique.mockResolvedValue({
+        id: 'h-1',
+        name: 'Thunder',
+        dob: new Date('2022-01-01'),
+        status: HorseStatus.ACTIVE,
+        isMedicalLocked: false,
+        isDebtImpounded: false,
+        ownerId: 'owner-1',
+        workoutSessions: [{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }, { id: 'w4' }],
+      });
+      prisma.medicalRecord.findMany.mockResolvedValue([]);
+      // 20/11 21:00 UTC = 21/11 04:00 giờ CLB -> khác ngày, không tính; 20/11 01:00 UTC = cùng ngày.
+      prisma.tournamentRegistration.findMany.mockResolvedValue([
+        {
+          horseId: 'h-1',
+          tournament: { name: 'Night Cup', raceDate: new Date('2026-11-20T21:00:00Z') },
+        },
+        {
+          horseId: 'h-1',
+          tournament: { name: 'Morning Cup', raceDate: new Date('2026-11-20T01:00:00Z') },
+        },
+      ]);
+
+      const result = await service.checkHorseEligibility('t-1', 'h-1', {
+        id: 'owner-1',
+        name: 'Owner',
+        role: 'HORSE_OWNER',
+      });
+
+      expect(result.eligible).toBe(false);
+      expect(result.blockingReasons.join(' ')).toContain('Morning Cup');
+      expect(result.blockingReasons.join(' ')).not.toContain('Night Cup');
+    });
+
+    it('rejects a tournament whose minimum weight exceeds the maximum', async () => {
+      await expect(
+        service.create(
+          {
+            name: 'Cup',
+            raceDate: '2026-12-20T09:00:00Z',
+            location: 'Track',
+            distanceMeters: 1600,
+            registrationDeadline: '2026-12-10T09:00:00Z',
+            minWeightKg: 560,
+            maxWeightKg: 420,
+          } as any,
+          { id: 'cm', name: 'CM', role: 'CLUB_MANAGER' },
+        ),
+      ).rejects.toThrow('Cân nặng tối thiểu phải nhỏ hơn hoặc bằng cân nặng tối đa.');
     });
 
     it('detects active medication in withdrawal period and blocks registration', async () => {

@@ -6,7 +6,8 @@ import { NotificationsService } from '../notifications/notifications.service';
 
 describe('Financial billing lifecycle', () => {
   const manager = { id: 'manager', name: 'Manager', role: 'CLUB_MANAGER' };
-  const owner = { id: 'owner', name: 'Owner', role: 'HORSE_OWNER' };
+  const _owner = { id: 'owner', name: 'Owner', role: 'HORSE_OWNER' };
+  void _owner;
   const now = new Date('2027-01-01T03:00:00Z');
   const base = {
     id: 'invoice',
@@ -145,9 +146,9 @@ describe('Financial billing lifecycle', () => {
     await expect(service.update('invoice', { medicalFee: 1 }, manager)).rejects.toThrow();
     expect(db.financialInvoice.update).not.toHaveBeenCalled();
   });
-  it('still permits an owner to pay an overdue invoice without a penalty', async () => {
+  it('still permits settling an overdue invoice without a penalty', async () => {
     db.financialInvoice.findUnique.mockResolvedValue({ ...base, status: 'OVERDUE' });
-    const result = await service.payInvoice('invoice', {}, owner);
+    const result = await service.payInvoice('invoice', {}, manager);
     expect(result.status).toBe('PAID');
     expect(result.netAmount).toBe(6000000);
   });

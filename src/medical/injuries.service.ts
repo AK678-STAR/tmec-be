@@ -143,7 +143,8 @@ export class InjuriesService {
     if (dto.discoveryDate) {
       discDate = new Date(dto.discoveryDate);
       const now = new Date();
-      if (discDate > now) {
+      // Dung sai 5 phút cho lệch đồng hồ client/server (FE gửi new Date() lúc tạo).
+      if (discDate.getTime() > now.getTime() + 5 * 60 * 1000) {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'DATE_IN_FUTURE',

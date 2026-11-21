@@ -1,7 +1,14 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { apiError } from '../common/exceptions/api-error';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
-import { Role, HorseStatus, SeverityLevel } from '@prisma/client';
+import {
+  DailyTaskType,
+  Role,
+  HorseStatus,
+  SeverityLevel,
+  SupplyCategory,
+  SupplyUnit,
+} from '@prisma/client';
 import { assertStatusTransition } from '../horses/horse-rules';
 import { CreateMedicalRecordDto } from './dto/create-medical-record.dto';
 import { UpdateMedicalRecordDto } from './dto/update-medical-record.dto';
@@ -16,11 +23,28 @@ import { CreateFollowUpDto } from './dto/follow-up.dto';
 import { CloseMedicalRecordDto, ReopenMedicalRecordDto } from './dto/close-record.dto';
 import { FinalizeRecordDto } from './dto/finalize-record.dto';
 import { PrismaService } from '../prisma/prisma.service';
+import { groomZoneIds, horsesInZones } from '../shift-rosters/groom-zones';
 import { AuditService } from '../audit/audit.service';
 import { MedicalAccessService } from './medical-access.service';
 import { MedicalLocksService } from './medical-locks.service';
 import { Optional } from '@nestjs/common';
 import { DailyTasksService } from '../daily-tasks/daily-tasks.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { clubDate } from '../training/training-rules';
+
+/** Đơn vị trên đơn thuốc lấy theo đơn vị của thuốc trong kho, bác sĩ không chọn đơn vị khác. */
+const RX_UNIT: Record<SupplyUnit, string> = {
+  KG: 'kg',
+  G: 'g',
+  LITER: 'l',
+  ML: 'ml',
+  PILL: 'tablets',
+  PACKET: 'sachets',
+  BOTTLE: 'bottles',
+  VIAL: 'vials',
+  PIECE: 'pieces',
+  SET: 'sets',
+};
 
 /** P2-02: bệnh án, phác đồ, đơn thuốc, tái khám (FR-3.03 → FR-3.07). */
 @Injectable()
@@ -30,6 +54,7 @@ export class MedicalRecordsService {
     private readonly audit: AuditService,
     private readonly access: MedicalAccessService,
     private readonly locks: MedicalLocksService,
+    private readonly notifications: NotificationsService,
     @Optional() private readonly dailyTasks?: DailyTasksService,
   ) {}
 
@@ -78,6 +103,24 @@ export class MedicalRecordsService {
         'HORSE_RETIRED',
         'The horse is no longer managed by the club; medical records cannot be created.',
       );
+    }
+
+    // #9: bệnh án mở từ một sự cố phải dành cho đúng con ngựa trong sự cố đó.
+    if (dto.incidentId) {
+      const incident = await this.prisma.incidentReport.findUnique({
+        where: { id: dto.incidentId },
+        select: { horseId: true },
+      });
+      if (!incident) {
+        throw apiError(HttpStatus.NOT_FOUND, 'INCIDENT_NOT_FOUND', 'Incident report not found.');
+      }
+      if (incident.horseId !== dto.horseId) {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'INCIDENT_HORSE_MISMATCH',
+          'Bệnh án phải được tạo cho đúng con ngựa trong báo cáo sự cố.',
+        );
+      }
     }
 
     // Kiểm tra quy tắc nghiệp vụ: Mỗi chiến mã chỉ có tối đa 1 bệnh án mở tại một thời điểm
@@ -180,6 +223,13 @@ export class MedicalRecordsService {
       { entityName: 'MedicalRecord' },
     );
 
+    if (dto.incidentId) {
+      await this.prisma.incidentReport.update({
+        where: { id: dto.incidentId },
+        data: { medicalRecordId: record.id },
+      });
+    }
+
     return record;
   }
 
@@ -196,14 +246,7 @@ export class MedicalRecordsService {
     } else if (currentUser.role === Role.HORSE_OWNER) {
       where.horse = { ownerId: currentUser.userId };
     } else if (currentUser.role === Role.GROOM) {
-      where.horse = {
-        stallAllocations: {
-          some: {
-            assignedGroomUserId: currentUser.userId,
-            isActive: true,
-          },
-        },
-      };
+      where.horse = horsesInZones(await groomZoneIds(this.prisma, currentUser.userId));
     }
 
     if (status) {
@@ -1124,6 +1167,9 @@ export class MedicalRecordsService {
       }
     }
 
+    const { supply, unit } = await this.resolveRxSupply(dto.supplyId);
+    const dose = this.assertDose(dto.dosage ?? 1);
+
     const adminRoute = dto.administrationRoute || dto.route || '';
     const freq = dto.frequency || (dto.frequencyPerDay ? `${dto.frequencyPerDay} lần/ngày` : '');
 
@@ -1133,14 +1179,14 @@ export class MedicalRecordsService {
       const days = Number(dto.daysCount) > 0 ? Number(dto.daysCount) : 1;
       effectiveEndDate = new Date(s.getTime() + (days - 1) * 86400000).toISOString().split('T')[0];
     }
-    const dosageStr = String(dto.dosage ?? '1');
+    const dosageStr = String(dose);
 
     const newPrescription = {
       id: `rx-${Date.now()}`,
-      supplyId: dto.supplyId || null,
-      medicationName: dto.medicationName,
+      supplyId: supply.id,
+      medicationName: supply.name,
       dosage: dosageStr,
-      unit: dto.unit || '',
+      unit,
       route: adminRoute,
       administrationRoute: adminRoute,
       frequencyPerDay: dto.frequencyPerDay || dto.frequency,
@@ -1174,10 +1220,26 @@ export class MedicalRecordsService {
 
     await this.syncHorseMedicalTasks(record.horseId, dto.startDate, effectiveEndDate);
 
+    const days = Number(dto.daysCount) > 0 ? Number(dto.daysCount) : 1;
+    const perDay = Number(dto.frequencyPerDay) > 0 ? Number(dto.frequencyPerDay) : 1;
+    const stockWarning = await this.stockWarning(
+      record.horseId,
+      supply.id,
+      dose * perDay * days,
+      unit,
+    );
+    await this.notifyPrescription(record.horseId, recordId, actor, 'PRESCRIPTION_ADDED', {
+      med: supply.name,
+      dose: `${dosageStr} ${unit}`,
+      perDay,
+      days,
+      start: String(dto.startDate).slice(0, 10),
+    });
+
     return {
       message: 'Kê đơn thuốc thành công',
       prescription: newPrescription,
-      warning: conflictWarning,
+      warning: [conflictWarning, stockWarning].filter(Boolean).join(' ') || null,
       record: updated,
     };
   }
@@ -1231,7 +1293,16 @@ export class MedicalRecordsService {
       }
     }
 
-    currentRx[index] = { ...rx, ...dto, updatedAt: new Date().toISOString() };
+    const patch: Record<string, unknown> = { ...dto };
+    if (dto.supplyId) {
+      const { supply, unit } = await this.resolveRxSupply(dto.supplyId);
+      patch.medicationName = supply.name;
+      patch.unit = unit;
+    } else {
+      delete patch.unit; // đơn vị luôn theo thuốc trong kho
+    }
+    if (dto.dosage !== undefined) patch.dosage = String(this.assertDose(dto.dosage));
+    currentRx[index] = { ...rx, ...patch, updatedAt: new Date().toISOString() };
 
     // Cập nhật mảng đơn thuốc vào cột prescriptions trong Database
     await this.prisma.medicalRecord.update({
@@ -1255,7 +1326,16 @@ export class MedicalRecordsService {
       currentRx[index].endDate,
     );
 
-    return { message: 'Cập nhật đơn thuốc thành công', prescription: currentRx[index] };
+    const changed = currentRx[index];
+    await this.notifyPrescription(record.horseId, recordId, actor, 'PRESCRIPTION_UPDATED', {
+      med: changed.medicationName,
+      dose: `${changed.dosage} ${changed.unit}`,
+      perDay: Number(changed.frequencyPerDay) || 1,
+      days: Number(changed.daysCount) || 1,
+      start: String(changed.startDate).slice(0, 10),
+    });
+
+    return { message: 'Cập nhật đơn thuốc thành công', prescription: changed };
   }
 
   async stopPrescription(
@@ -1380,6 +1460,200 @@ export class MedicalRecordsService {
       recordId,
     );
 
+    if (followUp.followUpDate >= clubDate(new Date())) {
+      const horse = await this.prisma.horse.findUnique({
+        where: { id: record.horseId },
+        select: { name: true },
+      });
+      const horseName = horse?.name ?? '';
+      const audience = await this.notifications.horseAudience(record.horseId, {
+        owner: true,
+        groom: true,
+      });
+      await this.notifications.notifyUsers(
+        [...audience, record.veterinarianUserId],
+        {
+          type: 'FOLLOW_UP_SCHEDULED',
+          category: 'MEDICAL',
+          title: 'Follow-up visit scheduled',
+          message: `${horseName} has a follow-up visit on ${followUp.followUpDate}.`,
+          params: { horse: horseName, date: followUp.followUpDate },
+          link: `/medical/records/${recordId}`,
+          senderName: actor.fullName,
+        },
+        actor.userId,
+      );
+    }
+
     return { message: 'Ghi nhận tái khám thành công', followUp, record: updated };
+  }
+
+  /**
+   * #13: nhật ký cho thuốc của bệnh án. Mỗi lần dùng thuốc là một việc MEDICATION hằng ngày của Groom
+   * (ai cho, lúc nào; hoàn thành thì trừ kho), nên bác sĩ đối chiếu được liều nào đã cho, liều nào bị bỏ lỡ.
+   */
+  async getMedicationLog(id: string, currentUser: CurrentUserPayload) {
+    const record = await this.prisma.medicalRecord.findUnique({
+      where: { id },
+      select: { horseId: true, closedAt: true, prescriptions: true, prescriptionDetails: true },
+    });
+    if (!record) {
+      throw apiError(HttpStatus.NOT_FOUND, 'RECORD_NOT_FOUND', 'Medical record not found.');
+    }
+    await this.access.checkHorseAccess(record.horseId, currentUser);
+
+    let rxs: any[] = [];
+    try {
+      const parsed = JSON.parse(record.prescriptions || record.prescriptionDetails || '[]');
+      rxs = Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      rxs = [];
+    }
+    const starts = rxs.map((r) => String(r?.startDate ?? '').slice(0, 10)).filter(Boolean);
+    const ends = rxs
+      .map((r) => String(r?.endDate ?? r?.startDate ?? '').slice(0, 10))
+      .filter(Boolean);
+    const empty = { items: [], summary: { done: 0, missed: 0, upcoming: 0 } };
+    if (starts.length === 0) return empty;
+
+    const from = starts.sort()[0];
+    let to = ends.sort()[ends.length - 1];
+    if (record.closedAt && clubDate(record.closedAt) < to) to = clubDate(record.closedAt);
+
+    const tasks = await this.prisma.dailyCareTask.findMany({
+      where: {
+        horseId: record.horseId,
+        taskType: DailyTaskType.MEDICATION,
+        date: { gte: new Date(`${from}T00:00:00.000Z`), lte: new Date(`${to}T00:00:00.000Z`) },
+      },
+      orderBy: [{ date: 'asc' }, { scheduledTime: 'asc' }],
+      select: {
+        id: true,
+        date: true,
+        scheduledTime: true,
+        title: true,
+        description: true,
+        isCompleted: true,
+        completedAt: true,
+        completedBy: { select: { id: true, fullName: true } },
+        assignedGroom: { select: { id: true, fullName: true } },
+      },
+    });
+
+    const today = clubDate(new Date());
+    const items = tasks.map((t) => {
+      const day = t.date.toISOString().slice(0, 10);
+      const status = t.isCompleted ? 'DONE' : day < today ? 'MISSED' : 'UPCOMING';
+      return { ...t, date: day, status };
+    });
+    const count = (s: string) => items.filter((i) => i.status === s).length;
+    return {
+      items,
+      summary: { done: count('DONE'), missed: count('MISSED'), upcoming: count('UPCOMING') },
+    };
+  }
+
+  /** #10 #14: thuốc phải có trong danh mục kho (nhóm Thuốc, đang dùng); đơn vị lấy theo kho. */
+  private async resolveRxSupply(supplyId?: string) {
+    if (!supplyId) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'SUPPLY_REQUIRED',
+        'Thuốc phải được chọn từ danh mục kho.',
+      );
+    }
+    const supply = await this.prisma.supplyCatalog.findUnique({ where: { id: supplyId } });
+    if (!supply || !supply.isActive || supply.category !== SupplyCategory.MEDICINE) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'INVALID_SUPPLY',
+        'Thuốc không có trong danh mục kho hoặc đã ngừng sử dụng.',
+      );
+    }
+    return { supply, unit: RX_UNIT[supply.unit] };
+  }
+
+  private assertDose(raw: unknown): number {
+    const dose = Number(raw);
+    if (!Number.isFinite(dose) || dose <= 0) {
+      throw apiError(HttpStatus.BAD_REQUEST, 'INVALID_DOSAGE', 'Liều dùng phải là số lớn hơn 0.');
+    }
+    return dose;
+  }
+
+  /** #14: kho của khu chuồng ngựa không đủ cho cả liệu trình thì cảnh báo bác sĩ và báo Club Manager. */
+  private async stockWarning(
+    horseId: string,
+    supplyId: string,
+    needed: number,
+    unit: string,
+  ): Promise<string | null> {
+    const alloc = await this.prisma.stallAllocation.findFirst({
+      where: { horseId, isActive: true },
+      select: { stall: { select: { zoneId: true, zoneRef: { select: { name: true } } } } },
+    });
+    const zoneId = alloc?.stall?.zoneId;
+    if (!zoneId) return null;
+    const balance = await this.prisma.stockBalance.findUnique({
+      where: { zoneId_supplyId: { zoneId, supplyId } },
+      include: { supply: { select: { name: true } } },
+    });
+    const have = Number(balance?.quantity ?? 0);
+    if (have >= needed) return null;
+
+    const zone = alloc.stall.zoneRef?.name ?? '';
+    const haveStr = `${have} ${unit}`;
+    const needStr = `${needed} ${unit}`;
+    await this.notifications.notifyRoles([Role.CLUB_MANAGER], {
+      type: 'RX_STOCK_SHORT',
+      category: 'MEDICAL',
+      title: 'Medicine stock too low for a prescription',
+      message: `${zone}: ${balance?.supply.name ?? 'medicine'} has ${haveStr}, the prescription needs ${needStr}.`,
+      params: { zone, have: haveStr, need: needStr },
+      link: '/supplies/inventory',
+    });
+    return `Kho ${zone} chỉ còn ${haveStr}, đơn thuốc cần ${needStr}. Cần bổ sung kho.`;
+  }
+
+  /** #11: chủ ngựa và Groom biết ngay ngựa được kê / sửa đơn thuốc gì. */
+  private async notifyPrescription(
+    horseId: string,
+    recordId: string,
+    actor: CurrentUserPayload,
+    type: 'PRESCRIPTION_ADDED' | 'PRESCRIPTION_UPDATED',
+    rx: { med: string; dose: string; perDay: number; days: number; start: string },
+  ) {
+    const horse = await this.prisma.horse.findUnique({
+      where: { id: horseId },
+      select: { name: true },
+    });
+    const horseName = horse?.name ?? '';
+    const vet = actor.fullName || actor.email;
+    const verb = type === 'PRESCRIPTION_ADDED' ? 'prescribed' : 'changed the prescription of';
+    await this.notifications.notifyHorse(
+      horseId,
+      { owner: true, groom: true },
+      {
+        type,
+        category: 'MEDICAL',
+        title:
+          type === 'PRESCRIPTION_ADDED'
+            ? 'New prescription for your horse'
+            : 'Prescription changed',
+        message: `${vet} ${verb} ${rx.med} for ${horseName}: ${rx.dose}, ${rx.perDay} time(s)/day for ${rx.days} day(s) from ${rx.start}.`,
+        params: {
+          vet,
+          med: rx.med,
+          horse: horseName,
+          dose: rx.dose,
+          perDay: rx.perDay,
+          days: rx.days,
+          start: rx.start,
+        },
+        link: `/medical/records/${recordId}`,
+        senderName: actor.fullName,
+      },
+      actor.userId,
+    );
   }
 }

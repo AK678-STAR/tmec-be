@@ -36,6 +36,8 @@ class OptionalEnumPipe<T extends object> implements PipeTransform {
 import { TrainingInsightsService } from './training-insights.service';
 import { TrainingPlansService } from './training-plans.service';
 import { WorkoutsService } from './workouts.service';
+import { TrainerReviewsService } from './trainer-reviews.service';
+import { UpsertTrainerReviewDto } from './dto/trainer-review.dto';
 import { CreateTrainingPlanDto } from './dto/create-training-plan.dto';
 import { UpdateTrainingPlanDto } from './dto/update-training-plan.dto';
 import { QueryTrainingPlanDto } from './dto/query-training-plan.dto';
@@ -63,13 +65,39 @@ export class TrainingController {
     private readonly insights: TrainingInsightsService,
     private readonly plans: TrainingPlansService,
     private readonly workouts: WorkoutsService,
+    private readonly reviews: TrainerReviewsService,
   ) {}
+
+  // ------------------------------------------------------------ Đánh giá HLV
+
+  @Get('trainer-reviews')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.HORSE_OWNER)
+  @ApiOperation({
+    summary: 'Đánh giá HLV: CM tổng hợp mọi HLV, HT của mình, OWNER đánh giá đã viết',
+  })
+  async listTrainerReviews(
+    @CurrentUser() user: CurrentUserPayload,
+    @Query('trainerId') trainerId?: string,
+  ) {
+    return this.reviews.list(user, trainerId || undefined);
+  }
+
+  @Put('plans/:id/review')
+  @Roles(UserRole.HORSE_OWNER)
+  @ApiOperation({ summary: 'Chủ ngựa chấm sao + nhận xét HLV cho giáo án (tạo hoặc sửa)' })
+  async upsertTrainerReview(
+    @Param('id') id: string,
+    @Body() dto: UpsertTrainerReviewDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.reviews.upsert(id, dto, user);
+  }
 
   @Get('overview')
   @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.VETERINARIAN)
   @ApiOperation({ summary: 'SC-2.01 Tổng quan huấn luyện: 4 thẻ chỉ số + bảng ngựa' })
-  async getOverview() {
-    return this.insights.getOverview();
+  async getOverview(@CurrentUser() user: CurrentUserPayload) {
+    return this.insights.getOverview(user);
   }
 
   // ------------------------------------------------------------ Giáo án
@@ -157,8 +185,9 @@ export class TrainingController {
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('status', new OptionalEnumPipe(WorkoutStatus)) status?: WorkoutStatus,
+    @Query('scope') scope?: string,
   ) {
-    return this.workouts.findAllWorkouts({ planId, horseId, date, from, to, status }, user);
+    return this.workouts.findAllWorkouts({ planId, horseId, date, from, to, status, scope }, user);
   }
 
   @Get('trial-runs')

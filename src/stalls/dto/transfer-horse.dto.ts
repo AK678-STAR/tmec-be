@@ -7,7 +7,7 @@ export class TransferHorseDto {
   @IsNotEmpty()
   newStallId: string;
 
-  @ApiPropertyOptional({ description: 'ID người chăm sóc' })
+  @ApiPropertyOptional({ description: 'ID nhân viên chăm sóc' })
   @IsUUID()
   @IsOptional()
   assignedGroomUserId?: string;

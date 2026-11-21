@@ -89,30 +89,67 @@ describe('FinancialService', () => {
     };
 
     it.each([InvoiceStatus.SENT, InvoiceStatus.OVERDUE])(
-      'pays an owned %s invoice by bank transfer',
+      'owner reporting a transfer on a %s invoice only marks it awaiting reconciliation',
       async (status) => {
         prisma.financialInvoice.findUnique.mockResolvedValue({ ...invoice, status });
-        prisma.financialInvoice.update.mockResolvedValue({
+        prisma.financialInvoice.update.mockImplementation(({ data }: any) => ({
           ...invoice,
-          status: InvoiceStatus.PAID,
-        });
-        const paid = await service.payInvoice(
+          status,
+          ...data,
+        }));
+        const reported = await service.payInvoice(
           invoice.id,
-          { paymentMethod: 'BANK_TRANSFER' },
+          { paymentMethod: 'BANK_TRANSFER', transactionRef: ' FT123 ' },
           owner,
         );
-        expect(paid.status).toBe(InvoiceStatus.PAID);
+        expect(reported.status).toBe(status);
+        expect(reported.paymentReportedAt).toBeInstanceOf(Date);
+        expect(prisma.financialInvoice.update.mock.calls[0][0].data.status).toBeUndefined();
         expect(audit.record).toHaveBeenCalledWith(
           expect.anything(),
-          'INVOICE_PAID',
+          'INVOICE_PAYMENT_REPORTED',
           expect.any(String),
           invoice.id,
           expect.objectContaining({
-            newValues: { status: InvoiceStatus.PAID, paymentMethod: 'BANK_TRANSFER' },
+            newValues: { paymentMethod: 'BANK_TRANSFER', paymentRef: 'FT123' },
           }),
         );
       },
     );
+
+    it('manager confirming receipt marks the invoice PAID with the confirmer', async () => {
+      const manager = { id: 'mgr-1', name: 'Manager', role: 'CLUB_MANAGER' } as any;
+      prisma.financialInvoice.findUnique.mockResolvedValue({
+        ...invoice,
+        paymentMethod: 'BANK_TRANSFER',
+        paymentRef: 'FT123',
+      });
+      prisma.financialInvoice.update.mockImplementation(({ data }: any) => ({
+        ...invoice,
+        ...data,
+      }));
+      const paid = await service.payInvoice(invoice.id, {}, manager);
+      expect(paid.status).toBe(InvoiceStatus.PAID);
+      expect(paid.paidConfirmedById).toBe('mgr-1');
+      expect(paid.paymentRef).toBe('FT123');
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.anything(),
+        'INVOICE_PAID',
+        expect.any(String),
+        invoice.id,
+        expect.anything(),
+      );
+    });
+
+    it('owner cannot flip an invoice to PAID through changeStatus', async () => {
+      prisma.financialInvoice.findUnique.mockResolvedValue(invoice);
+      await expect(
+        service.changeStatus(invoice.id, InvoiceStatus.PAID, owner),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'PAYMENT_NEEDS_RECONCILIATION' }),
+      });
+      expect(prisma.financialInvoice.update).not.toHaveBeenCalled();
+    });
 
     it('rejects paying another owner invoice', async () => {
       prisma.financialInvoice.findUnique.mockResolvedValue({ ...invoice, ownerId: 'other-owner' });
@@ -284,7 +321,7 @@ describe('FinancialService', () => {
       const user = { id: 'my-owner-id', name: 'Owner', role: 'HORSE_OWNER' };
 
       await expect(service.findOne('inv-1', user)).rejects.toThrow(
-        'You can only view financial statements for your own horses',
+        'Bạn chỉ được xem bảng kê của ngựa mình sở hữu',
       );
     });
   });
@@ -524,7 +561,8 @@ describe('FinancialService', () => {
     });
 
     it('should automatically release horse impound and clear owner bad debt when all overdue invoices are paid', async () => {
-      const owner = { id: 'o-1', name: 'Owner', role: 'HORSE_OWNER' };
+      const _owner = { id: 'o-1', name: 'Owner', role: 'HORSE_OWNER' };
+      void _owner;
       const invoice = {
         id: 'inv-od-1',
         horseId: 'h-1',
@@ -543,7 +581,12 @@ describe('FinancialService', () => {
       prisma.financialInvoice.update.mockResolvedValue({ ...invoice, status: InvoiceStatus.PAID });
       prisma.financialInvoice.count.mockResolvedValue(0); // 0 remaining overdue
 
-      await service.payInvoice('inv-od-1', { paymentMethod: 'VIETQR' }, owner);
+      // Sanctions lift once the manager reconciles the payment.
+      await service.payInvoice('inv-od-1', { paymentMethod: 'VIETQR' }, {
+        id: 'mgr-1',
+        name: 'Manager',
+        role: 'CLUB_MANAGER',
+      } as any);
 
       expect(prisma.horse.update).toHaveBeenCalledWith({
         where: { id: 'h-1' },
@@ -628,7 +671,7 @@ describe('FinancialService', () => {
       });
 
       await expect(service.update('inv-sent', { medicalFee: 500000 }, mgr)).rejects.toThrow(
-        'Only DRAFT invoices can have service fees edited.',
+        'Chỉ sửa được phí dịch vụ khi hóa đơn còn ở trạng thái Chưa gửi',
       );
     });
 
@@ -646,7 +689,7 @@ describe('FinancialService', () => {
           },
           mgr,
         ),
-      ).rejects.toThrow('An active statement already exists for this horse in period 2026-10.');
+      ).rejects.toThrow('Ngựa này đã có bảng kê đang hiệu lực cho kỳ 2026-10.');
     });
 
     it('should separate paid revenue, receivables, draft invoices, delivered supply imports, and surplus payouts in getClubCashflow', async () => {

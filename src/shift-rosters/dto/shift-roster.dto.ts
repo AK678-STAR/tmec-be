@@ -32,7 +32,7 @@ export class AssignShiftRosterDto {
 
   @ApiProperty({
     type: [String],
-    description: 'Danh sách ID nhân viên Groom được phân công (tối đa 10 người)',
+    description: 'Danh sách ID nhân viên chăm sóc được phân công (tối đa 10 người)',
   })
   @IsArray({ message: 'Danh sách nhân viên phải là mảng.' })
   @ArrayMaxSize(10, { message: 'Mỗi ca tối đa 10 nhân viên.' })
@@ -93,7 +93,7 @@ export class QueryShiftRosterDto {
   @IsUUID('4')
   zoneId?: string;
 
-  @ApiPropertyOptional({ description: 'Lọc theo nhân viên Groom' })
+  @ApiPropertyOptional({ description: 'Lọc theo nhân viên chăm sóc' })
   @IsOptional()
   @IsUUID('4')
   groomUserId?: string;

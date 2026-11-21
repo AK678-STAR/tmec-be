@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { TrainingController } from './training.controller';
+import { TrainerReviewsService } from './trainer-reviews.service';
 import { TrainingInsightsService } from './training-insights.service';
 import { TrainingPlansService } from './training-plans.service';
 import { WorkoutsService } from './workouts.service';
@@ -57,6 +58,7 @@ describe('TrainingController', () => {
         { provide: TrainingInsightsService, useValue: mockInsights },
         { provide: TrainingPlansService, useValue: mockPlans },
         { provide: WorkoutsService, useValue: mockWorkouts },
+        { provide: TrainerReviewsService, useValue: { list: jest.fn(), upsert: jest.fn() } },
       ],
     }).compile();
 
@@ -71,8 +73,8 @@ describe('TrainingController', () => {
   });
 
   it('should delegate overview to insights service', async () => {
-    const res = await controller.getOverview();
-    expect(insightsService.getOverview).toHaveBeenCalled();
+    const res = await controller.getOverview(mockUser);
+    expect(insightsService.getOverview).toHaveBeenCalledWith(mockUser);
     expect(res).toBeDefined();
   });
 

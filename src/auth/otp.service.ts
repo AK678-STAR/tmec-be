@@ -99,8 +99,35 @@ export class OtpService {
     await this.prisma.otpCode.delete({ where: { id: record.id } });
   }
 
+  /**
+   * needFix #16: tài khoản đã xác minh / kích hoạt thì báo rõ để người dùng đi đăng nhập,
+   * thay vì im lặng như đã gửi mã (mở lại link "Kích hoạt tài khoản" cũ cũng rơi vào đây).
+   */
+  async assertNotActivated(email: string, purpose: OtpPurpose): Promise<void> {
+    if (purpose === OtpPurpose.RESET) return;
+    const user = await this.prisma.user.findUnique({ where: { email }, select: { status: true } });
+    if (!user) return;
+    const waiting = purpose === OtpPurpose.SIGNUP ? UserStatus.PENDING_EMAIL : UserStatus.INVITED;
+    if (user.status === waiting || user.status === UserStatus.REJECTED) return;
+    if (user.status === UserStatus.PENDING_APPROVAL) {
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'EMAIL_ALREADY_VERIFIED',
+        'This email is already verified and is waiting for the Club Manager to approve it.',
+        { status: user.status },
+      );
+    }
+    throw apiError(
+      HttpStatus.CONFLICT,
+      'ACCOUNT_ALREADY_ACTIVE',
+      'This email already has an activated account. Please sign in.',
+      { status: user.status },
+    );
+  }
+
   /** GET /auth/otp — mốc thời gian của mã đang có (cho bộ đếm ngược). */
   async times(email: string, purpose: OtpPurpose) {
+    await this.assertNotActivated(email, purpose);
     const record = await this.find(email, purpose);
     if (!record) throw apiError(HttpStatus.NOT_FOUND, 'OTP_NOT_FOUND', 'No code');
     return otpTimes(record);
@@ -121,6 +148,7 @@ export class OtpService {
 
   /** POST /auth/otp/resend — chỉ gửi mail tới đúng người cho từng mục đích. */
   async resend(email: string, purpose: OtpPurpose) {
+    await this.assertNotActivated(email, purpose);
     await this.assertCooldown(email, purpose);
     const user = await this.prisma.user.findUnique({ where: { email } });
     const deliver =

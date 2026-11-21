@@ -63,10 +63,11 @@ export class CreateHorseDto {
   @Matches(/^\d{15}$/, { message: 'Microchip number must consist of exactly 15 digits.' })
   microchip: string;
 
-  @ApiProperty({ description: 'Owner User ID' })
-  @IsNotEmpty({ message: 'Owner ID is required.' })
-  @IsString({ message: 'Owner ID must be a string.' })
-  ownerId: string;
+  /** Bỏ qua: BE luôn lấy chủ ngựa từ tài khoản đang đăng nhập. */
+  @ApiPropertyOptional({ description: 'Ignored, the owner is the signed-in Horse Owner' })
+  @IsOptional()
+  @IsString()
+  ownerId?: string;
 
   @ApiPropertyOptional({ description: 'Avatar URL' })
   @IsOptional()
@@ -77,9 +78,4 @@ export class CreateHorseDto {
   @IsNumber({}, { message: 'Weight must be a number.' })
   @Min(0.01, { message: 'Weight must be greater than 0 kg.' })
   weightKg: number;
-
-  @ApiPropertyOptional({ description: 'Initial Stall ID' })
-  @IsOptional()
-  @IsString()
-  stallId?: string;
 }

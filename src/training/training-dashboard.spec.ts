@@ -33,6 +33,16 @@ describe('Trainer actionable overview', () => {
     );
   });
   afterEach(() => jest.useRealTimers());
+  it('limits a head trainer to horses on their own live plans', async () => {
+    await service.getOverview({ userId: 't1', role: 'HEAD_TRAINER' } as any);
+    const where = db.horse.findMany.mock.calls[0][0].where;
+    expect(where.trainingPlans.some.trainerUserId).toBe('t1');
+    expect(db.trainingPlan.findMany.mock.calls[0][0].where.trainerUserId).toBe('t1');
+  });
+  it('shows the whole club to a manager', async () => {
+    await service.getOverview({ userId: 'm1', role: 'CLUB_MANAGER' } as any);
+    expect(db.horse.findMany.mock.calls[0][0].where.trainingPlans).toBeUndefined();
+  });
   it('returns safe nulls when no upcoming workout or active plan exists', async () => {
     const result = await service.getOverview();
     expect(result.nextWorkout).toBeNull();

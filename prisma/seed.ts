@@ -47,7 +47,12 @@ import {
   TRAINING_MONTHLY_RATE,
 } from '../src/financial/financial.service';
 import { calculatePrizeSplit } from '../src/tournaments/tournaments.service';
-import { clubDate } from '../src/training/training-rules';
+import {
+  clubDate,
+  GROOM_BUFFER_MINUTES,
+  TRIAL_SLOT_MINUTES,
+  workoutDurationMinutes,
+} from '../src/training/training-rules';
 
 type Tx = Prisma.TransactionClient;
 
@@ -479,7 +484,7 @@ const HORSES: HorseSpec[] = [
     stallId: stallIds.H[0],
     groomId: userIds.grooms[8],
     isDebtImpounded: true,
-    debtImpoundReason: 'Quá hạn thanh toán chi phí lưu chuồng & điều trị T8-T10/2026',
+    debtImpoundReason: 'Overdue stabling and treatment fees (Aug-Oct 2026).',
   },
   {
     id: horseIds[17],
@@ -1412,6 +1417,35 @@ async function seedTraining(tx: Tx) {
     skipDuplicates: true,
   });
 
+  // Chủ ngựa đánh giá HLV cho vài giáo án đang chạy / đã xong (xóa theo giáo án nhờ onDelete: Cascade).
+  const reviewable = await tx.trainingPlan.findMany({
+    where: {
+      status: { in: [PlanStatus.ACTIVE, PlanStatus.COMPLETED] },
+      horse: { ownerId: { not: null } },
+    },
+    select: { id: true, trainerUserId: true, horse: { select: { ownerId: true } } },
+    orderBy: { planCode: 'asc' },
+    take: 6,
+  });
+  const reviewTexts: Array<[number, string | null]> = [
+    [5, 'Ngựa tiến bộ rõ, HLV báo cáo đều đặn sau mỗi buổi.'],
+    [4, 'Giáo án hợp lý, mong được cập nhật số liệu nhanh hơn.'],
+    [3, 'Ngựa có lúc quá tải, cần điều chỉnh cường độ.'],
+    [5, null],
+    [4, 'Tốc độ cải thiện tốt trước giải.'],
+    [2, 'Ít trao đổi với chủ ngựa, kết quả chưa như kỳ vọng.'],
+  ];
+  await tx.trainerReview.createMany({
+    data: reviewable.map((p, i) => ({
+      trainingPlanId: p.id,
+      trainerUserId: p.trainerUserId,
+      ownerUserId: p.horse.ownerId as string,
+      rating: reviewTexts[i][0],
+      comment: reviewTexts[i][1],
+    })),
+    skipDuplicates: true,
+  });
+
   // Build rich WorkoutSessions spanning T7–today + upcoming 5 days
   const workouts: Prisma.WorkoutSessionCreateManyInput[] = [];
   const activeRunners = [
@@ -1686,7 +1720,73 @@ async function seedTraining(tx: Tx) {
     },
   );
 
+  // Buổi tập do groom của ngựa phụ trách (BE chỉ nhận GROOM ở assignedStaffUserId), rồi dời giờ
+  // từng 15' cho tới khi không vi phạm luật xếp lịch của workouts.service: groom bận theo thời lượng
+  // + GROOM_BUFFER_MINUTES, cùng ngựa cách nhau ≥ 30', chạy thử cùng mặt sân không chung khung 15'.
+  const groomOfHorse = new Map(HORSES.map((h) => [h.id, h.groomId ?? null]));
+  // HLV cưỡi mọi buổi của giáo án mình: hai buổi của cùng HLV không được chồng giờ (TRAINER_TIME_CONFLICT).
+  const trainerOfPlan = new Map(
+    (await tx.trainingPlan.findMany({ select: { id: true, trainerUserId: true } })).map((p) => [
+      p.id,
+      p.trainerUserId,
+    ]),
+  );
+  const placed: Array<{
+    start: number;
+    end: number;
+    staff: string | null;
+    trainer: string | null;
+    horse: string;
+    trial: string | null;
+  }> = [];
+  const MIN = 60 * 1000;
+  workouts.sort((a, b) => +new Date(a.scheduledDate) - +new Date(b.scheduledDate));
+  for (const w of workouts) {
+    w.assignedStaffUserId = groomOfHorse.get(w.horseId) ?? w.assignedStaffUserId;
+    if (w.status === WorkoutStatus.CANCELLED) continue;
+    const original = +new Date(w.scheduledDate);
+    const span = (workoutDurationMinutes(w.workoutType) + GROOM_BUFFER_MINUTES) * MIN;
+    const trial = w.workoutType === 'TRIAL' ? (w.trackSurface ?? null) : null;
+    const trainer = (w.trainingPlanId && trainerOfPlan.get(w.trainingPlanId)) || null;
+    let start = original;
+    const clashes = (s: number) =>
+      placed.some(
+        (p) =>
+          (w.assignedStaffUserId &&
+            p.staff === w.assignedStaffUserId &&
+            s < p.end &&
+            p.start < s + span) ||
+          (trainer && p.trainer === trainer && s < p.end && p.start < s + span) ||
+          (p.horse === w.horseId && Math.abs(p.start - s) < 30 * MIN) ||
+          (trial && p.trial === trial && Math.abs(p.start - s) < TRIAL_SLOT_MINUTES * MIN),
+      );
+    while (clashes(start)) start += 15 * MIN;
+    placed.push({
+      start,
+      end: start + span,
+      staff: w.assignedStaffUserId ?? null,
+      trainer,
+      horse: w.horseId,
+      trial,
+    });
+    const shift = start - original;
+    if (shift) {
+      w.scheduledDate = new Date(start);
+      if (w.resultRecordedAt) w.resultRecordedAt = new Date(+new Date(w.resultRecordedAt) + shift);
+    }
+  }
   await tx.workoutSession.createMany({ data: workouts, skipDuplicates: true });
+  // Buổi tập đã có từ lần seed trước: cập nhật người phụ trách và giờ theo bản đã xếp lại ở trên.
+  for (const w of workouts) {
+    await tx.workoutSession.updateMany({
+      where: { id: w.id },
+      data: {
+        assignedStaffUserId: w.assignedStaffUserId,
+        scheduledDate: w.scheduledDate,
+        resultRecordedAt: w.resultRecordedAt,
+      },
+    });
+  }
 
   // SimulatorSessions (covering WORKOUT, RACE, EXAM + COMPLETED, RUNNING, PENDING, ABORTED_INJURY)
   await tx.simulatorSession.createMany({
@@ -2795,8 +2895,8 @@ async function seedStableCare(tx: Tx) {
         urgencyReason: 'Nhập cám yến mạch phục vụ chế độ tập tăng tải tuần đua 15-20/11',
         requestedById: userIds.grooms[0],
         reviewedById: userIds.manager,
-        reviewedAt: days(1, 10, 0),
-        deliveredAt: days(1, 10, 5),
+        reviewedAt: days(-1, 10, 0),
+        deliveredAt: days(-1, 10, 5),
         deliveredById: userIds.grooms[0],
       },
       {
@@ -2810,7 +2910,7 @@ async function seedStableCare(tx: Tx) {
         urgencyReason: 'Bổ sung gói điện giải khu B chuẩn bị cho vòng bán kết ngày 18/11',
         requestedById: userIds.grooms[1],
         reviewedById: userIds.manager,
-        reviewedAt: days(3, 14, 0),
+        reviewedAt: days(-1, 14, 0),
       },
       {
         id: id('restock:d5:timothy'),
@@ -2826,6 +2926,16 @@ async function seedStableCare(tx: Tx) {
     skipDuplicates: true,
   });
 
+  // Phiếu nhập từ lần seed trước từng mang ngày tương lai: kéo về hôm qua (đã nhập kho / đã duyệt).
+  await tx.restockRequest.updateMany({
+    where: { id: id('restock:d1:oats') },
+    data: { reviewedAt: days(-1, 10, 0), deliveredAt: days(-1, 10, 5) },
+  });
+  await tx.restockRequest.updateMany({
+    where: { id: id('restock:d3:electrolyte') },
+    data: { reviewedAt: days(-1, 14, 0) },
+  });
+
   // IncidentReports covering all 4 IncidentStatus
   await tx.incidentReport.createMany({
     data: [
@@ -2837,7 +2947,7 @@ async function seedStableCare(tx: Tx) {
         stallZoneId: zoneIds.A,
         reportedById: userIds.grooms[4],
         severity: SeverityLevel.MODERATE,
-        symptomsJson: ['Bỏ ăn sáng 30%', 'Uể oải nhẹ'],
+        symptomsJson: ['LOSS_OF_APPETITE', 'OTHER'],
         description: 'Hồng Kỳ ăn chậm vào ca sáng nay, cần bác sĩ kiểm tra răng và thân nhiệt.',
         status: IncidentStatus.REPORTED,
       },
@@ -2849,7 +2959,7 @@ async function seedStableCare(tx: Tx) {
         stallZoneId: zoneIds.B,
         reportedById: userIds.grooms[6],
         severity: SeverityLevel.MILD,
-        symptomsJson: ['Phân lỏng nhẹ'],
+        symptomsJson: ['OTHER'],
         description: 'Ghi nhận phân lỏng sau buổi chiều đổi lô cỏ mới.',
         status: IncidentStatus.UNDER_REVIEW,
         reviewedById: userIds.vet3,
@@ -2865,7 +2975,7 @@ async function seedStableCare(tx: Tx) {
         stallZoneId: zoneIds.A,
         reportedById: userIds.grooms[0],
         severity: SeverityLevel.MILD,
-        symptomsJson: ['Trầy da nông'],
+        symptomsJson: ['WOUND'],
         description: 'Vết xước nhẹ do cọ vào thành cửa chuồng, đã vệ sinh sát khuẩn.',
         status: IncidentStatus.RESOLVED,
         reviewedById: userIds.vet,
@@ -2881,7 +2991,7 @@ async function seedStableCare(tx: Tx) {
         stallZoneId: zoneIds.A,
         reportedById: userIds.grooms[9],
         severity: SeverityLevel.MILD,
-        symptomsJson: ['Hắt hơi 2 lần'],
+        symptomsJson: ['COUGHING'],
         description: 'Hắt hơi thoáng qua khi vừa rải rơm mới.',
         status: IncidentStatus.DISMISSED,
         reviewedById: userIds.vet2,
@@ -3285,7 +3395,7 @@ async function seedRacingAndInvoices(tx: Tx) {
       prizeMoneyWon: gross,
       ...split,
       settledAt,
-      officialNotes: `Xếp hạng ${rank} chính thức từ ban trọng tài`,
+      officialNotes: rank === 1 ? 'Quán quân' : rank === 2 ? 'Á quân' : `Hạng ${rank}`,
     };
   };
 
@@ -3313,6 +3423,21 @@ async function seedRacingAndInvoices(tx: Tx) {
     makeResult(tIds.oct, 3, 3, 94.1, 61.2, 20000000, 5000000, days(-21)),
   ];
   await tx.tournamentResult.createMany({ data: results, skipDuplicates: true });
+  // Kết quả đã có từ lần seed trước: cập nhật ghi chú theo hạng và tiền chia theo calculatePrizeSplit.
+  for (const r of results) {
+    await tx.tournamentResult.updateMany({
+      where: { id: r.id },
+      data: {
+        officialNotes: r.officialNotes,
+        grossPrize: r.grossPrize,
+        entryFeeDeducted: r.entryFeeDeducted,
+        trainerCut: r.trainerCut,
+        jockeyCut: r.jockeyCut,
+        netOwnerPayout: r.netOwnerPayout,
+        settledAt: r.settledAt,
+      },
+    });
+  }
 
   // Only closed demo months are billed; November/December remain scheduling data.
   const stayStart = new Date('2026-06-01T00:00:00+07:00');
@@ -3408,6 +3533,36 @@ async function seedRacingAndInvoices(tx: Tx) {
     }
   }
   await tx.financialInvoice.createMany({ data: invoices, skipDuplicates: true });
+  // Hóa đơn mẫu đã có từ lần seed trước: tính lại các khoản (nhất là tiền thưởng giải đã chốt trong tháng), giữ trạng thái.
+  for (const inv of invoices) {
+    await tx.financialInvoice.updateMany({
+      where: { id: inv.id },
+      data: {
+        boardingFee: inv.boardingFee,
+        boardingDays: inv.boardingDays,
+        medicalFee: inv.medicalFee,
+        trainingFee: inv.trainingFee,
+        prizeCredit: inv.prizeCredit,
+        netAmount: inv.netAmount,
+      },
+    });
+  }
+  // Ngựa có hóa đơn Quá hạn còn số dư dương thì bị lưu giữ nợ, giống FinancialService.applyDebtImpoundToHorses.
+  const overdueHorseIds = [
+    ...new Set(
+      invoices
+        .filter((i) => i.status === InvoiceStatus.OVERDUE && Number(i.netAmount) > 0)
+        .map((i) => i.horseId),
+    ),
+  ];
+  await tx.horse.updateMany({
+    where: { id: { in: overdueHorseIds }, isDebtImpounded: false },
+    data: {
+      isDebtImpounded: true,
+      debtImpoundedAt: days(-20),
+      debtImpoundReason: 'Overdue boarding / stabling fees.',
+    },
+  });
 }
 
 async function seedActivityAndSupport(tx: Tx) {

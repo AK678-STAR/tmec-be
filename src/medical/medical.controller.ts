@@ -87,7 +87,7 @@ export class MedicalController {
 
   @Get('horses/:id/observations')
   @RequirePermission('viewMedical')
-  @ApiOperation({ summary: 'Ghi chú quan sát sức khỏe của Groom (FR-3.17)' })
+  @ApiOperation({ summary: 'Ghi chú quan sát sức khỏe của nhân viên chăm sóc (FR-3.17)' })
   getHorseObservations(
     @Param('id') id: string,
     @CurrentUser() user: CurrentUserPayload,
@@ -231,6 +231,13 @@ export class MedicalController {
   @ApiOperation({ summary: 'Chi tiết bệnh án' })
   getRecordDetail(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
     return this.records.getMedicalRecordDetail(id, user);
+  }
+
+  @Get('records/:id/medication-log')
+  @RequirePermission('viewMedical')
+  @ApiOperation({ summary: 'Nhật ký cho thuốc của bệnh án (đã cho / bỏ lỡ / sắp tới)' })
+  getMedicationLog(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
+    return this.records.getMedicationLog(id, user);
   }
 
   @Put('records/:id')

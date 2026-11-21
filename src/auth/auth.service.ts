@@ -616,6 +616,7 @@ export class AuthService {
   /** Nhập đúng mã => chuyển sang chờ Club Manager duyệt (PENDING_APPROVAL). */
   async verifyEmail(dto: VerifyOtpDto) {
     const email = normEmail(dto.email);
+    await this.otp.assertNotActivated(email, OtpPurpose.SIGNUP);
     const pending = await this.prisma.user.findFirst({
       where: { email, status: UserStatus.PENDING_EMAIL },
     });
@@ -766,6 +767,7 @@ export class AuthService {
   /** Nhân viên được mời nhập mã trong email mời => nhận vé đặt mật khẩu lần đầu. */
   async verifyInviteOtp(dto: VerifyOtpDto) {
     const email = normEmail(dto.email);
+    await this.otp.assertNotActivated(email, OtpPurpose.INVITE);
     const invited = await this.prisma.user.findFirst({
       where: { email, status: UserStatus.INVITED },
     });

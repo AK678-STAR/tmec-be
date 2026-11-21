@@ -1,7 +1,6 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { HorseStatus, PlanStatus, Prisma, Role, UserStatus, WorkoutStatus } from '@prisma/client';
 import { apiError } from '../common/exceptions/api-error';
-import { fullNameError } from '../common/utils/name';
 import { UserRole } from '../common/enums/role.enum';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { CreateWorkoutSessionDto, RepeatWorkoutDto } from './dto/create-workout-session.dto';
@@ -92,39 +91,6 @@ export class WorkoutsService {
     private readonly notifications: NotificationsService,
     private readonly common: TrainingCommonService,
   ) {}
-
-  /**
-   * Báo groom được giao buổi tập (FR-2.12, blueprint FR-006).
-   * Giáo án còn Nháp thì chưa báo: groom nhận thông báo khi HT kích hoạt giáo án.
-   */
-  private async notifyGroomAssigned(
-    groomId: string | null | undefined,
-    horseId: string,
-    count: number,
-    firstDate: Date,
-    user: CurrentUserPayload,
-    planStatus?: PlanStatus,
-  ) {
-    if (!groomId || count === 0 || planStatus === PlanStatus.DRAFT) return;
-    const horse = await this.prisma.horse.findUnique({
-      where: { id: horseId },
-      select: { name: true },
-    });
-    const name = horse?.name ?? '';
-    await this.notifications.notifyUsers(
-      [groomId],
-      {
-        type: 'WORKOUT_ASSIGNED',
-        category: 'TRAINING',
-        title: 'New workout assigned to you',
-        message: `${count} workout(s) for ${name}, first on ${clubDate(firstDate)}.`,
-        params: { horse: name, count, date: clubDate(firstDate) },
-        link: '/my-training',
-        senderName: user.fullName,
-      },
-      user.userId,
-    );
-  }
 
   /**
    * Kiểm tra DL-2.01 theo thứ tự ưu tiên của đặc tả. Gọi trong transaction đã khóa dòng ngựa.
@@ -239,16 +205,6 @@ export class WorkoutsService {
           'Tốc độ mục tiêu là bắt buộc với bài chạy tốc độ và chạy thử.',
         );
       }
-      if (!w.jockeyName) {
-        throw apiError(HttpStatus.BAD_REQUEST, 'JOCKEY_REQUIRED', 'Vui lòng nhập tên nài ngựa.');
-      }
-    }
-    if (w.jockeyName && fullNameError(w.jockeyName)) {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'INVALID_JOCKEY_NAME',
-        'Tên nài ngựa chỉ được gồm chữ cái và khoảng trắng.',
-      );
     }
     if (w.distanceMeters * w.repetitions > MAX_SESSION_DISTANCE_METERS) {
       throw apiError(
@@ -257,14 +213,17 @@ export class WorkoutsService {
         'Tổng cự ly (cự ly mỗi hiệp × số hiệp) không được vượt quá 10 000 m.',
       );
     }
-    const groom = await tx.user.findUnique({ where: { id: w.assignedStaffUserId } });
-    if (!groom || groom.role !== Role.GROOM || groom.status !== UserStatus.ACTIVE) {
+    // #4, #7: HLV của giáo án tự dẫn buổi tập và cưỡi luôn (kiêm nài), không giao cho Groom nữa.
+    const trainer = await tx.user.findUnique({ where: { id: plan.trainerUserId } });
+    if (!trainer || trainer.role !== Role.HEAD_TRAINER || trainer.status !== UserStatus.ACTIVE) {
       throw apiError(
         HttpStatus.BAD_REQUEST,
-        'INVALID_GROOM',
-        'Vui lòng chọn nhân viên chăm sóc đang hoạt động.',
+        'INVALID_TRAINER',
+        'HLV phụ trách giáo án không còn hoạt động.',
       );
     }
+    w.assignedStaffUserId = trainer.id;
+    w.jockeyName = trainer.fullName;
 
     const notSelf = excludeWorkoutId ? { id: { not: excludeWorkoutId } } : {};
     const live = { ...notSelf, status: { not: WorkoutStatus.CANCELLED } };
@@ -396,22 +355,7 @@ export class WorkoutsService {
         );
       }
     }
-    // Cảnh báo ca trực của người chăm sóc (STT 34: cảnh báo nếu groom không có ca trực trong ngày)
-    if (tx.shiftRoster?.findMany) {
-      const dayStart = startOfClubDay(w.scheduledDate);
-      const rosters = await tx.shiftRoster.findMany({
-        where: {
-          groomUserId: w.assignedStaffUserId,
-          date: { gte: dayStart, lt: addDays(dayStart, 1) },
-        },
-      });
-      if (rosters.length === 0) {
-        warnings.push(
-          `Nhân viên ${groom.fullName} không có ca trực trong ngày ${clubDate(w.scheduledDate)}.`,
-        );
-      }
-    }
-    // 7. Một người chăm sóc không thể kèm 2 ngựa cùng lúc (phải cách nhau thời lượng + 15 phút đệm chuyển tiếp theo BR-TRN-24).
+    // 7. HLV kiêm nài không thể cưỡi 2 ngựa cùng lúc (phải cách nhau thời lượng + 15 phút đệm chuyển tiếp theo BR-TRN-24).
     const newStart = w.scheduledDate.getTime();
     const newDur = workoutDurationMinutes(w.workoutType);
     const newEnd = newStart + (newDur + GROOM_BUFFER_MINUTES) * 60 * 1000;
@@ -429,7 +373,7 @@ export class WorkoutsService {
       const candidates = await tx.workoutSession.findMany({
         where: {
           ...live,
-          assignedStaffUserId: w.assignedStaffUserId,
+          trainingPlan: { trainerUserId: trainer.id },
           scheduledDate: {
             gte: new Date(newStart - maxPreWindow),
             lte: new Date(newEnd),
@@ -463,7 +407,7 @@ export class WorkoutsService {
       busy = await tx.workoutSession.findFirst({
         where: {
           ...live,
-          assignedStaffUserId: w.assignedStaffUserId,
+          trainingPlan: { trainerUserId: trainer.id },
           scheduledDate: {
             gt: new Date(newStart - fallbackOverlap),
             lt: new Date(newStart + fallbackOverlap),
@@ -483,10 +427,37 @@ export class WorkoutsService {
       const c = conflictInfo(busy.scheduledDate, GROOM_OVERLAP_MINUTES, busy);
       throw apiError(
         HttpStatus.CONFLICT,
-        'GROOM_TIME_CONFLICT',
-        `Nhân viên ${groom.fullName} đã được giao buổi tập của ${busy.horse.name} lúc ${c.time} ngày ${c.date} (HLV ${c.trainer}). Chọn người chăm sóc khác, hoặc chọn giờ bắt đầu từ ${c.before} trở về trước hoặc từ ${c.after} trở đi.`,
-        { workoutId: busy.id, groom: groom.fullName, horse: busy.horse.name, ...c },
+        'TRAINER_TIME_CONFLICT',
+        `HLV ${trainer.fullName} đã có buổi tập của ${busy.horse.name} lúc ${c.time} ngày ${c.date}. Chọn giờ bắt đầu từ ${c.before} trở về trước hoặc từ ${c.after} trở đi.`,
+        { workoutId: busy.id, horse: busy.horse.name, ...c },
       );
+    }
+
+    // 8. #6: mỗi ngày một HLV chỉ làm việc trên một mặt sân (Bơi / Máy đi bộ không tính).
+    if (w.trackSurface !== 'NONE' && tx.workoutSession?.findFirst) {
+      const day = startOfClubDay(w.scheduledDate);
+      const otherTrack = await tx.workoutSession.findFirst({
+        where: {
+          ...live,
+          trainingPlan: { trainerUserId: trainer.id },
+          scheduledDate: { gte: day, lt: addDays(day, 1) },
+          trackSurface: { notIn: ['NONE', w.trackSurface] },
+        },
+        select: { id: true, trackSurface: true, horse: { select: { name: true } } },
+      });
+      if (otherTrack) {
+        const surface = SURFACE_LABEL[otherTrack.trackSurface ?? ''] ?? otherTrack.trackSurface;
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'TRAINER_TRACK_CONFLICT',
+          `Ngày ${clubDate(w.scheduledDate).split('-').reverse().join('/')} HLV ${trainer.fullName} đã tập ${otherTrack.horse.name} trên mặt sân ${surface}. Mỗi ngày một HLV chỉ làm việc trên một mặt sân.`,
+          {
+            workoutId: otherTrack.id,
+            surface: otherTrack.trackSurface,
+            horse: otherTrack.horse.name,
+          },
+        );
+      }
     }
 
     return { medicalOverride: medical, warnings };
@@ -544,10 +515,8 @@ export class WorkoutsService {
 
   /** DL-2.01 Thêm buổi tập vào giáo án Nháp / Đang áp dụng (HT). */
   async createWorkout(planId: string, dto: CreateWorkoutSessionDto, user: CurrentUserPayload) {
-    let planStatus: PlanStatus | undefined;
     const session = await this.prisma.$transaction(async (tx) => {
       const plan = await tx.trainingPlan.findUnique({ where: { id: planId } });
-      planStatus = plan?.status;
       if (!plan) {
         throw apiError(HttpStatus.NOT_FOUND, 'PLAN_NOT_FOUND', 'Training plan not found.');
       }
@@ -576,14 +545,6 @@ export class WorkoutsService {
       );
       return session;
     });
-    await this.notifyGroomAssigned(
-      session.assignedStaffUserId,
-      session.horseId,
-      1,
-      session.scheduledDate,
-      user,
-      planStatus,
-    );
     return session;
   }
 
@@ -641,6 +602,8 @@ export class WorkoutsService {
         'TRIAL_SLOT_TAKEN',
         'MAX_WORKOUTS_PER_DAY',
         'HORSE_WORKOUT_TIME_CONFLICT',
+        'TRAINER_TIME_CONFLICT',
+        'TRAINER_TRACK_CONFLICT',
         'DATE_IN_PAST',
         'TIME_TOO_SOON',
         'OUTSIDE_PHASE_DATES',
@@ -683,26 +646,13 @@ export class WorkoutsService {
         workoutIds: created,
         skipped,
         warnings: allWarnings,
-        horseId: plan.horseId,
-        planStatus: plan.status,
       };
     });
-    const { horseId, planStatus, ...response } = result;
-    await this.notifyGroomAssigned(
-      dto.assignedStaffUserId,
-      horseId,
-      result.created,
-      new Date(dto.scheduledDate),
-      user,
-      planStatus,
-    );
-    return response;
+    return result;
   }
 
   /** Sửa buổi tập Đã lên lịch chưa tới giờ (BTN-2.20): gộp với dữ liệu cũ rồi kiểm lại DL-2.01. */
   async updateWorkout(workoutId: string, dto: UpdateWorkoutSessionDto, user: CurrentUserPayload) {
-    let previousGroomId: string | null = null;
-    let planStatus: PlanStatus | undefined;
     const updated = await this.prisma.$transaction(async (tx) => {
       const existing = await tx.workoutSession.findUnique({
         where: { id: workoutId },
@@ -721,8 +671,6 @@ export class WorkoutsService {
           'This workout belongs to another trainer.',
         );
       }
-      previousGroomId = existing.assignedStaffUserId;
-      planStatus = existing.trainingPlan.status;
       if (existing.status !== WorkoutStatus.SCHEDULED || existing.scheduledDate <= new Date()) {
         throw apiError(
           HttpStatus.BAD_REQUEST,
@@ -786,17 +734,6 @@ export class WorkoutsService {
       );
       return updated;
     });
-    // Chỉ báo khi đổi sang groom khác (sửa giờ/cự ly không báo lại).
-    if (updated.assignedStaffUserId !== previousGroomId) {
-      await this.notifyGroomAssigned(
-        updated.assignedStaffUserId,
-        updated.horseId,
-        1,
-        updated.scheduledDate,
-        user,
-        planStatus,
-      );
-    }
     return updated;
   }
 
@@ -1106,6 +1043,7 @@ export class WorkoutsService {
       to?: string;
       status?: WorkoutStatus;
       workoutType?: string;
+      scope?: string;
     },
     user: CurrentUserPayload,
   ) {
@@ -1137,6 +1075,7 @@ export class WorkoutsService {
       where.assignedStaffUserId = user.userId;
       where.trainingPlan = { status: { not: PlanStatus.DRAFT } };
     } else if (user.role === UserRole.HEAD_TRAINER) {
+      // HLV chỉ xem lịch các ngựa mình phụ trách (kể cả Lịch tuần).
       where.trainingPlan = { trainerUserId: user.userId };
     }
 

@@ -40,7 +40,8 @@ export class NutritionController {
   @Get()
   @Roles(...ALL_ROLES)
   @ApiOperation({
-    summary: 'SC-4.03 Danh sách khẩu phần ăn (RBAC: Groom & Owner chỉ xem bản APPROVED)',
+    summary:
+      'SC-4.03 Danh sách khẩu phần ăn (RBAC: nhân viên chăm sóc & Owner chỉ xem bản APPROVED)',
   })
   findAll(@Query() query: QueryNutritionPlanDto, @CurrentUser() user: CurrentUserPayload) {
     return this.service.findAll(query, user);

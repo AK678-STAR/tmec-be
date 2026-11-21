@@ -135,7 +135,7 @@ export class StallsController {
   }
 
   @Post(':id/allocations')
-  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER)
+  @Roles(UserRole.CLUB_MANAGER)
   @ApiOperation({ summary: 'DL-1.02 Gán ngựa vào ô chuồng (CM, HT)' })
   assignHorse(
     @Param('id') id: string,
@@ -146,7 +146,7 @@ export class StallsController {
   }
 
   @Put('allocations/:id/transfer')
-  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER)
+  @Roles(UserRole.CLUB_MANAGER)
   @ApiOperation({ summary: 'DL-1.02 Chuyển ngựa sang ô chuồng khác (CM, HT)' })
   transferHorse(
     @Param('id') id: string,
@@ -157,7 +157,7 @@ export class StallsController {
   }
 
   @Put('allocations/:id/return')
-  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER)
+  @Roles(UserRole.CLUB_MANAGER)
   @ApiOperation({ summary: 'DL-1.03 Trả ô chuồng (CM, HT)' })
   returnStall(
     @Param('id') id: string,

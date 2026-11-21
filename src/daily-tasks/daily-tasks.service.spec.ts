@@ -16,6 +16,7 @@ describe('DailyTasksService', () => {
 
   beforeEach(async () => {
     prisma = {
+      $transaction: jest.fn((fn: any) => fn(prisma)),
       horse: { findMany: jest.fn().mockResolvedValue([]), findUnique: jest.fn() },
       shiftRoster: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn() },
       dailyCareTask: {
@@ -295,6 +296,7 @@ describe('DailyTasksService', () => {
             amount: 2,
           }),
         ]),
+        prisma,
       );
     });
 
@@ -360,6 +362,7 @@ describe('DailyTasksService', () => {
       expect(inventoryService.restoreStockForFeeding).toHaveBeenCalledWith(
         'zone-1',
         mockTask.itemsSnapshotJson,
+        prisma,
       );
     });
 

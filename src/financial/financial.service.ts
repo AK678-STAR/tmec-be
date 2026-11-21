@@ -144,14 +144,14 @@ export class FinancialService {
     });
 
     if (!invoice) {
-      throw apiError(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', `Invoice ${id} not found`);
+      throw apiError(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', 'Không tìm thấy hóa đơn.');
     }
 
     if (user.role === 'HORSE_OWNER' && invoice.ownerId !== user.id) {
       throw apiError(
         HttpStatus.FORBIDDEN,
         'FORBIDDEN',
-        'You can only view financial statements for your own horses.',
+        'Bạn chỉ được xem bảng kê của ngựa mình sở hữu.',
       );
     }
 
@@ -251,7 +251,7 @@ export class FinancialService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'BILLING_PERIOD_NOT_CLOSED',
-        'Only completed months can be billed.',
+        'Chỉ được lập hóa đơn cho tháng đã kết thúc.',
       );
     }
     let resolvedOwnerId = dto.ownerId;
@@ -261,21 +261,21 @@ export class FinancialService {
         select: { id: true, ownerId: true, name: true, status: true },
       });
       if (!horse) {
-        throw apiError(HttpStatus.NOT_FOUND, 'HORSE_NOT_FOUND', `Horse ${dto.horseId} not found.`);
+        throw apiError(HttpStatus.NOT_FOUND, 'HORSE_NOT_FOUND', 'Không tìm thấy ngựa.');
       }
       resolvedOwnerId = horse.ownerId || dto.ownerId;
       if (!resolvedOwnerId) {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'HORSE_HAS_NO_OWNER',
-          `Horse ${horse.name} does not have an assigned owner to bill.`,
+          `Ngựa ${horse.name} chưa có chủ để lập hóa đơn.`,
         );
       }
       if (dto.ownerId && horse.ownerId && dto.ownerId !== horse.ownerId) {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'OWNER_MISMATCH',
-          `The specified ownerId ${dto.ownerId} does not match the horse's owner ${horse.ownerId}.`,
+          'Chủ ngựa được chọn không khớp với chủ hiện tại của ngựa.',
         );
       }
     }
@@ -283,7 +283,7 @@ export class FinancialService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'HORSE_HAS_NO_OWNER',
-        'Cannot create invoice without an assigned horse owner.',
+        'Không thể lập hóa đơn khi ngựa chưa có chủ.',
       );
     }
 
@@ -307,7 +307,7 @@ export class FinancialService {
         throw apiError(
           HttpStatus.CONFLICT,
           'DUPLICATE_INVOICE_FOR_PERIOD',
-          `An active statement already exists for this horse in period ${dto.billingPeriod}.`,
+          `Ngựa này đã có bảng kê đang hiệu lực cho kỳ ${dto.billingPeriod}.`,
         );
       }
     }
@@ -369,14 +369,14 @@ export class FinancialService {
   async update(id: string, dto: UpdateInvoiceDto, user: FinancialActor) {
     const existing = await this.prisma.financialInvoice.findUnique({ where: { id } });
     if (!existing) {
-      throw apiError(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', `Invoice ${id} not found`);
+      throw apiError(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', 'Không tìm thấy hóa đơn.');
     }
 
     if (existing.status === InvoiceStatus.PAID) {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'INVOICE_ALREADY_PAID',
-        'Cannot modify an invoice that has already been marked as PAID.',
+        'Không thể sửa hóa đơn đã thanh toán.',
       );
     }
 
@@ -391,7 +391,7 @@ export class FinancialService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'INVOICE_NOT_EDITABLE',
-        'Only DRAFT invoices can have service fees edited.',
+        'Chỉ sửa được phí dịch vụ khi hóa đơn còn ở trạng thái Chưa gửi.',
       );
     }
 
@@ -401,7 +401,7 @@ export class FinancialService {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'INVALID_INVOICE_STATUS_TRANSITION',
-          `Cannot transition invoice from ${existing.status} to ${dto.status}. Allowed next states: ${allowedNext.join(', ') || 'none'}.`,
+          `Không thể chuyển hóa đơn từ ${existing.status} sang ${dto.status}. Trạng thái hợp lệ tiếp theo: ${allowedNext.join(', ') || 'không có'}.`,
         );
       }
     }
@@ -416,7 +416,7 @@ export class FinancialService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'BOARDING_FEE_READ_ONLY',
-        'The boarding fee and period are fixed by the stay calculation.',
+        'Phí lưu chuồng và số ngày được tính tự động theo thời gian ngựa ở, không sửa tay.',
       );
     }
     const medicalFee = dto.medicalFee !== undefined ? dto.medicalFee : Number(existing.medicalFee);
@@ -475,17 +475,15 @@ export class FinancialService {
     });
 
     if (!existing) {
-      throw apiError(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', `Invoice ${id} not found`);
+      throw apiError(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', 'Không tìm thấy hóa đơn.');
     }
 
-    if (
-      user.role === 'HORSE_OWNER' &&
-      (status !== InvoiceStatus.PAID || existing.ownerId !== user.id)
-    ) {
+    // Chủ ngựa không tự đổi trạng thái (kể cả PAID): báo chuyển khoản qua POST :id/pay, CM đối soát.
+    if (user.role === 'HORSE_OWNER') {
       throw apiError(
         HttpStatus.FORBIDDEN,
-        'FORBIDDEN',
-        'Horse owners can only pay for their own invoices',
+        'PAYMENT_NEEDS_RECONCILIATION',
+        'Owners report a transfer; the Club Manager confirms the payment.',
       );
     }
 
@@ -493,7 +491,7 @@ export class FinancialService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'INVOICE_ALREADY_PAID',
-        'Paid invoices cannot be modified.',
+        'Không thể sửa hóa đơn đã thanh toán.',
       );
     }
 
@@ -503,7 +501,7 @@ export class FinancialService {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'INVALID_INVOICE_STATUS_TRANSITION',
-          `Cannot transition invoice from ${existing.status} to ${status}. Allowed next states: ${allowedNext.join(', ') || 'none'}.`,
+          `Không thể chuyển hóa đơn từ ${existing.status} sang ${status}. Trạng thái hợp lệ tiếp theo: ${allowedNext.join(', ') || 'không có'}.`,
         );
       }
     }
@@ -511,6 +509,12 @@ export class FinancialService {
       where: { id },
       data: {
         status,
+        ...(status === InvoiceStatus.PAID &&
+          existing.status !== InvoiceStatus.PAID && {
+            paidAt: new Date(),
+            paidConfirmedById: user.id,
+            paidConfirmedByName: user.name,
+          }),
         ...(status === InvoiceStatus.SENT &&
           existing.status === InvoiceStatus.DRAFT &&
           !existing.dueAt && {
@@ -580,14 +584,14 @@ export class FinancialService {
     });
 
     if (!existing) {
-      throw apiError(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', `Invoice ${id} not found`);
+      throw apiError(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', 'Không tìm thấy hóa đơn.');
     }
 
     if (user.role === 'HORSE_OWNER' && existing.ownerId !== user.id) {
       throw apiError(
         HttpStatus.FORBIDDEN,
         'FORBIDDEN',
-        'You can only pay for your own horse invoice',
+        'Bạn chỉ được thanh toán hóa đơn ngựa của mình.',
       );
     }
 
@@ -595,26 +599,53 @@ export class FinancialService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'INVALID_STATUS',
-        'Only sent or overdue invoices can be paid',
+        'Chỉ thanh toán được hóa đơn Đã gửi hoặc Quá hạn.',
       );
     }
     if (Number(existing.netAmount) <= 0) {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'INVALID_AMOUNT',
-        'Invoice has no positive balance to pay',
+        'Hóa đơn không còn số dư dương để thanh toán.',
       );
     }
 
+    const method = paymentData?.paymentMethod || 'BANK_TRANSFER';
+    const ref = paymentData?.transactionRef?.trim().slice(0, 100) || null;
+
+    // Chủ ngựa: chỉ báo đã chuyển khoản => "Chờ đối soát". Gửi lại = cập nhật mã tham chiếu, không đổi trạng thái.
+    if (user.role === 'HORSE_OWNER') {
+      const reported = await this.prisma.financialInvoice.update({
+        where: { id },
+        data: { paymentReportedAt: new Date(), paymentMethod: method, paymentRef: ref },
+      });
+      await this.audit.record(
+        { id: user.id, name: user.name },
+        'INVOICE_PAYMENT_REPORTED',
+        `Owner reported a ${method} payment for invoice ${id} (${existing.billingPeriod}); awaiting reconciliation`,
+        id,
+        { entityName: 'FinancialInvoice', newValues: { paymentMethod: method, paymentRef: ref } },
+      );
+      return serializeInvoice(reported);
+    }
+
+    // Club Manager đối soát: tiền đã vào => PAID, rồi đánh giá lại hạn chế do nợ.
     const updated = await this.prisma.financialInvoice.update({
       where: { id },
-      data: { status: InvoiceStatus.PAID },
+      data: {
+        status: InvoiceStatus.PAID,
+        paidAt: new Date(),
+        paidConfirmedById: user.id,
+        paidConfirmedByName: user.name,
+        paymentMethod: existing.paymentMethod ?? method,
+        paymentRef: existing.paymentRef ?? ref,
+      },
     });
 
     await this.audit.record(
       { id: user.id, name: user.name },
       'INVOICE_PAID',
-      `Invoice ${id} (${existing.billingPeriod}) for horse ${existing.horse.name} was paid via ${paymentData?.paymentMethod || 'VietQR'}`,
+      `Invoice ${id} (${existing.billingPeriod}) for horse ${existing.horse.name}: payment confirmed by ${user.name}`,
       id,
       {
         entityName: 'FinancialInvoice',
@@ -722,7 +753,7 @@ export class FinancialService {
       data: {
         isDebtImpounded: true,
         debtImpoundedAt: new Date(),
-        debtImpoundReason: 'Quá hạn thanh toán chi phí nuôi dưỡng / lưu chuồng.',
+        debtImpoundReason: 'Overdue boarding / stabling fees.',
       },
     });
   }
@@ -794,7 +825,7 @@ export class FinancialService {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'BILLING_PERIOD_NOT_CLOSED',
-        'Only completed months can be billed.',
+        'Chỉ được lập hóa đơn cho tháng đã kết thúc.',
       );
     }
     // Serializable retries prevent duplicate invoices when manual and scheduled runs overlap.
