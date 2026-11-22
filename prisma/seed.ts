@@ -49,6 +49,7 @@ import {
 import { calculatePrizeSplit } from '../src/tournaments/tournaments.service';
 import {
   clubDate,
+  clubTime,
   GROOM_BUFFER_MINUTES,
   TRIAL_SLOT_MINUTES,
   workoutDurationMinutes,
@@ -94,11 +95,20 @@ const monthOf = (d: Date) => clubDate(d).slice(0, 7);
 const pastIso = (offsetDays: number) => dateStrOffset(offsetDays);
 
 const horseIds = Array.from({ length: 19 }, (_, idx) => id(`horse:${idx + 1}`));
+const DEFAULT_STALLS_PER_ZONE = 12;
 const stallIds = {
-  A: Array.from({ length: 12 }, (_, i) => id(`stall:A${String(i + 1).padStart(2, '0')}`)),
-  B: Array.from({ length: 12 }, (_, i) => id(`stall:B${String(i + 1).padStart(2, '0')}`)),
-  C: Array.from({ length: 4 }, (_, i) => id(`stall:C${String(i + 1).padStart(2, '0')}`)),
-  H: Array.from({ length: 4 }, (_, i) => id(`stall:H${String(i + 1).padStart(2, '0')}`)),
+  A: Array.from({ length: DEFAULT_STALLS_PER_ZONE }, (_, i) =>
+    id(`stall:A${String(i + 1).padStart(2, '0')}`),
+  ),
+  B: Array.from({ length: DEFAULT_STALLS_PER_ZONE }, (_, i) =>
+    id(`stall:B${String(i + 1).padStart(2, '0')}`),
+  ),
+  C: Array.from({ length: DEFAULT_STALLS_PER_ZONE }, (_, i) =>
+    id(`stall:C${String(i + 1).padStart(2, '0')}`),
+  ),
+  H: Array.from({ length: DEFAULT_STALLS_PER_ZONE }, (_, i) =>
+    id(`stall:H${String(i + 1).padStart(2, '0')}`),
+  ),
 };
 const zoneIds = {
   A: id('zone:A'),
@@ -432,7 +442,7 @@ const HORSES: HorseSpec[] = [
     status: HorseStatus.RESTING,
     ownerId: userIds.owners[5],
     stallId: stallIds.B[6],
-    groomId: userIds.grooms[9],
+    groomId: userIds.grooms[1],
   },
   {
     id: horseIds[14],
@@ -978,7 +988,7 @@ async function seedClub(tx: Tx, passwordHash: string) {
     skipDuplicates: true,
   });
 
-  // 4 StallZones (rows 1..4, cols 1..4) -> 32 Stalls
+  // Four default zones with 12 physical stalls each.
   await tx.stallZone.createMany({
     data: [
       {
@@ -1005,8 +1015,8 @@ async function seedClub(tx: Tx, passwordHash: string) {
         id: zoneIds.C,
         code: 'C',
         name: 'Khu Cách Ly Y Tế',
-        rows: 2,
-        cols: 2,
+        rows: 3,
+        cols: 4,
         description: 'Khu điều trị y tế chuyên sâu & cách ly kiểm dịch',
         sortOrder: 3,
         isActive: true,
@@ -1015,8 +1025,8 @@ async function seedClub(tx: Tx, passwordHash: string) {
         id: zoneIds.H,
         code: 'H',
         name: 'Khu Lưu Giữ Nợ Phí',
-        rows: 2,
-        cols: 2,
+        rows: 3,
+        cols: 4,
         description: 'Khu lưu giữ tạm thời ngựa có hóa đơn quá hạn nhiều kỳ',
         sortOrder: 4,
         isActive: true,
@@ -1025,15 +1035,32 @@ async function seedClub(tx: Tx, passwordHash: string) {
     skipDuplicates: true,
   });
 
+  // Expand older default C/H layouts without moving existing stalls or allocations.
+  await tx.stallZone.updateMany({
+    where: { id: { in: [zoneIds.C, zoneIds.H] }, rows: 2, cols: 2 },
+    data: { rows: 3, cols: 4 },
+  });
+
   const occupiedStallSet = new Set(HORSES.map((h) => h.stallId).filter(Boolean) as string[]);
   const makeZoneStalls = (
     zoneCode: 'A' | 'B' | 'C' | 'H',
     zoneId: string,
     rows: number,
     cols: number,
+    preserveOriginalGrid = false,
   ): Prisma.StallCreateManyInput[] => {
     const out: Prisma.StallCreateManyInput[] = [];
-    for (let idx = 0; idx < rows * cols; idx++) {
+    const positions = Array.from({ length: rows * cols }, (_, idx) => idx);
+    if (preserveOriginalGrid) {
+      const original = [0, 1, cols, cols + 1];
+      positions.splice(
+        0,
+        positions.length,
+        ...original,
+        ...positions.filter((i) => !original.includes(i)),
+      );
+    }
+    for (const [idx, position] of positions.entries()) {
       const sid = stallIds[zoneCode][idx];
       const code = `STALL-${zoneCode}${String(idx + 1).padStart(2, '0')}`;
       let status: StallStatus = StallStatus.AVAILABLE;
@@ -1052,8 +1079,8 @@ async function seedClub(tx: Tx, passwordHash: string) {
         code,
         zone: zoneCode,
         zoneId,
-        row: Math.floor(idx / cols) + 1,
-        col: (idx % cols) + 1,
+        row: Math.floor(position / cols) + 1,
+        col: (position % cols) + 1,
         status,
         notes,
       });
@@ -1065,8 +1092,8 @@ async function seedClub(tx: Tx, passwordHash: string) {
     data: [
       ...makeZoneStalls('A', zoneIds.A, 3, 4),
       ...makeZoneStalls('B', zoneIds.B, 3, 4),
-      ...makeZoneStalls('C', zoneIds.C, 2, 2),
-      ...makeZoneStalls('H', zoneIds.H, 2, 2),
+      ...makeZoneStalls('C', zoneIds.C, 3, 4, true),
+      ...makeZoneStalls('H', zoneIds.H, 3, 4, true),
     ],
     skipDuplicates: true,
   });
@@ -1266,11 +1293,12 @@ async function seedTraining(tx: Tx) {
       phaseName: 'Tăng tốc Khởi động 1200m',
       objective: 'Nâng tốc độ tối đa trên 300m đầu tiên',
       surface: TrackSurface.SYNTHETIC,
-      status: PlanStatus.ACTIVE,
+      status: PlanStatus.COMPLETED,
       targetSpeed: 63,
       targetDistance: 1200,
-      startOffset: -28,
-      endOffset: 28,
+      startOffset: -40,
+      endOffset: -1,
+      completionSummary: 'Đã hoàn thành giáo án trước khi HLV chuyển sang phụ trách khu B.',
     },
     {
       key: 'tp-h8-draft',
@@ -1579,6 +1607,9 @@ async function seedTraining(tx: Tx) {
         vetNotes: isAbnormalSample ? 'Đã bổ sung điện giải & giảm tải 2 ngày tới.' : null,
       });
     });
+
+    if (planSpecs.find((plan) => plan.key === runner.planKey)?.status !== PlanStatus.ACTIVE)
+      continue;
 
     // Scheduled sessions for today & next 6 days (covering 14/11/2026 to 20/11/2026)
     [0, 1, 2, 3, 4, 5, 6].forEach((off, idx) => {
@@ -2611,7 +2642,7 @@ async function seedStableCare(tx: Tx) {
   ];
   const rosters: Prisma.ShiftRosterCreateManyInput[] = [];
   for (let d = -2; d <= 7; d++) {
-    const rDate = days(d, 0, 0);
+    const rDate = new Date(`${dateStrOffset(d)}T00:00:00.000Z`);
     rosterAssignments.forEach(([zoneId, shiftId, groomUserId], idx) => {
       rosters.push({
         id: id(`roster:d${d}:${idx}`),
@@ -2675,8 +2706,8 @@ async function seedStableCare(tx: Tx) {
     const meals = (horseNutri?.mealsJson as any) || makeMeals(8, 3, true);
     return {
       id: h.id,
-      zoneId: zoneIds[zCode],
-      stallId: h.stallId!,
+      zoneId: h.stallId ? zoneIds[zCode] : undefined,
+      stallId: h.stallId ?? undefined,
       stallCode: h.horseCode,
       allocationGroomId: h.groomId,
       isLocked: Boolean(h.isMedicalLocked),
@@ -2693,28 +2724,47 @@ async function seedStableCare(tx: Tx) {
     [shiftIds.AFTERNOON]: { startTime: '13:00', endTime: '21:00', isOvernight: false },
     [shiftIds.NIGHT]: { startTime: '21:00', endTime: '05:00', isOvernight: true },
   };
-  const todayPlanned = planDailyTasks(
-    scheduleHorses,
-    rosterAssignments.map(([zoneId, shiftId, groomUserId]) => ({
-      zoneId,
-      shiftId,
-      groomUserId,
-      ...shiftMeta[shiftId],
-    })),
-  );
+  const scheduledWorkouts = await tx.workoutSession.findMany({
+    where: { status: WorkoutStatus.SCHEDULED, scheduledDate: { gte: days(0, 0), lt: days(7, 0) } },
+    select: { id: true, horseId: true, scheduledDate: true },
+  });
+  const plannedRosters = rosterAssignments.map(([zoneId, shiftId, groomUserId]) => ({
+    zoneId,
+    shiftId,
+    groomUserId,
+    ...shiftMeta[shiftId],
+  }));
 
   const dailyTasks: Prisma.DailyCareTaskCreateManyInput[] = [];
   let taskCounter = 1;
 
   for (let d = 0; d <= 6; d++) {
-    const taskDate = days(d, 0, 0);
-    todayPlanned.forEach((t) => {
+    const date = dateStrOffset(d);
+    const taskDate = new Date(`${date}T00:00:00.000Z`);
+    const planned = planDailyTasks(
+      scheduleHorses.map((horse) => ({
+        ...horse,
+        workouts: scheduledWorkouts
+          .filter(
+            (workout) => workout.horseId === horse.id && clubDate(workout.scheduledDate) === date,
+          )
+          .map((workout) => {
+            const { hour, minute } = clubTime(workout.scheduledDate);
+            return {
+              id: workout.id,
+              time: `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`,
+            };
+          }),
+      })),
+      plannedRosters,
+    );
+    planned.forEach((t) => {
       // On day 0 (today), morning tasks (< 12:00) are completed.
       // On future days (d > 0: 15/11 .. 20/11), tasks are pending (isCompleted = false).
-      const done = d === 0 ? t.scheduledTime < '12:00' : false;
+      const done = d === 0 && !!t.assignedGroomUserId && t.scheduledTime < '12:00';
       dailyTasks.push({
         id: id(`task:d${d}:${t.horseId}:${t.taskType}:${t.mealType ?? 'none'}:${t.scheduledTime}`),
-        taskCode: `TSK-${yymm()}-${String(taskCounter++).padStart(5, '0')}`,
+        taskCode: t.taskCode ?? `TSK-${yymm()}-${String(taskCounter++).padStart(5, '0')}`,
         date: taskDate,
         horseId: t.horseId,
         stallZoneId: t.zoneId ?? null,
@@ -2730,8 +2780,8 @@ async function seedStableCare(tx: Tx) {
         itemsSnapshotJson: (t.itemsSnapshotJson as Prisma.InputJsonValue) ?? Prisma.JsonNull,
         isCompleted: done,
         completedAt: done ? days(d, 8, 45) : null,
-        completedById: done ? (t.assignedGroomUserId ?? userIds.grooms[0]) : null,
-        assignedGroomUserId: t.assignedGroomUserId ?? userIds.grooms[0],
+        completedById: done ? t.assignedGroomUserId : null,
+        assignedGroomUserId: t.assignedGroomUserId ?? null,
       });
     });
 
@@ -2747,10 +2797,10 @@ async function seedStableCare(tx: Tx) {
       title: 'Đo thân nhiệt & kiểm tra chuồng cách ly ban đêm',
       description: 'Kiểm tra nhiệt độ trực tràng và lượng nước uống khu C.',
       scheduledTime: '21:30',
-      shiftId: shiftIds.NIGHT,
+      shiftId: null,
       isMedicalLocked: true,
       isCompleted: false,
-      assignedGroomUserId: userIds.grooms[4],
+      assignedGroomUserId: null,
     });
   }
   // Historical vet-prescribed care retains the legacy task type without adding automatic ice treatment.
@@ -3774,7 +3824,7 @@ async function main() {
       `[seed] Canonical EquiFlow seed completed (${RESET_FLAG ? 'reset+seed' : 'idempotent'}) across all ${modelCount} Prisma models.`,
     );
     console.log(
-      '[seed] Demo coverage: July–December 2026; invoices: July–October 2026 only. 19 horses, 32 stalls, 10 active grooms, 4 vets, 4 trainers, 2 managers, 6 owners.',
+      '[seed] Demo coverage: July–December 2026; invoices: July–October 2026 only. 19 horses, 48 stalls, 10 active grooms, 4 vets, 4 trainers, 2 managers, 6 owners.',
     );
   } finally {
     await prisma.$disconnect();

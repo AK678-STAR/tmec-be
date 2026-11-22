@@ -6,12 +6,11 @@ import { HorsesController } from './horses.controller';
 import { HorsesService } from './horses.service';
 import { HorseHistoryService } from './horse-history.service';
 import { HorseLifecycleService } from './horse-lifecycle.service';
-import { HorseTransferService } from './horse-transfer.service';
 
 @Module({
   imports: [PrismaModule, AuditModule, HorseCatalogsModule],
   controllers: [HorsesController],
-  providers: [HorsesService, HorseHistoryService, HorseLifecycleService, HorseTransferService],
+  providers: [HorsesService, HorseHistoryService, HorseLifecycleService],
   exports: [HorsesService, HorseHistoryService, HorseLifecycleService],
 })
 export class HorsesModule {}

@@ -2,6 +2,7 @@ import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { NotificationCategory, Prisma, Role, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { zoneGroomIds } from '../shift-rosters/groom-zones';
+import { LIVE_TRAINER_PLAN_STATUSES } from '../training/trainer-zones';
 import { apiError } from '../common/exceptions/api-error';
 import { defaultNotify, NotifyKey } from '../users/permissions';
 
@@ -41,7 +42,7 @@ export class NotificationsService {
   ) {
     try {
       const ids = [...new Set(userIds.filter((id): id is string => !!id && id !== excludeUserId))];
-      if (ids.length === 0) return;
+      if (ids.length === 0) return true;
       const recipients = await this.prisma.user.findMany({
         where: { id: { in: ids }, status: UserStatus.ACTIVE },
         select: { id: true, role: true, notify: true },
@@ -52,7 +53,7 @@ export class NotificationsService {
         const stored = (u.notify ?? {}) as Partial<Record<NotifyKey, boolean>>;
         return stored[settingKey] ?? defaultNotify(u.role)[settingKey];
       });
-      if (allowed.length === 0) return;
+      if (allowed.length === 0) return true;
       await this.prisma.notification.createMany({
         data: allowed.map((u) => ({
           userId: u.id,
@@ -67,8 +68,10 @@ export class NotificationsService {
         })),
         skipDuplicates: true,
       });
+      return true;
     } catch (err) {
       this.logger.warn(`Could not send notification ${input.type}: ${(err as Error).message}`);
+      return false;
     }
   }
 
@@ -89,7 +92,10 @@ export class NotificationsService {
   }
 
   /** Người liên quan tới 1 con ngựa: các vai trò được chọn + chủ ngựa + groom đang trực khu của ngựa hôm nay (tùy chọn). */
-  async horseAudience(horseId: string, opts: { roles?: Role[]; owner?: boolean; groom?: boolean }) {
+  async horseAudience(
+    horseId: string,
+    opts: { roles?: Role[]; owner?: boolean; groom?: boolean; trainer?: boolean },
+  ) {
     const horse = await this.prisma.horse.findUnique({
       where: { id: horseId },
       select: {
@@ -108,6 +114,13 @@ export class NotificationsService {
       });
       ids.push(...staff.map((u) => u.id));
     }
+    if (opts.trainer && horse) {
+      const plans = await this.prisma.trainingPlan.findMany({
+        where: { horseId, status: { in: LIVE_TRAINER_PLAN_STATUSES } },
+        select: { trainerUserId: true },
+      });
+      ids.push(...plans.map((plan) => plan.trainerUserId));
+    }
     if (opts.owner && horse?.ownerId) ids.push(horse.ownerId);
     if (opts.groom && horse?.stallAllocations?.length) {
       ids.push(...(await zoneGroomIds(this.prisma, horse.stallAllocations[0].stall?.zoneId)));
@@ -117,14 +130,15 @@ export class NotificationsService {
 
   async notifyHorse(
     horseId: string,
-    opts: { roles?: Role[]; owner?: boolean; groom?: boolean },
+    opts: { roles?: Role[]; owner?: boolean; groom?: boolean; trainer?: boolean },
     input: NotifyInput,
     excludeUserId?: string | null,
   ) {
     try {
-      await this.notifyUsers(await this.horseAudience(horseId, opts), input, excludeUserId);
+      return await this.notifyUsers(await this.horseAudience(horseId, opts), input, excludeUserId);
     } catch (err) {
       this.logger.warn(`Could not send notification ${input.type}: ${(err as Error).message}`);
+      return false;
     }
   }
 

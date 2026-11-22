@@ -828,12 +828,12 @@ describe('Medical services', () => {
       );
       expect(notifications.notifyHorse).toHaveBeenCalledWith(
         'horse-1',
-        { roles: [Role.HEAD_TRAINER, Role.CLUB_MANAGER], owner: true, groom: true },
+        { roles: [Role.CLUB_MANAGER], trainer: true, owner: true, groom: true },
         expect.objectContaining({
           type: 'LOCK_PLACED',
           category: 'LOCK',
           title: 'Training Lock placed',
-          link: '/locks',
+          link: '/medical/horses/horse-1',
           senderName: mockVetUser.fullName,
         }),
         mockVetUser.userId,
@@ -907,12 +907,12 @@ describe('Medical services', () => {
       );
       expect(notifications.notifyHorse).toHaveBeenCalledWith(
         'horse-1',
-        { roles: [Role.HEAD_TRAINER, Role.CLUB_MANAGER], owner: true, groom: true },
+        { roles: [Role.CLUB_MANAGER], trainer: true, owner: true, groom: true },
         expect.objectContaining({
           type: 'LOCK_LIFTED',
           category: 'LOCK',
           title: 'Training Lock lifted',
-          link: '/locks',
+          link: '/medical/horses/horse-1',
           senderName: mockVetUser.fullName,
         }),
         mockVetUser.userId,
@@ -957,12 +957,12 @@ describe('Medical services', () => {
       );
       expect(notifications.notifyHorse).toHaveBeenCalledWith(
         'horse-1',
-        { roles: [Role.HEAD_TRAINER, Role.CLUB_MANAGER], owner: true, groom: true },
+        { roles: [Role.CLUB_MANAGER], trainer: true, owner: true, groom: true },
         expect.objectContaining({
           type: 'LOCK_EXTENDED',
           category: 'LOCK',
           title: 'Training Lock extended',
-          link: '/locks',
+          link: '/medical/horses/horse-1',
           senderName: mockVetUser.fullName,
         }),
         mockVetUser.userId,

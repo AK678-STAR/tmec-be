@@ -158,6 +158,28 @@ describe('ShiftRostersService (SC-4.01)', () => {
       });
     });
 
+    it('rejects a copy that would roster a Groom in two zones for the same shift', async () => {
+      prisma.shiftRoster.findMany.mockResolvedValueOnce([
+        {
+          date: new Date('2099-10-05T00:00:00.000Z'),
+          shiftId: 'shift-1',
+          zoneId: 'zone-1',
+          groomUserId: 'groom-1',
+        },
+      ]);
+      prisma.shiftRoster.findFirst.mockResolvedValueOnce({ zoneId: 'zone-2' });
+
+      await expect(
+        service.copyWeek(
+          { sourceWeekStart: '2099-10-05', targetWeekStart: '2099-10-12' },
+          managerUser,
+        ),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'GROOM_ALREADY_ASSIGNED_IN_SHIFT' }),
+      });
+      expect(prisma.shiftRoster.create).not.toHaveBeenCalled();
+    });
+
     it('successfully copies week and skips inactive grooms', async () => {
       // Future week
       const futureMonday = '2099-10-12';

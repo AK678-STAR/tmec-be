@@ -214,9 +214,6 @@ export class TrainingPlansService {
         'Ngựa đang bị Khóa huấn luyện y tế. Không thể tạo giáo án mới cho đến khi Bác sĩ thú y gỡ khóa.',
       );
     }
-    await this.assertNoOtherTrainer(horse.id, horse.name, user.userId);
-    await this.assertTrainerCapacity(horse.id, horse.name, user.userId);
-
     if (
       dto.phaseName &&
       (/^\d+$/.test(dto.phaseName.trim()) || !/[\p{L}]/u.test(dto.phaseName.trim()))
@@ -249,23 +246,20 @@ export class TrainingPlansService {
       await this.prisma.trainingPlan.findUnique({ where: { planCode }, select: { id: true } })
     );
     // Không tự đổi trạng thái ngựa ở đây: chỉ khi Kích hoạt và HT chọn (DL-2.02).
-    const plan = await this.prisma.trainingPlan.create({
-      data: {
-        planCode,
-        horseId: dto.horseId,
-        trainerUserId: user.userId,
-        phaseName: dto.phaseName.trim(),
-        objective: dto.objective.trim(),
-        notes: dto.notes?.trim() || null,
-        phases: phases as unknown as Prisma.InputJsonValue,
-        targetSpeed: dto.targetSpeed,
-        targetDistance: dto.targetDistance,
-        trackSurface: dto.trackSurface ?? TrackSurface.TURF,
-        startDate,
-        endDate,
-        status: PlanStatus.DRAFT,
-      },
-      include: PLAN_INCLUDE,
+    const plan = await this.createAssignedPlan(horse, user.userId, {
+      planCode,
+      horseId: dto.horseId,
+      trainerUserId: user.userId,
+      phaseName: dto.phaseName.trim(),
+      objective: dto.objective.trim(),
+      notes: dto.notes?.trim() || null,
+      phases: phases as unknown as Prisma.InputJsonValue,
+      targetSpeed: dto.targetSpeed,
+      targetDistance: dto.targetDistance,
+      trackSurface: dto.trackSurface ?? TrackSurface.TURF,
+      startDate,
+      endDate,
+      status: PlanStatus.DRAFT,
     });
 
     await this.auditService.record(
@@ -590,13 +584,27 @@ export class TrainingPlansService {
     }
   }
 
+  private async createAssignedPlan(
+    horse: { id: string; name: string },
+    trainerId: string,
+    data: Prisma.TrainingPlanUncheckedCreateInput,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${horse.id} FOR UPDATE`;
+      await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${trainerId} FOR UPDATE`;
+      await this.assertNoOtherTrainer(horse.id, horse.name, trainerId, tx);
+      await this.assertTrainerCapacity(horse.id, horse.name, trainerId, tx);
+      return tx.trainingPlan.create({ data, include: PLAN_INCLUDE });
+    });
+  }
+
   /**
    * Mỗi ngựa một HLV phụ trách tại một thời điểm: ngựa đang có giáo án Nháp / Đang áp dụng của
    * HLV khác thì không lập thêm (buổi nháp của người khác sẽ chiếm giờ ngựa mà HLV này không thấy).
    * Cùng một HLV vẫn được chuẩn bị giáo án tiếp theo cho ngựa của mình.
    */
-  private async assertNoOtherTrainer(horseId: string, horseName: string, userId: string) {
-    const other = await this.prisma.trainingPlan.findFirst({
+  private async assertNoOtherTrainer(horseId: string, horseName: string, userId: string, tx: Tx) {
+    const other = await tx.trainingPlan.findFirst({
       where: {
         horseId,
         status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] },
@@ -618,11 +626,11 @@ export class TrainingPlansService {
   }
 
   /**
-   * #5: một HLV phụ trách tối đa 3 ngựa (giáo án Nháp / Đang áp dụng).
+   * #5: một HLV phụ trách tối đa 8 ngựa (giáo án Nháp / Đang áp dụng).
    * #6: các ngựa đó phải ở cùng một khu chuồng.
    */
-  private async assertTrainerCapacity(horseId: string, horseName: string, userId: string) {
-    const plans = await this.prisma.trainingPlan.findMany({
+  private async assertTrainerCapacity(horseId: string, horseName: string, userId: string, tx: Tx) {
+    const plans = await tx.trainingPlan.findMany({
       where: {
         trainerUserId: userId,
         status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] },
@@ -642,7 +650,7 @@ export class TrainingPlansService {
       );
     }
     if (others.length === 0) return;
-    const allocs = await this.prisma.stallAllocation.findMany({
+    const allocs = await tx.stallAllocation.findMany({
       where: { isActive: true, horseId: { in: [horseId, ...others.map(([id]) => id)] } },
       select: {
         horseId: true,
@@ -796,9 +804,6 @@ export class TrainingPlansService {
         'Ngựa đang bị Khóa huấn luyện y tế. Không thể tạo giáo án mới cho đến khi Bác sĩ thú y gỡ khóa.',
       );
     }
-    await this.assertNoOtherTrainer(horse.id, horse.name, user.userId);
-    await this.assertTrainerCapacity(horse.id, horse.name, user.userId);
-
     const now = new Date();
     const startDate = dto.startDate ? new Date(dto.startDate) : addDays(startOfClubDay(now), 1);
     this.assertStartsFromTomorrow(startDate);
@@ -860,52 +865,49 @@ export class TrainingPlansService {
       }
     }
 
-    const plan = await this.prisma.trainingPlan.create({
-      data: {
-        horseId: horse.id,
-        trainerUserId: user.userId,
-        planCode: `GA-${String(await this.counter.next('training_plan')).padStart(6, '0')}`,
-        phaseName: dto.name ?? `${source.phaseName} (bản sao)`,
-        objective: source.objective,
-        notes: source.notes,
-        // Giai đoạn dời ngày theo độ lệch ngày bắt đầu, giữ id để buổi tập vẫn thuộc đúng giai đoạn.
-        phases: phasesOf(source).map((ph) => ({
-          ...ph,
-          startDate: clubDate(new Date(Date.parse(`${ph.startDate}T00:00:00+07:00`) + shift)),
-          endDate: clubDate(new Date(Date.parse(`${ph.endDate}T00:00:00+07:00`) + shift)),
-        })) as unknown as Prisma.InputJsonValue,
-        targetSpeed: source.targetSpeed,
-        targetDistance: source.targetDistance,
-        trackSurface: source.trackSurface,
-        startDate,
-        endDate: new Date(source.endDate.getTime() + shift),
-        status: PlanStatus.DRAFT,
-        ...(copyWorkouts && {
-          workoutSessions: {
-            create: copies.map(({ w, date }) => {
-              const blocked = horse.isMedicalLocked && isHeavy(w.workoutType, w.intensity);
-              return {
-                horseId: horse.id,
-                assignedStaffUserId: user.userId,
-                phaseId: w.phaseId,
-                scheduledDate: date,
-                distanceMeters: w.distanceMeters,
-                repetitions: w.repetitions,
-                targetSpeedKmh: w.targetSpeedKmh,
-                targetDurationSeconds: w.targetDurationSeconds,
-                workoutType: w.workoutType,
-                intensity: w.intensity,
-                trackSurface: w.trackSurface,
-                jockeyName: user.fullName,
-                trainerNotes: w.trainerNotes,
-                status: blocked ? WorkoutStatus.BLOCKED : WorkoutStatus.SCHEDULED,
-                statusReason: blocked ? 'Ngựa đang bị Khóa huấn luyện y tế' : null,
-              };
-            }),
-          },
-        }),
-      },
-      include: PLAN_INCLUDE,
+    const plan = await this.createAssignedPlan(horse, user.userId, {
+      horseId: horse.id,
+      trainerUserId: user.userId,
+      planCode: `GA-${String(await this.counter.next('training_plan')).padStart(6, '0')}`,
+      phaseName: dto.name ?? `${source.phaseName} (bản sao)`,
+      objective: source.objective,
+      notes: source.notes,
+      // Giai đoạn dời ngày theo độ lệch ngày bắt đầu, giữ id để buổi tập vẫn thuộc đúng giai đoạn.
+      phases: phasesOf(source).map((ph) => ({
+        ...ph,
+        startDate: clubDate(new Date(Date.parse(`${ph.startDate}T00:00:00+07:00`) + shift)),
+        endDate: clubDate(new Date(Date.parse(`${ph.endDate}T00:00:00+07:00`) + shift)),
+      })) as unknown as Prisma.InputJsonValue,
+      targetSpeed: source.targetSpeed,
+      targetDistance: source.targetDistance,
+      trackSurface: source.trackSurface,
+      startDate,
+      endDate: new Date(source.endDate.getTime() + shift),
+      status: PlanStatus.DRAFT,
+      ...(copyWorkouts && {
+        workoutSessions: {
+          create: copies.map(({ w, date }) => {
+            const blocked = horse.isMedicalLocked && isHeavy(w.workoutType, w.intensity);
+            return {
+              horseId: horse.id,
+              assignedStaffUserId: user.userId,
+              phaseId: w.phaseId,
+              scheduledDate: date,
+              distanceMeters: w.distanceMeters,
+              repetitions: w.repetitions,
+              targetSpeedKmh: w.targetSpeedKmh,
+              targetDurationSeconds: w.targetDurationSeconds,
+              workoutType: w.workoutType,
+              intensity: w.intensity,
+              trackSurface: w.trackSurface,
+              jockeyName: user.fullName,
+              trainerNotes: w.trainerNotes,
+              status: blocked ? WorkoutStatus.BLOCKED : WorkoutStatus.SCHEDULED,
+              statusReason: blocked ? 'Ngựa đang bị Khóa huấn luyện y tế' : null,
+            };
+          }),
+        },
+      }),
     });
 
     await this.auditService.record(

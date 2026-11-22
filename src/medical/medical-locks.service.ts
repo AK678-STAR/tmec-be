@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger, Optional } from '@nestjs/common';
 import { NotificationsService } from '../notifications/notifications.service';
 import { apiError } from '../common/exceptions/api-error';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
@@ -21,6 +21,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { groomZoneIds, horsesInZones } from '../shift-rosters/groom-zones';
 import { AuditService } from '../audit/audit.service';
 import { MedicalAccessService } from './medical-access.service';
+import { DailyTasksService } from '../daily-tasks/daily-tasks.service';
 import { SimulatorRealtimeService } from '../simulator/simulator-realtime.service';
 
 /** P2-04: Khóa huấn luyện — đặt, gỡ, gia hạn, danh sách (FR-3.10 → FR-3.12). */
@@ -34,6 +35,7 @@ export class MedicalLocksService {
     private readonly notifications: NotificationsService,
     private readonly access: MedicalAccessService,
     private readonly realtime: SimulatorRealtimeService,
+    @Optional() private readonly dailyTasks?: DailyTasksService,
   ) {}
 
   /** FR-011: đặt/gỡ/gia hạn khóa báo HT, CM, chủ ngựa và groom đang chăm. */
@@ -44,10 +46,20 @@ export class MedicalLocksService {
   ) {
     return this.notifications.notifyHorse(
       horseId,
-      { roles: [Role.HEAD_TRAINER, Role.CLUB_MANAGER], owner: true, groom: true },
-      input,
+      { roles: [Role.CLUB_MANAGER], trainer: true, owner: true, groom: true },
+      { ...input, link: `/medical/horses/${horseId}` },
       actorId,
     );
+  }
+
+  private async syncCare(horseId: string) {
+    try {
+      await this.dailyTasks?.syncMedicalTasksForHorse(horseId);
+      return false;
+    } catch (error) {
+      this.logger.warn(`Could not sync care for ${horseId}: ${String(error)}`);
+      return true;
+    }
   }
 
   /**
@@ -251,10 +263,12 @@ export class MedicalLocksService {
       ],
     };
 
-    await this.notifyLockAudience(
+    const careSyncFailed = await this.syncCare(horse.id);
+    const notificationSent = await this.notifyLockAudience(
       horse.id,
       {
         type: 'LOCK_PLACED',
+        dedupeKey: `lock-placed:${lock.id}`,
         category: 'LOCK',
         title: 'Training Lock placed',
         message: `${horse.name} is under a Training Lock. Heavy workouts are blocked. Reason: ${dto.lockReason}`,
@@ -276,7 +290,11 @@ export class MedicalLocksService {
 
     return {
       ...lock,
-      impactAssessment,
+      impactAssessment: {
+        ...impactAssessment,
+        notificationFailed: notificationSent === false,
+        careSyncFailed,
+      },
       message: `Đã đặt Khóa huấn luyện cho ${horse.name}`,
     };
   }
@@ -285,7 +303,7 @@ export class MedicalLocksService {
   async releaseMedicalLock(lockId: string, actor: CurrentUserPayload, dto: ReleaseMedicalLockDto) {
     this.access.assertVet(actor, 'lift a training lock');
 
-    const { lock, unlocked } = await this.prisma.$transaction(async (tx) => {
+    const { lock, unlocked, stillLocked } = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "MedicalLock" WHERE "id" = ${lockId} FOR UPDATE`;
       const lock = await tx.medicalLock.findUnique({
         where: { id: lockId },
@@ -384,16 +402,20 @@ export class MedicalLocksService {
         tx,
       );
 
-      return { lock, unlocked };
+      return { lock, unlocked, stillLocked };
     });
 
-    await this.notifyLockAudience(
+    const careSyncFailed = await this.syncCare(lock.horseId);
+    const notificationSent = await this.notifyLockAudience(
       lock.horseId,
       {
         type: 'LOCK_LIFTED',
+        dedupeKey: `lock-lifted:${lockId}`,
         category: 'LOCK',
         title: 'Training Lock lifted',
-        message: `${lock.horse.name} was released back to work. Blocked workouts can be restored.`,
+        message: stillLocked
+          ? `${lock.horse.name} remains under a separate Training Lock.`
+          : `${lock.horse.name} was released back to work. Blocked workouts can be restored.`,
         params: { horse: lock.horse.name },
         link: '/locks',
         senderName: actor.fullName,
@@ -404,9 +426,9 @@ export class MedicalLocksService {
     this.realtime.emit('sys:medical_lock_sync', {
       event: 'sys:medical_lock_sync',
       horse_id: lock.horseId,
-      medical_lock: false,
+      medical_lock: stillLocked,
       issued_by_role: 'VETERINARIAN',
-      lock_actions: [],
+      lock_actions: stillLocked ? ['BLOCK_HEAVY_WORKOUT', 'BLOCK_TOURNAMENT_ENTRY'] : [],
       note: dto.unlockReason,
     });
 
@@ -417,6 +439,8 @@ export class MedicalLocksService {
 
     return {
       ...unlocked,
+      notificationFailed: notificationSent === false,
+      careSyncFailed,
       warnings,
       message: `Đã gỡ Khóa huấn luyện cho ${lock.horse.name}`,
       notificationToTrainer: 'Có các buổi tập bị chặn có thể khôi phục',
@@ -540,10 +564,11 @@ export class MedicalLocksService {
     });
 
     const until = extended.recheckDate ? extended.recheckDate.toISOString().slice(0, 10) : '';
-    await this.notifyLockAudience(
+    const notificationSent = await this.notifyLockAudience(
       extended.horseId,
       {
         type: 'LOCK_EXTENDED',
+        dedupeKey: `lock-extended:${lockId}:${until}`,
         category: 'LOCK',
         title: 'Training Lock extended',
         message: `The Training Lock of ${extended.horse?.name ?? 'a horse'} now runs until ${until}.`,
@@ -563,7 +588,7 @@ export class MedicalLocksService {
       note: extended.recheckNotes || 'Medical lock extended',
     });
 
-    return extended;
+    return { ...extended, notificationFailed: notificationSent === false };
   }
 
   async getMedicalLocks(currentUser: CurrentUserPayload, query: MedicalLockQueryDto) {

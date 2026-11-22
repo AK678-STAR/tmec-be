@@ -6,6 +6,7 @@ describe('NotificationsService', () => {
   const prisma = {
     user: { findMany: jest.fn() },
     horse: { findUnique: jest.fn() },
+    trainingPlan: { findMany: jest.fn() },
     // Groom nhận thông báo = Groom đang trực khu của ngựa hôm nay (#1).
     shiftRoster: {
       findMany: jest.fn().mockResolvedValue([{ zoneId: 'zone-a', groomUserId: 'groom-1' }]),
@@ -91,7 +92,7 @@ describe('NotificationsService', () => {
 
     it('should never throw when the database fails', async () => {
       prisma.user.findMany.mockRejectedValue(new Error('db down'));
-      await expect(service.notifyUsers(['u1'], input)).resolves.toBeUndefined();
+      await expect(service.notifyUsers(['u1'], input)).resolves.toBe(false);
     });
   });
 
@@ -121,6 +122,26 @@ describe('NotificationsService', () => {
         },
       });
       expect(audience).toEqual(['ht-1', 'owner-1', 'groom-1']);
+    });
+
+    it('limits the medical audience to assigned trainers and the exact horse owner and zone', async () => {
+      prisma.horse.findUnique.mockResolvedValue({
+        ownerId: 'owner-1',
+        stallAllocations: [{ stall: { zoneId: 'zone-a' } }],
+      });
+      prisma.user.findMany.mockResolvedValue([{ id: 'manager-1' }]);
+      prisma.trainingPlan.findMany.mockResolvedValue([{ trainerUserId: 'trainer-1' }]);
+      const audience = await service.horseAudience('horse-1', {
+        roles: [Role.CLUB_MANAGER],
+        trainer: true,
+        owner: true,
+        groom: true,
+      });
+      expect(audience).toEqual(['manager-1', 'trainer-1', 'owner-1', 'groom-1']);
+      expect(prisma.trainingPlan.findMany).toHaveBeenCalledWith({
+        where: { horseId: 'horse-1', status: { in: ['DRAFT', 'ACTIVE'] } },
+        select: { trainerUserId: true },
+      });
     });
 
     it('negative: foreign owner and unassigned grooms are never returned', async () => {

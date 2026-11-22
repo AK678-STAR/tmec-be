@@ -1,5 +1,7 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger, Optional } from '@nestjs/common';
 import { HorseStatus, PlanStatus, Prisma, Role, UserStatus, WorkoutStatus } from '@prisma/client';
+import { DailyTasksService } from '../daily-tasks/daily-tasks.service';
+import { assertTrainerZone } from './trainer-zones';
 import { apiError } from '../common/exceptions/api-error';
 import { UserRole } from '../common/enums/role.enum';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
@@ -85,12 +87,26 @@ function conflictInfo(
 /** P2-07, P2-08: buổi tập — xếp lịch, lặp hằng tuần, ghi kết quả, hủy / khôi phục, lịch của groom (FR-2.05, FR-2.09 → FR-2.13, FR-2.17, FR-2.20). */
 @Injectable()
 export class WorkoutsService {
+  private readonly logger = new Logger(WorkoutsService.name);
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
     private readonly notifications: NotificationsService,
     private readonly common: TrainingCommonService,
+    @Optional() private readonly dailyTasks?: DailyTasksService,
   ) {}
+
+  private async syncCareDates(dates: Date[]) {
+    if (!this.dailyTasks) return;
+    const days = new Set(dates.map(clubDate));
+    for (const day of days) {
+      try {
+        await this.dailyTasks.generateDailyTasksForDate(new Date(`${day}T00:00:00.000Z`));
+      } catch (error) {
+        this.logger.warn(`Could not refresh workout preparation for ${day}: ${String(error)}`);
+      }
+    }
+  }
 
   /**
    * Kiểm tra DL-2.01 theo thứ tự ưu tiên của đặc tả. Gọi trong transaction đã khóa dòng ngựa.
@@ -111,7 +127,15 @@ export class WorkoutsService {
         'Giáo án đã hoàn thành hoặc đã hủy nên không xếp thêm buổi tập.',
       );
     }
-    const horse = await tx.horse.findUnique({ where: { id: plan.horseId } });
+    const horse = await tx.horse.findUnique({
+      where: { id: plan.horseId },
+      include: {
+        stallAllocations: {
+          where: { isActive: true },
+          select: { stall: { select: { zoneId: true } } },
+        },
+      },
+    });
     if (!horse || horse.deletedAt) {
       throw apiError(HttpStatus.NOT_FOUND, 'HORSE_NOT_FOUND', 'Target horse not found.');
     }
@@ -222,6 +246,7 @@ export class WorkoutsService {
         'HLV phụ trách giáo án không còn hoạt động.',
       );
     }
+    await assertTrainerZone(tx, horse.id, horse.stallAllocations?.[0]?.stall.zoneId, [trainer.id]);
     w.assignedStaffUserId = trainer.id;
     w.jockeyName = trainer.fullName;
 
@@ -545,6 +570,7 @@ export class WorkoutsService {
       );
       return session;
     });
+    await this.syncCareDates([session.scheduledDate]);
     return session;
   }
 
@@ -553,6 +579,7 @@ export class WorkoutsService {
    * Ngày vướng kiểm tra 1-4 thì bỏ qua và báo lại; cảnh báo (6) không chặn khi lặp.
    */
   async createRepeatWorkouts(planId: string, dto: RepeatWorkoutDto, user: CurrentUserPayload) {
+    const careDates: Date[] = [];
     const result = await this.prisma.$transaction(async (tx) => {
       const plan = await tx.trainingPlan.findUnique({ where: { id: planId } });
       if (!plan) {
@@ -623,6 +650,7 @@ export class WorkoutsService {
             data: this.createData(plan, draft, dto, medicalOverride),
           });
           created.push(row.id);
+          careDates.push(date);
         } catch (e: any) {
           const body = typeof e?.getResponse === 'function' ? e.getResponse() : null;
           if (!body || !skippable.includes(body.code)) throw e;
@@ -648,11 +676,13 @@ export class WorkoutsService {
         warnings: allWarnings,
       };
     });
+    await this.syncCareDates(careDates);
     return result;
   }
 
   /** Sửa buổi tập Đã lên lịch chưa tới giờ (BTN-2.20): gộp với dữ liệu cũ rồi kiểm lại DL-2.01. */
   async updateWorkout(workoutId: string, dto: UpdateWorkoutSessionDto, user: CurrentUserPayload) {
+    let previousDate: Date | undefined;
     const updated = await this.prisma.$transaction(async (tx) => {
       const existing = await tx.workoutSession.findUnique({
         where: { id: workoutId },
@@ -671,6 +701,7 @@ export class WorkoutsService {
           'This workout belongs to another trainer.',
         );
       }
+      previousDate = existing.scheduledDate;
       if (existing.status !== WorkoutStatus.SCHEDULED || existing.scheduledDate <= new Date()) {
         throw apiError(
           HttpStatus.BAD_REQUEST,
@@ -734,6 +765,9 @@ export class WorkoutsService {
       );
       return updated;
     });
+    await this.syncCareDates(
+      previousDate ? [previousDate, updated.scheduledDate] : [updated.scheduledDate],
+    );
     return updated;
   }
 
@@ -946,12 +980,13 @@ export class WorkoutsService {
       workoutId,
       { entityName: 'WorkoutSession', oldValues: { status: existing.status } },
     );
+    await this.syncCareDates([existing.scheduledDate]);
     return updated;
   }
 
   /** DL-2.07 Khôi phục buổi bị chặn sau khi gỡ Khóa y tế (HT), áp lại toàn bộ kiểm tra DL-2.01. */
   async restoreWorkout(workoutId: string, dto: RestoreWorkoutDto, user: CurrentUserPayload) {
-    return this.prisma.$transaction(async (tx) => {
+    const restored = await this.prisma.$transaction(async (tx) => {
       const existing = await tx.workoutSession.findUnique({
         where: { id: workoutId },
         include: { trainingPlan: true },
@@ -1028,6 +1063,8 @@ export class WorkoutsService {
       );
       return restored;
     });
+    await this.syncCareDates([restored.scheduledDate]);
+    return restored;
   }
 
   /**

@@ -11,7 +11,7 @@ const rosters = [
   },
   {
     zoneId: 'B',
-    groomUserId: 'g1',
+    groomUserId: 'g3',
     shiftId: 'M',
     startTime: '05:00',
     endTime: '13:00',
@@ -55,6 +55,26 @@ describe('planDailyTasks', () => {
     );
     expect(afternoon.length).toBeGreaterThan(0);
     expect(afternoon.every((t) => t.assignedGroomUserId === 'g2' && t.shiftId === 'P')).toBe(true);
+  });
+
+  it('leaves tasks unassigned if the horse’s groom is rostered only in another zone', () => {
+    const tasks = planDailyTasks([{ ...horses[0], zoneId: 'C', allocationGroomId: 'g1' }], rosters);
+    expect(tasks.length).toBeGreaterThan(0);
+    expect(tasks.every((task) => task.assignedGroomUserId === undefined)).toBe(true);
+  });
+
+  it('prepares a scheduled horse in its zone and suppresses preparation under a lock', () => {
+    const horse = { ...horses[1], workouts: [{ id: 'workout-1', time: '12:00' }] };
+    expect(planDailyTasks([horse], rosters)).toContainEqual(
+      expect.objectContaining({
+        taskCode: 'WORKOUT-PREP-workout-1',
+        assignedGroomUserId: 'g1',
+        scheduledTime: '11:45',
+      }),
+    );
+    expect(
+      planDailyTasks([{ ...horse, isLocked: true }], rosters).some((task) => task.taskCode),
+    ).toBe(false);
   });
 
   it('gives a locked horse physical therapy from careInstructions and skips walking', () => {

@@ -24,12 +24,6 @@ import { CreateHorseDto } from './dto/create-horse.dto';
 import { UpdateHorseDto } from './dto/update-horse.dto';
 import { QueryHorseDto } from './dto/query-horse.dto';
 import { ChangeHorseStatusDto } from './dto/change-status.dto';
-import {
-  QueryTransferRequestDto,
-  RespondTransferDto,
-  TransferHorseOwnerDto,
-} from './dto/transfer-owner.dto';
-import { HorseTransferService } from './horse-transfer.service';
 import { DeleteHorseDto } from './dto/delete-horse.dto';
 import { RestoreHorseDto } from './dto/restore-horse.dto';
 import { QueryDeletedHorseDto } from './dto/query-deleted-horse.dto';
@@ -42,46 +36,12 @@ export class HorsesController {
     private readonly horsesService: HorsesService,
     private readonly history: HorseHistoryService,
     private readonly lifecycle: HorseLifecycleService,
-    private readonly transfers: HorseTransferService,
   ) {}
 
   @Get()
   @ApiOperation({ summary: 'Lấy danh sách ngựa theo phân quyền vai trò (FR-1.03)' })
   async findAll(@Query() query: QueryHorseDto, @CurrentUser() user: CurrentUserPayload) {
     return this.horsesService.findAll(query, user);
-  }
-
-  @Get('transfer-requests')
-  @Roles(UserRole.CLUB_MANAGER, UserRole.HORSE_OWNER)
-  @ApiOperation({ summary: 'Yêu cầu chuyển nhượng ngựa (CM: tất cả, chủ ngựa: của mình)' })
-  async listTransfers(
-    @Query() query: QueryTransferRequestDto,
-    @CurrentUser() user: CurrentUserPayload,
-  ) {
-    return this.transfers.list(user, query.status);
-  }
-
-  @Post('transfer-requests/:requestId/respond')
-  @Roles(UserRole.HORSE_OWNER)
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Chủ cũ / chủ mới đồng ý hoặc từ chối chuyển nhượng' })
-  async respondTransfer(
-    @Param('requestId') requestId: string,
-    @Body() dto: RespondTransferDto,
-    @CurrentUser() user: CurrentUserPayload,
-  ) {
-    return this.transfers.respond(requestId, dto.accept, dto.note, user);
-  }
-
-  @Post('transfer-requests/:requestId/cancel')
-  @Roles(UserRole.CLUB_MANAGER)
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Club Manager rút lại yêu cầu chuyển nhượng chưa chốt' })
-  async cancelTransfer(
-    @Param('requestId') requestId: string,
-    @CurrentUser() user: CurrentUserPayload,
-  ) {
-    return this.transfers.cancel(requestId, user);
   }
 
   // Phải khai báo TRƯỚC ':id', nếu không Nest hiểu "deleted" là một id.
@@ -127,19 +87,6 @@ export class HorsesController {
     @CurrentUser() user: CurrentUserPayload,
   ) {
     return this.horsesService.update(id, dto, user);
-  }
-
-  @Patch(':id/transfer-owner')
-  @Roles(UserRole.CLUB_MANAGER)
-  @ApiOperation({
-    summary: 'Tạo yêu cầu chuyển nhượng; chủ cũ và chủ mới xác nhận thì mới đổi chủ (Flow 1)',
-  })
-  async transferOwner(
-    @Param('id') id: string,
-    @Body() dto: TransferHorseOwnerDto,
-    @CurrentUser() user: CurrentUserPayload,
-  ) {
-    return this.transfers.requestTransfer(id, dto, user);
   }
 
   @Delete(':id')

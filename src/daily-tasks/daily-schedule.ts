@@ -19,6 +19,7 @@ export interface ScheduleHorse {
   allocationGroomId?: string;
   isLocked: boolean;
   allowedActivityLevel?: string;
+  workouts?: Array<{ id: string; time: string }>;
   mealsJson?: unknown;
   medications?: Array<{
     name: string;
@@ -41,7 +42,11 @@ export interface ScheduleRoster {
   isOvernight: boolean;
 }
 
+export const WORKOUT_PREP_PREFIX = 'WORKOUT-PREP-';
+export const STALL_HANDOVER_PREFIX = 'STALL-HANDOVER-';
+
 export interface PlannedTask {
+  taskCode?: string;
   horseId: string;
   zoneId?: string;
   stallId?: string;
@@ -56,6 +61,7 @@ export interface PlannedTask {
 }
 
 interface Template {
+  taskCode?: string;
   taskType: DailyTaskType;
   title: string;
   description: string;
@@ -157,6 +163,10 @@ function formatMedicationRoute(route?: string): string {
 }
 
 const MEAL_BASE: Record<string, string> = { MORNING: '05:30', NOON: '11:30', EVENING: '18:00' };
+
+export function requiresStallRest(horse: Pick<ScheduleHorse, 'isLocked' | 'allowedActivityLevel'>) {
+  return horse.isLocked || /stall rest|nghỉ tại ô|strict/i.test(horse.allowedActivityLevel || '');
+}
 
 function templatesFor(horse: ScheduleHorse): Template[] {
   const list: Template[] = [];
@@ -260,10 +270,18 @@ function templatesFor(horse: ScheduleHorse): Template[] {
   });
 
   // Dắt đi dạo nhẹ nhàng - chỉ khi ngựa không bị chỉ định nghỉ ngơi nghiêm ngặt tại ô chuồng
-  const isStrictStallRest =
-    horse.isLocked || /stall rest|nghỉ tại ô|strict/i.test(horse.allowedActivityLevel || '');
-
-  if (!isStrictStallRest) {
+  if (!requiresStallRest(horse)) {
+    for (const workout of horse.workouts ?? []) {
+      list.push({
+        taskCode: WORKOUT_PREP_PREFIX + workout.id,
+        taskType: DailyTaskType.OTHER,
+        title: 'Chuẩn bị ngựa trước buổi tập',
+        description: `Chuẩn bị ngựa và trang bị để bàn giao cho HLV trước buổi tập lúc ${workout.time}.`,
+        mealType: null,
+        baseTime: toHhmm(Math.max(0, toMinutes(workout.time) - 15)),
+        minutes: 15,
+      });
+    }
     list.push({
       taskType: DailyTaskType.WALKING,
       title: 'Dắt đi dạo nhẹ nhàng & thả lỏng cơ bắp',
@@ -323,9 +341,15 @@ export function planDailyTasks(horses: ScheduleHorse[], rosters: ScheduleRoster[
 
   const cursor = new Map<string, number>();
   return rows.map(({ horse, t, base }) => {
-    const matchingRosters = rosters.filter(
-      (r) => r.zoneId === horse.zoneId && shiftCovers(r, base),
-    );
+    const matchingRosters = rosters.filter((r) => {
+      const start = Math.max(base, cursor.get(`${r.groomUserId}|${r.shiftId}`) ?? 0);
+      return (
+        r.zoneId === horse.zoneId &&
+        shiftCovers(r, base) &&
+        shiftCovers(r, start + t.minutes - 1) &&
+        (!t.taskCode || start === base)
+      );
+    });
     const roster =
       matchingRosters.find((r) => r.groomUserId === horse.allocationGroomId) ??
       matchingRosters.reduce<ScheduleRoster | undefined>((best, cur) => {
@@ -334,11 +358,12 @@ export function planDailyTasks(horses: ScheduleHorse[], rosters: ScheduleRoster[
         const curEnd = cursor.get(`${cur.groomUserId}|${cur.shiftId}`) ?? 0;
         return curEnd < bestEnd ? cur : best;
       }, undefined);
-    const groom = roster?.groomUserId ?? horse.allocationGroomId;
+    const groom = roster?.groomUserId;
     const lane = groom ? `${groom}|${roster?.shiftId ?? 'none'}` : `horse|${horse.id}`;
     const start = Math.max(base, cursor.get(lane) ?? 0);
     cursor.set(lane, start + t.minutes);
     return {
+      ...(t.taskCode && { taskCode: t.taskCode }),
       horseId: horse.id,
       zoneId: horse.zoneId,
       stallId: horse.stallId,
