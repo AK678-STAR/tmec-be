@@ -128,6 +128,64 @@ export class TrainingCommonService {
         }),
       ]);
     }
+
+    // Tự động hủy các giáo án Nháp (DRAFT) quá hạn giữ chỗ:
+    // 1) Quá ngày bắt đầu (startDate < today)
+    // 2) Tạo quá 72 giờ (3 ngày) kể từ createdAt mà vẫn ở trạng thái DRAFT
+    const seventyTwoHoursAgo = new Date(now.getTime() - 72 * 60 * 60 * 1000);
+    const expiredDrafts = await this.prisma.trainingPlan.findMany({
+      where: {
+        status: PlanStatus.DRAFT,
+        OR: [
+          { startDate: { lt: today } },
+          { createdAt: { lt: seventyTwoHoursAgo } },
+        ],
+      },
+      include: {
+        horse: { select: { id: true, name: true } },
+        trainer: { select: { id: true, fullName: true, email: true } },
+      },
+    });
+
+    for (const draft of expiredDrafts) {
+      const txOps: any[] = [
+        this.prisma.workoutSession.deleteMany({ where: { trainingPlanId: draft.id } }),
+        this.prisma.trainingPlan.update({
+          where: { id: draft.id },
+          data: {
+            status: PlanStatus.CANCELLED,
+            cancelReason: 'Hệ thống tự động hủy do bản nháp quá hạn 72 giờ hoặc quá ngày bắt đầu mà chưa được kích hoạt.',
+          },
+        }),
+      ];
+      if (this.prisma.auditLog?.create) {
+        txOps.push(
+          this.prisma.auditLog.create({
+            data: {
+              action: 'DRAFT_EXPIRED',
+              entityName: 'Horse',
+              entityId: draft.horseId,
+              userId: draft.trainerUserId,
+              newValuesJson: JSON.stringify({
+                horseId: draft.horseId,
+                trainerUserId: draft.trainerUserId,
+                cooldownUntil: new Date(now.getTime() + 48 * 60 * 60 * 1000).toISOString(),
+                reason: 'Bản nháp quá hạn tự động hủy',
+              }),
+            },
+          }),
+        );
+      }
+      await this.prisma.$transaction(txOps);
+
+      await this.notifications.notifyUsers([draft.trainerUserId], {
+        type: 'PLAN_EXPIRED',
+        category: 'TRAINING',
+        title: 'Bản nháp giáo án đã hết hạn',
+        message: `Bản nháp giáo án "${draft.phaseName}" cho chiến mã ${draft.horse?.name ?? 'chiến mã'} đã tự động hủy do quá hạn giữ chỗ. Chiến mã đã được giải phóng.`,
+        link: '/training/plans',
+      });
+    }
   }
 
   /**

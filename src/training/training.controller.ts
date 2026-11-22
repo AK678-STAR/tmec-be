@@ -48,7 +48,9 @@ import {
   ChangePlanStatusDto,
   ClonePlanDto,
   RestoreWorkoutDto,
+  UnlockCooldownDto,
 } from './dto/workout-actions.dto';
+import { CLUB_JOCKEYS } from './training-rules';
 
 /**
  * Flow 2 - phân quyền theo đặc tả §2: chỉ HT lập/sửa/kích hoạt giáo án, xếp buổi tập và ghi kết quả;
@@ -114,8 +116,8 @@ export class TrainingController {
 
   @Patch('plans/:id/status')
   @RequirePermission('createPlan')
-  @Roles(UserRole.HEAD_TRAINER)
-  @ApiOperation({ summary: 'DL-2.02 Kích hoạt / DL-2.04 Hoàn thành / DL-2.03 Hủy giáo án - HT' })
+  @Roles(UserRole.HEAD_TRAINER, UserRole.CLUB_MANAGER)
+  @ApiOperation({ summary: 'DL-2.02 Kích hoạt / DL-2.04 Hoàn thành / DL-2.03 Hủy giáo án - HT, Quản lý CLB cưỡng chế' })
   async changePlanStatus(
     @Param('id') id: string,
     @Body() dto: ChangePlanStatusDto,
@@ -139,10 +141,29 @@ export class TrainingController {
 
   @Delete('plans/:id')
   @RequirePermission('createPlan')
-  @Roles(UserRole.HEAD_TRAINER)
-  @ApiOperation({ summary: 'Xóa giáo án Nháp chưa có buổi hoàn thành - HT' })
+  @Roles(UserRole.HEAD_TRAINER, UserRole.CLUB_MANAGER)
+  @ApiOperation({ summary: 'Xóa giáo án Nháp chưa có buổi hoàn thành - HT, Quản lý CLB' })
   async deletePlan(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
     return this.plans.deletePlan(id, user);
+  }
+
+  @Post('horses/:horseId/cooldown/unlock')
+  @Roles(UserRole.CLUB_MANAGER)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Quản lý CLB mở khóa thời gian chờ (cooldown) cho HLV trên chiến mã' })
+  async unlockCooldown(
+    @Param('horseId') horseId: string,
+    @Body() dto: UnlockCooldownDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.plans.unlockCooldown(horseId, dto, user);
+  }
+
+  @Get('assignable-horses')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER)
+  @ApiOperation({ summary: 'Lấy danh sách ngựa kèm trạng thái giáo án thời gian thực để tạo/nhân bản giáo án' })
+  async getAssignableHorses(@CurrentUser() user: CurrentUserPayload) {
+    return this.plans.getAssignableHorses(user);
   }
 
   // ------------------------------------------------------------ Buổi tập
@@ -183,6 +204,25 @@ export class TrainingController {
     @Query('workoutType') workoutType?: string,
   ) {
     return this.workouts.findGrooms(horseId, date, time, excludeWorkoutId, workoutType);
+  }
+
+  @Get('jockeys')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.VETERINARIAN)
+  @ApiOperation({ summary: 'Danh mục nài ngựa chính quy của Câu lạc bộ' })
+  getJockeys() {
+    return CLUB_JOCKEYS;
+  }
+
+  @Get('track-availability')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.VETERINARIAN)
+  @ApiOperation({ summary: 'Kiểm tra tình trạng sức chứa sân bãi theo thời gian thực - HT' })
+  async getTrackAvailability(
+    @Query('date') date?: string,
+    @Query('time') time?: string,
+    @Query('workoutType') workoutType?: string,
+    @Query('excludeWorkoutId') excludeWorkoutId?: string,
+  ) {
+    return this.workouts.getTrackAvailability(date, time, workoutType, excludeWorkoutId);
   }
 
   @Post('plans/:id/workouts')
@@ -266,6 +306,17 @@ export class TrainingController {
     @CurrentUser() user: CurrentUserPayload,
   ) {
     return this.workouts.restoreWorkout(workoutId, dto, user);
+  }
+
+  @Delete('workouts/:id')
+  @RequirePermission('assignSchedule')
+  @Roles(UserRole.HEAD_TRAINER, UserRole.CLUB_MANAGER)
+  @ApiOperation({ summary: 'Xóa buổi tập chưa diễn ra hoặc thuộc giáo án Nháp' })
+  async deleteWorkout(
+    @Param('id') workoutId: string,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.workouts.deleteWorkout(workoutId, user);
   }
 
   // ------------------------------------------------------------ Cảnh báo & thể lực

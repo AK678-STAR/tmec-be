@@ -1,6 +1,7 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
   HorseStatus,
+  PlanStatus,
   Prisma,
   RegistrationStatus,
   Role,
@@ -947,12 +948,37 @@ export class TournamentsService {
       throw apiError(HttpStatus.NOT_FOUND, 'HORSE_NOT_FOUND', `Horse ${dto.horseId} not found`);
     }
 
-    if (actor.role === 'HORSE_OWNER' && horse.ownerId !== actor.id) {
+    if (actor.role === 'HORSE_OWNER') {
       throw apiError(
         HttpStatus.FORBIDDEN,
-        'FORBIDDEN',
-        'You can only register your own horse for a tournament.',
+        'OWNER_DIRECT_REGISTRATION_DISALLOWED',
+        'Chủ ngựa không được đăng ký thi đấu trực tiếp. Vui lòng liên hệ Huấn luyện viên trưởng hoặc Quản lý CLB để đăng ký thi đấu cho chiến mã.',
       );
+    }
+
+    if (actor.role === 'HEAD_TRAINER') {
+      const activePlan = await this.prisma.trainingPlan.findFirst({
+        where: { horseId: horse.id, status: PlanStatus.ACTIVE },
+      });
+      if (activePlan && activePlan.trainerUserId !== actor.id) {
+        throw apiError(
+          HttpStatus.FORBIDDEN,
+          'FORBIDDEN',
+          `Chiến mã ${horse.name} đang thuộc giáo án do Huấn luyện viên khác quản lý. Chỉ HLV phụ trách mới có quyền đăng ký thi đấu.`,
+        );
+      }
+    }
+
+    // Xác định Trainer ID ghi nhận lượt đăng ký (nếu CM đăng ký hộ thì ưu tiên lấy HLV phụ trách của ngựa)
+    let registeredTrainerId = actor.id;
+    if (actor.role === 'CLUB_MANAGER') {
+      const activePlan = await this.prisma.trainingPlan.findFirst({
+        where: { horseId: horse.id, status: { in: [PlanStatus.ACTIVE, PlanStatus.DRAFT] } },
+        orderBy: { updatedAt: 'desc' },
+      });
+      if (activePlan) {
+        registeredTrainerId = activePlan.trainerUserId;
+      }
     }
 
     // Chặn cứng: Khóa y tế
@@ -1013,7 +1039,7 @@ export class TournamentsService {
           data: {
             tournamentId,
             horseId: dto.horseId,
-            registeredByTrainerId: actor.id,
+            registeredByTrainerId: registeredTrainerId,
             status: RegistrationStatus.REGISTERED,
             entryFeeBilled: Number(tournament.entryFee) || 0,
             notes: dto.notes,

@@ -11,23 +11,36 @@ import { CancelWorkoutDto, RestoreWorkoutDto } from './dto/workout-actions.dto';
 import {
   addDays,
   allowEarlyWorkoutStart,
+  ALWAYS_HEAVY_TYPES,
+  CLUB_JOCKEYS,
   clubDate,
   clubTime,
   effectiveIntensity,
   effectiveSurface,
   isHeavy,
+  isWithinPrimeTime,
   LATE_RESULT_DAYS,
   MAX_AVERAGE_SPEED_KMH,
+  MAX_PRIME_HEAVY_SESSIONS_PER_TRAINER,
   MAX_SESSION_DISTANCE_METERS,
   MAX_WORKOUTS_PER_DAY,
+  MAX_DAILY_WORKOUTS_PER_GROOM,
+  MAX_DAILY_HEAVY_WORKOUTS_PER_GROOM,
   NO_TIME_TYPES,
   PENDING_WORKOUT_STATUSES,
+  PRIME_TIME_END_HOUR,
+  PRIME_TIME_END_MINUTE,
+  PRIME_TIME_START_HOUR,
+  PRIME_TIME_START_MINUTE,
   startOfClubDay,
   startOfClubWeek,
+  TRACK_MAX_LIGHT_HORSES,
+  TRAINER_BUFFER_MINUTES,
   TRIAL_SLOT_MINUTES,
   withinTrainingHours,
   workoutDurationMinutes,
   GROOM_BUFFER_MINUTES,
+  TrackAvailabilityInfo,
 } from './training-rules';
 import {
   Tx,
@@ -269,6 +282,12 @@ export class WorkoutsService {
     const notSelf = excludeWorkoutId ? { id: { not: excludeWorkoutId } } : {};
     const live = { ...notSelf, status: { not: WorkoutStatus.CANCELLED } };
 
+    const newStart = w.scheduledDate.getTime();
+    const newDur = workoutDurationMinutes(w.workoutType);
+    const newEnd = newStart + (newDur + GROOM_BUFFER_MINUTES) * 60 * 1000;
+    const trainerEnd = newStart + (newDur + TRAINER_BUFFER_MINUTES) * 60 * 1000;
+    const maxPreWindow = 120 * 60 * 1000;
+
     // 2b. Ngựa không thể có 2 buổi tập trùng thời điểm (cách nhau dưới 30 phút).
     const timeOverlap = await tx.workoutSession.findFirst({
       where: {
@@ -291,7 +310,44 @@ export class WorkoutsService {
       );
     }
 
-    // 3. Chạy thử trùng mặt sân trong cùng khung 15 phút.
+    // BR-TRN-SLOT-HT: Một HLV chỉ điều hành 1 buổi tập tại một thời điểm (không thể phân thân)
+    if (plan.trainerUserId) {
+      const trainerWorkouts = await tx.workoutSession.findMany({
+        where: {
+          ...live,
+          trainingPlan: { trainerUserId: plan.trainerUserId },
+          scheduledDate: {
+            gte: new Date(newStart - maxPreWindow),
+            lte: new Date(trainerEnd),
+          },
+        },
+        select: {
+          id: true,
+          scheduledDate: true,
+          workoutType: true,
+          horse: { select: { name: true } },
+          ...TRAINER_OF_WORKOUT,
+        },
+      });
+      const busyTrainer = trainerWorkouts.find((other) => {
+        if (!other?.scheduledDate || typeof other.scheduledDate.getTime !== 'function') return false;
+        const otherStart = other.scheduledDate.getTime();
+        const otherDur = workoutDurationMinutes(other.workoutType);
+        const otherEnd = otherStart + (otherDur + TRAINER_BUFFER_MINUTES) * 60 * 1000;
+        return newStart < otherEnd && otherStart < trainerEnd;
+      });
+      if (busyTrainer) {
+        const c = conflictInfo(busyTrainer.scheduledDate, TRAINER_BUFFER_MINUTES, busyTrainer);
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'TRAINER_TIME_CONFLICT',
+          `Huấn luyện viên ${busyTrainer.trainingPlan?.trainer.fullName ?? 'này'} đã có buổi tập của ngựa ${busyTrainer.horse.name} lúc ${c.time} ngày ${c.date}. HLV chỉ có thể điều hành 1 buổi tập tại một thời điểm. Chọn giờ bắt đầu từ ${c.before} trở về trước hoặc từ ${c.after} trở đi.`,
+          { workoutId: busyTrainer.id, horse: busyTrainer.horse.name, ...c },
+        );
+      }
+    }
+
+    // 3. Chạy thử trùng mặt sân trong cùng khung 15 phút (DL-2.01)
     if (w.workoutType === 'TRIAL') {
       const slot = TRIAL_SLOT_MINUTES * 60 * 1000;
       const clash = await tx.workoutSession.findFirst({
@@ -319,6 +375,134 @@ export class WorkoutsService {
           'TRIAL_SLOT_TAKEN',
           `Mặt sân ${surface} đã có lượt chạy thử của ${clash.horse.name} lúc ${c.time} ngày ${c.date} (HLV ${c.trainer}). Chọn giờ bắt đầu từ ${c.before} trở về trước, hoặc từ ${c.after} trở đi.`,
           { workoutId: clash.id, horse: clash.horse.name, surface: w.trackSurface, ...c },
+        );
+      }
+    }
+
+    // BR-TRN-TRACK-CAPACITY: Kiểm tra sức chứa mặt sân & bài tập nặng độc quyền sân
+    if (w.trackSurface && w.trackSurface !== 'NONE') {
+      const trackWorkouts = await tx.workoutSession.findMany({
+        where: {
+          ...live,
+          trackSurface: w.trackSurface,
+          scheduledDate: {
+            gte: new Date(newStart - maxPreWindow),
+            lte: new Date(newEnd),
+          },
+        },
+        select: {
+          id: true,
+          scheduledDate: true,
+          workoutType: true,
+          intensity: true,
+          horse: { select: { name: true } },
+          ...TRAINER_OF_WORKOUT,
+        },
+      });
+      const activeOnTrack = trackWorkouts.filter((other) => {
+        if (!other?.scheduledDate || typeof other.scheduledDate.getTime !== 'function') return false;
+        const otherStart = other.scheduledDate.getTime();
+        const otherDur = workoutDurationMinutes(other.workoutType);
+        const otherEnd = otherStart + (otherDur + 15) * 60 * 1000;
+        return newStart < otherEnd && otherStart < newEnd;
+      });
+
+      const surfaceName = SURFACE_LABEL[w.trackSurface] ?? w.trackSurface;
+
+      // 1. Bài tập nặng (BREEZE, HEAVY) độc quyền toàn bộ mặt sân
+      if (heavy && activeOnTrack.length > 0 && w.workoutType !== 'TRIAL') {
+        const clash = activeOnTrack[0];
+        const c = conflictInfo(clash.scheduledDate, 20, clash);
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'TRACK_HEAVY_COLLISION',
+          `Mặt sân ${surfaceName} đang có buổi tập của ngựa ${clash.horse.name} lúc ${c.time} ngày ${c.date} (HLV ${c.trainer}). Bài tập tốc độ cao (${w.workoutType}) yêu cầu độc quyền đường chạy để tránh va chạm.`,
+          { workoutId: clash.id, horse: clash.horse.name, surface: w.trackSurface, ...c },
+        );
+      }
+
+      // 2. Nếu mặt sân đang có bài tập nặng của ngựa khác -> Chặn ngựa khác vào sân
+      const heavyOnTrack = activeOnTrack.find((x) => isHeavy(x.workoutType, x.intensity));
+      if (heavyOnTrack) {
+        const c = conflictInfo(heavyOnTrack.scheduledDate, 20, heavyOnTrack);
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'TRACK_HEAVY_OCCUPIED',
+          `Mặt sân ${surfaceName} đang có lượt chạy tốc độ cao của ngựa ${heavyOnTrack.horse.name} lúc ${c.time} ngày ${c.date}. Không thể cho ngựa khác vào sân trong thời gian này.`,
+          { workoutId: heavyOnTrack.id, horse: heavyOnTrack.horse.name, surface: w.trackSurface, ...c },
+        );
+      }
+
+      // 3. Bài nhẹ: Tối đa TRACK_MAX_LIGHT_HORSES (3) ngựa cùng lúc
+      if (activeOnTrack.length >= TRACK_MAX_LIGHT_HORSES) {
+        const c = conflictInfo(activeOnTrack[0].scheduledDate, 30, activeOnTrack[0]);
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'TRACK_CAPACITY_EXCEEDED',
+          `Mặt sân ${surfaceName} đã đạt sức chứa tối đa (${TRACK_MAX_LIGHT_HORSES} chiến mã cùng lúc) lúc ${c.time} ngày ${c.date}. Vui lòng chọn khung giờ khác để đảm bảo khoảng cách an toàn.`,
+          { surface: w.trackSurface, ...c },
+        );
+      }
+    }
+
+    // BR-TRN-PRIME-QUOTA: Hạn ngạch giờ vàng (06:15 - 08:00) tối đa 2 bài nặng / HLV mỗi sáng
+    if (plan.trainerUserId && heavy && isWithinPrimeTime(w.scheduledDate)) {
+      const dStart = startOfClubDay(w.scheduledDate);
+      const primeStart = new Date(dStart.getTime() + (PRIME_TIME_START_HOUR * 60 + PRIME_TIME_START_MINUTE) * 60 * 1000);
+      const primeEnd = new Date(dStart.getTime() + (PRIME_TIME_END_HOUR * 60 + PRIME_TIME_END_MINUTE) * 60 * 1000);
+
+      const primeHeavyCount = await tx.workoutSession.count({
+        where: {
+          ...live,
+          trainingPlan: { trainerUserId: plan.trainerUserId },
+          scheduledDate: { gte: primeStart, lt: primeEnd },
+          OR: [{ intensity: 'HEAVY' }, { workoutType: { in: ALWAYS_HEAVY_TYPES } }],
+        },
+      });
+
+      if (primeHeavyCount >= MAX_PRIME_HEAVY_SESSIONS_PER_TRAINER) {
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'PRIME_TIME_QUOTA_EXCEEDED',
+          `Mỗi Huấn luyện viên chỉ được đăng ký tối đa ${MAX_PRIME_HEAVY_SESSIONS_PER_TRAINER} buổi tập nặng trong Khung giờ vàng (06:15 - 08:00) mỗi sáng để đảm bảo công bằng cho các HLV khác.`,
+        );
+      }
+    }
+
+    // BR-TRN-JOCKEY-CONCURRENCY: Một nài ngựa không thể cưỡi 2 ngựa cùng lúc
+    if (w.jockeyName && w.jockeyName.trim()) {
+      const jockeyTrimmed = w.jockeyName.trim();
+      const jockeyWorkouts = await tx.workoutSession.findMany({
+        where: {
+          ...live,
+          jockeyName: { equals: jockeyTrimmed, mode: 'insensitive' },
+          scheduledDate: {
+            gte: new Date(newStart - maxPreWindow),
+            lte: new Date(newEnd),
+          },
+        },
+        select: {
+          id: true,
+          scheduledDate: true,
+          workoutType: true,
+          horse: { select: { name: true } },
+          ...TRAINER_OF_WORKOUT,
+        },
+      });
+      const busyJockey = jockeyWorkouts.find((other) => {
+        if (!other?.scheduledDate || typeof other.scheduledDate.getTime !== 'function') return false;
+        const otherStart = other.scheduledDate.getTime();
+        const otherDur = workoutDurationMinutes(other.workoutType);
+        const otherEnd = otherStart + (otherDur + 15) * 60 * 1000;
+        return newStart < otherEnd && otherStart < newEnd;
+      });
+      if (busyJockey) {
+        const c = conflictInfo(busyJockey.scheduledDate, 30, busyJockey);
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'JOCKEY_TIME_CONFLICT',
+          `Nài ngựa ${jockeyTrimmed} đã được xếp cưỡi ngựa ${busyJockey.horse.name} lúc ${c.time} ngày ${c.date} (HLV ${c.trainer}). Một nài ngựa không thể cưỡi 2 chiến mã cùng một lúc.`,
+          { workoutId: busyJockey.id, horse: busyJockey.horse.name, ...c },
         );
       }
     }
@@ -396,7 +580,7 @@ export class WorkoutsService {
         );
       }
     }
-    // Cảnh báo ca trực của người chăm sóc (STT 34: cảnh báo nếu groom không có ca trực trong ngày)
+    // BR-TRN-GROOM-ZONE: Kiểm tra ca trực và phân khu chuồng của Groom
     if (tx.shiftRoster?.findMany) {
       const dayStart = startOfClubDay(w.scheduledDate);
       const rosters = await tx.shiftRoster.findMany({
@@ -404,18 +588,87 @@ export class WorkoutsService {
           groomUserId: w.assignedStaffUserId,
           date: { gte: dayStart, lt: addDays(dayStart, 1) },
         },
+        include: { shift: true, zone: true },
       });
       if (rosters.length === 0) {
         warnings.push(
           `Nhân viên ${groom.fullName} không có ca trực trong ngày ${clubDate(w.scheduledDate)}.`,
         );
+      } else {
+        // Kiểm tra giờ tập có nằm trong khung giờ ca trực không
+        const { hour, minute } = clubTime(w.scheduledDate);
+        const targetMins = hour * 60 + minute;
+        const withinShift = rosters.some((r) => {
+          if (!r.shift) return true;
+          const [sh, sm] = (r.shift.startTime || '00:00').split(':').map(Number);
+          const [eh, em] = (r.shift.endTime || '23:59').split(':').map(Number);
+          const sM = sh * 60 + (sm || 0);
+          const eM = eh * 60 + (em || 0);
+          return r.shift.isOvernight
+            ? targetMins >= sM || targetMins <= eM
+            : targetMins >= sM && targetMins <= eM;
+        });
+        if (!withinShift) {
+          warnings.push(
+            `Giờ bắt đầu buổi tập (${hhmm(w.scheduledDate)}) không nằm trong khung giờ ca trực của nhân viên ${groom.fullName}.`,
+          );
+        }
+
+        // Kiểm tra ô chuồng của ngựa: nếu khác phân khu trực của groom thì phát cảnh báo mượn nhân sự
+        if (tx.stallAllocation?.findFirst) {
+          const alloc = await tx.stallAllocation.findFirst({
+            where: { horseId: plan.horseId, isActive: true },
+          });
+          let horseZoneId: string | null = null;
+          let horseZoneName: string | null = null;
+          if (alloc?.stallId && tx.stall?.findUnique) {
+            const stall = await tx.stall.findUnique({
+              where: { id: alloc.stallId },
+              include: { zoneRef: true },
+            });
+            horseZoneId = stall?.zoneId ?? null;
+            horseZoneName = stall?.zoneRef?.name || stall?.zone || null;
+          }
+          if (horseZoneId && !rosters.some((r) => r.zoneId === horseZoneId)) {
+            const groomZones = rosters.map((r) => r.zone?.name || r.zoneId).join(', ');
+            warnings.push(
+              `Nhân viên ${groom.fullName} đang trực tại khu ${groomZones}, trong khi ngựa ${horse.name} ở khu ${horseZoneName || horseZoneId}. Đây là điều động mượn nhân sự liên khu chuồng.`,
+            );
+          }
+        }
       }
     }
+
+    // BR-TRN-GROOM-DAILY-LIMIT: Kiểm tra định mức tải công việc tối đa trong ngày của Groom
+    if (tx.workoutSession?.findMany) {
+      const dayStart = startOfClubDay(w.scheduledDate);
+      const sameDayGroomWorkouts = await tx.workoutSession.findMany({
+        where: {
+          ...live,
+          assignedStaffUserId: w.assignedStaffUserId,
+          scheduledDate: { gte: dayStart, lt: addDays(dayStart, 1) },
+          ...(excludeWorkoutId ? { id: { not: excludeWorkoutId } } : {}),
+        },
+        select: { id: true, workoutType: true, intensity: true },
+      });
+      if (Array.isArray(sameDayGroomWorkouts)) {
+        if (sameDayGroomWorkouts.length >= MAX_DAILY_WORKOUTS_PER_GROOM) {
+          warnings.push(
+            `Nhân viên ${groom.fullName} đã được giao ${sameDayGroomWorkouts.length} ca tập trong ngày ${clubDate(w.scheduledDate)} (đạt định mức tối đa ${MAX_DAILY_WORKOUTS_PER_GROOM} ca/ngày). Cần xác nhận nếu tiếp tục phân công.`,
+          );
+        }
+        if (heavy) {
+          const heavyCount = sameDayGroomWorkouts.filter((sw) => isHeavy(sw.workoutType, sw.intensity)).length;
+          if (heavyCount >= MAX_DAILY_HEAVY_WORKOUTS_PER_GROOM) {
+            warnings.push(
+              `Nhân viên ${groom.fullName} đã phụ trách ${heavyCount} bài tập nặng trong ngày (đạt định mức tối đa ${MAX_DAILY_HEAVY_WORKOUTS_PER_GROOM} bài nặng/ngày). Cần lưu ý thể lực nhân sự.`,
+            );
+          }
+        }
+      }
+    }
+
     // 7. Một người chăm sóc không thể kèm 2 ngựa cùng lúc (phải cách nhau thời lượng + 15 phút đệm chuyển tiếp theo BR-TRN-24).
-    const newStart = w.scheduledDate.getTime();
-    const newDur = workoutDurationMinutes(w.workoutType);
-    const newEnd = newStart + (newDur + GROOM_BUFFER_MINUTES) * 60 * 1000;
-    const maxPreWindow = 120 * 60 * 1000;
 
     let busy: {
       id: string;
@@ -645,6 +898,14 @@ export class WorkoutsService {
         'TIME_TOO_SOON',
         'OUTSIDE_PHASE_DATES',
         'OUTSIDE_PLAN_DATES',
+        'TRACK_HEAVY_OCCUPIED',
+        'TRACK_HEAVY_COLLISION',
+        'TRACK_CAPACITY_EXCEEDED',
+        'GROOM_TIME_CONFLICT',
+        'TRAINER_TIME_CONFLICT',
+        'PRIME_TIME_QUOTA_EXCEEDED',
+        'JOCKEY_TIME_CONFLICT',
+        'DEBT_IMPOUNDED',
       ];
       const created: string[] = [];
       const skipped: { date: string; reason: string }[] = [];
@@ -665,6 +926,16 @@ export class WorkoutsService {
           if (!body || !skippable.includes(body.code)) throw e;
           skipped.push({ date: clubDate(date), reason: body.message });
         }
+      }
+
+      // H-12: Bắt buộc xác nhận cảnh báo nếu chuỗi lặp tạo ra cảnh báo an toàn
+      if (allWarnings.length > 0 && !dto.acknowledgeWarnings) {
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'WARNINGS_NEED_CONFIRMATION',
+          `Phát hiện cảnh báo an toàn cho chuỗi buổi tập: ${allWarnings.map((w) => `${w.date}: ${w.warnings.join('; ')}`).join(' | ')}`,
+          { warnings: allWarnings },
+        );
       }
 
       await this.auditService.record(
@@ -1005,11 +1276,47 @@ export class WorkoutsService {
     await this.auditService.record(
       { id: user.userId, name: user.fullName || user.email },
       'CANCEL_WORKOUT_SESSION',
-      `Cancelled workout ${workoutId}. Reason: ${reason}`,
+      `Cancelled workout session ${workoutId} of horse ${updated.horse.name} (${reason})`,
       workoutId,
-      { entityName: 'WorkoutSession', oldValues: { status: existing.status } },
+      { entityName: 'WorkoutSession', newValues: { status: WorkoutStatus.CANCELLED, statusReason: reason } },
     );
     return updated;
+  }
+
+  /**
+   * Xóa buổi tập (HT, CM): Cho phép xóa dọn dẹp các buổi tập chưa diễn ra hoặc thuộc giáo án Nháp.
+   * Tối ưu hóa trải nghiệm người dùng trong việc thêm - sửa - xóa linh hoạt.
+   */
+  async deleteWorkout(workoutId: string, user: CurrentUserPayload) {
+    const existing = await this.prisma.workoutSession.findUnique({
+      where: { id: workoutId },
+      include: { trainingPlan: true, horse: { select: { name: true } } },
+    });
+    if (!existing) {
+      throw apiError(HttpStatus.NOT_FOUND, 'WORKOUT_NOT_FOUND', 'Workout session not found.');
+    }
+    if (
+      user.role === UserRole.HEAD_TRAINER &&
+      existing.trainingPlan?.trainerUserId !== user.userId
+    ) {
+      throw apiError(HttpStatus.FORBIDDEN, 'FORBIDDEN', 'This workout belongs to another trainer.');
+    }
+    if (existing.status === WorkoutStatus.COMPLETED) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'CANNOT_DELETE_COMPLETED',
+        'Không thể xóa buổi tập đã hoàn thành với đầy đủ dữ liệu đo đạc thực tế.',
+      );
+    }
+    await this.prisma.workoutSession.delete({ where: { id: workoutId } });
+    await this.auditService.record(
+      { id: user.userId, name: user.fullName || user.email },
+      'DELETE_WORKOUT_SESSION',
+      `Deleted workout session ${existing.id} of horse ${existing.horse.name} (${existing.workoutType} on ${clubDate(existing.scheduledDate)})`,
+      existing.id,
+      { entityName: 'WorkoutSession', oldValues: { id: existing.id, status: existing.status } },
+    );
+    return { message: 'Workout session deleted successfully.' };
   }
 
   /** DL-2.07 Khôi phục buổi bị chặn sau khi gỡ Khóa y tế (HT), áp lại toàn bộ kiểm tra DL-2.01. */
@@ -1070,7 +1377,9 @@ export class WorkoutsService {
         assignedStaffUserId: existing.assignedStaffUserId ?? '',
         vetConsulted: existing.medicalOverride,
       };
-      await this.assertWorkoutAllowed(tx, existing.trainingPlan, draft, workoutId);
+      const { warnings } = await this.assertWorkoutAllowed(tx, existing.trainingPlan, draft, workoutId);
+      // H-12: Bắt buộc xác nhận cảnh báo an toàn khi khôi phục buổi tập bị chặn
+      this.assertWarningsAcknowledged(warnings, dto.acknowledgeWarnings);
 
       const restored = await tx.workoutSession.update({
         where: { id: workoutId },
@@ -1193,6 +1502,8 @@ export class WorkoutsService {
       hasShift?: boolean;
       isAvailable?: boolean;
       shiftInfo?: string;
+      zoneName?: string;
+      isSameZone?: boolean;
     }>
   > {
     const grooms = await this.prisma.user.findMany({
@@ -1206,15 +1517,20 @@ export class WorkoutsService {
     }
 
     let assignedGroomId: string | null = null;
+    let horseZoneId: string | null = null;
+    let horseZoneName: string | null = null;
     if (horseId && this.prisma.stallAllocation?.findFirst) {
       const alloc = await this.prisma.stallAllocation.findFirst({
         where: { horseId, isActive: true },
-        select: { assignedGroomUserId: true },
+        include: { stall: { include: { zoneRef: true } } },
       });
       assignedGroomId = alloc?.assignedGroomUserId ?? null;
+      horseZoneId = alloc?.stall?.zoneId ?? null;
+      horseZoneName = alloc?.stall?.zoneRef?.name || alloc?.stall?.zone || null;
     }
 
     let groomsWithShift: Set<string> | null = null;
+    const groomZoneMap = new Map<string, { zoneId: string; zoneName: string }>();
     const shiftMap = new Map<
       string,
       Array<{ startTime: string; endTime: string; isOvernight: boolean; name: string }>
@@ -1227,7 +1543,7 @@ export class WorkoutsService {
         where: {
           date: { gte: dayStart, lt: addDays(dayStart, 1) },
         },
-        include: { shift: true },
+        include: { shift: true, zone: true },
       });
       groomsWithShift = new Set(rosters.map((r) => r.groomUserId));
       for (const r of rosters) {
@@ -1240,6 +1556,30 @@ export class WorkoutsService {
             name: r.shift.name,
           });
           shiftMap.set(r.groomUserId, list);
+        }
+        if (r.zone) {
+          groomZoneMap.set(r.groomUserId, { zoneId: r.zoneId, zoneName: r.zone.name });
+        }
+      }
+    }
+
+    // BR-TRN-GROOM-CAPACITY: Đếm số ca tập trong ngày của từng Groom để chống quá tải
+    const groomDailySessionCountMap = new Map<string, number>();
+    if (dateStr && this.prisma.workoutSession?.findMany) {
+      const d = new Date(dateStr);
+      const dayStart = startOfClubDay(isNaN(d.getTime()) ? new Date() : d);
+      const daySessions = await this.prisma.workoutSession.findMany({
+        where: {
+          status: { not: WorkoutStatus.CANCELLED },
+          ...(excludeWorkoutId ? { id: { not: excludeWorkoutId } } : {}),
+          scheduledDate: { gte: dayStart, lt: addDays(dayStart, 1) },
+        },
+        select: { assignedStaffUserId: true },
+      });
+      for (const ds of daySessions) {
+        if (ds.assignedStaffUserId) {
+          const cur = groomDailySessionCountMap.get(ds.assignedStaffUserId) || 0;
+          groomDailySessionCountMap.set(ds.assignedStaffUserId, cur + 1);
         }
       }
     }
@@ -1336,7 +1676,16 @@ export class WorkoutsService {
         else if (hasRoster && shifts && !isWithinShift(shifts, targetDateTime)) {
           isAvailable = false;
         }
-        // Nếu không có ca trực (Groom lách luật tự do / không làm gì cả) -> RẢNH (isAvailable = true)
+      }
+
+      const gz = groomZoneMap.get(g.id);
+      const isSameZone = Boolean(horseZoneId && gz && gz.zoneId === horseZoneId);
+      const zoneName = gz?.zoneName;
+      const dailyCount = groomDailySessionCountMap.get(g.id) || 0;
+      const isOverloaded = dailyCount >= MAX_DAILY_WORKOUTS_PER_GROOM;
+
+      if (isOverloaded && targetDateTime && !isNaN(targetDateTime.getTime())) {
+        isAvailable = false;
       }
 
       return {
@@ -1345,6 +1694,10 @@ export class WorkoutsService {
         hasShift: groomsWithShift ? groomsWithShift.has(g.id) : undefined,
         isAvailable,
         shiftInfo,
+        zoneName,
+        isSameZone,
+        dailySessionCount: dailyCount,
+        isOverloaded,
       };
     });
 
@@ -1355,11 +1708,161 @@ export class WorkoutsService {
         : mapped;
 
     return result.sort((a, b) => {
+      if (a.isSameZone && !b.isSameZone) return -1;
+      if (!a.isSameZone && b.isSameZone) return 1;
       if (a.isAssignedToHorse && !b.isAssignedToHorse) return -1;
       if (!a.isAssignedToHorse && b.isAssignedToHorse) return 1;
       if (a.hasShift && !b.hasShift) return -1;
       if (!a.hasShift && b.hasShift) return 1;
       return a.fullName.localeCompare(b.fullName);
+    });
+  }
+
+  /**
+   * BR-TRN-TRACK-CAPACITY: Kiểm tra tình trạng sức chứa và xung đột sân bãi theo thời gian thực.
+   * Giúp Huấn luyện viên biết chính xác sân nào trống, sân nào đang có ngựa tập,
+   * và sân nào bị chiếm độc quyền bởi bài tập tốc độ cao.
+   */
+  async getTrackAvailability(
+    dateStr?: string,
+    timeStr?: string,
+    workoutType?: string,
+    excludeWorkoutId?: string,
+  ): Promise<TrackAvailabilityInfo[]> {
+    const surfaces: Array<'TURF' | 'DIRT' | 'SYNTHETIC'> = ['TURF', 'DIRT', 'SYNTHETIC'];
+    const surfaceNames: Record<string, string> = {
+      TURF: 'Sân cỏ tự nhiên (Turf)',
+      DIRT: 'Sân cát / đất nén (Dirt)',
+      SYNTHETIC: 'Sân tổng hợp All-weather (Synthetic)',
+    };
+
+    if (!dateStr || !timeStr) {
+      return surfaces.map((s) => ({
+        surface: s,
+        surfaceName: surfaceNames[s],
+        currentCount: 0,
+        maxCapacity: TRACK_MAX_LIGHT_HORSES,
+        isAvailable: true,
+        status: 'EMPTY',
+        statusText: 'Sẵn sàng xếp lịch',
+        activeHorses: [],
+      }));
+    }
+
+    const dateOnly = dateStr.slice(0, 10);
+    const targetDt = new Date(`${dateOnly}T${timeStr.length === 5 ? timeStr + ':00' : timeStr}+07:00`);
+    if (isNaN(targetDt.getTime())) {
+      return surfaces.map((s) => ({
+        surface: s,
+        surfaceName: surfaceNames[s],
+        currentCount: 0,
+        maxCapacity: TRACK_MAX_LIGHT_HORSES,
+        isAvailable: true,
+        status: 'EMPTY',
+        statusText: 'Sẵn sàng xếp lịch',
+        activeHorses: [],
+      }));
+    }
+
+    const targetStart = targetDt.getTime();
+    const targetDur = workoutDurationMinutes(workoutType);
+    const targetEnd = targetStart + targetDur * 60 * 1000;
+    const isTargetHeavy = isHeavy(workoutType, 'MEDIUM');
+    const targetCapacity = isTargetHeavy ? 1 : TRACK_MAX_LIGHT_HORSES;
+
+    const maxPreWindow = 120 * 60 * 1000;
+    const live = { status: { not: WorkoutStatus.CANCELLED } };
+
+    let activeSessions: any[] = [];
+    if (this.prisma.workoutSession?.findMany) {
+      activeSessions = await this.prisma.workoutSession.findMany({
+        where: {
+          ...live,
+          ...(excludeWorkoutId ? { id: { not: excludeWorkoutId } } : {}),
+          trackSurface: { in: surfaces },
+          scheduledDate: {
+            gte: new Date(targetStart - maxPreWindow),
+            lte: new Date(targetEnd),
+          },
+        },
+        select: {
+          id: true,
+          scheduledDate: true,
+          workoutType: true,
+          intensity: true,
+          trackSurface: true,
+          horse: { select: { name: true } },
+          trainingPlan: { select: { trainer: { select: { fullName: true } } } },
+        },
+      });
+    }
+
+    return surfaces.map((s) => {
+      const surfaceWorkouts = activeSessions.filter((w) => {
+        if (w.trackSurface !== s) return false;
+        if (!w.scheduledDate || typeof w.scheduledDate.getTime !== 'function') return false;
+        const wStart = w.scheduledDate.getTime();
+        const wDur = workoutDurationMinutes(w.workoutType);
+        const wEnd = wStart + (wDur + 15) * 60 * 1000;
+        return targetStart < wEnd && wStart < targetEnd;
+      });
+
+      const activeHorses = surfaceWorkouts.map((w) => {
+        const wStart = w.scheduledDate;
+        const wDur = workoutDurationMinutes(w.workoutType);
+        const endDt = new Date(wStart.getTime() + wDur * 60 * 1000);
+        return {
+          workoutId: w.id,
+          horseName: w.horse?.name || 'Chiến mã',
+          trainerName: w.trainingPlan?.trainer?.fullName || 'HLV',
+          workoutType: w.workoutType || 'Bài tập',
+          timeRange: `${hhmm(wStart)} - ${hhmm(endDt)}`,
+          isHeavy: isHeavy(w.workoutType, w.intensity),
+        };
+      });
+
+      const hasHeavyOnTrack = activeHorses.some((h) => h.isHeavy);
+      const count = activeHorses.length;
+
+      let isAvailable = true;
+      let status: 'EMPTY' | 'AVAILABLE' | 'FULL' | 'HEAVY_OCCUPIED' = 'EMPTY';
+      let statusText = 'Đang trống hoàn toàn (0/3)';
+
+      if (count === 0) {
+        status = 'EMPTY';
+        statusText = isTargetHeavy
+          ? 'Đang trống (Đạt chuẩn chạy tốc độ độc quyền)'
+          : `Đang trống (0/${TRACK_MAX_LIGHT_HORSES} chiến mã)`;
+        isAvailable = true;
+      } else if (hasHeavyOnTrack) {
+        status = 'HEAVY_OCCUPIED';
+        const heavyHorse = activeHorses.find((h) => h.isHeavy);
+        statusText = `Đang có bài chạy tốc độ của ${heavyHorse?.horseName} (${heavyHorse?.timeRange}) - Độc quyền toàn sân`;
+        isAvailable = false;
+      } else if (isTargetHeavy) {
+        status = 'HEAVY_OCCUPIED';
+        statusText = `Đang có ${count} ngựa tập nhẹ. Bài tập tốc độ (${workoutType}) yêu cầu độc quyền đường chạy`;
+        isAvailable = false;
+      } else if (count >= TRACK_MAX_LIGHT_HORSES) {
+        status = 'FULL';
+        statusText = `Đã đạt sức chứa tối đa (${count}/${TRACK_MAX_LIGHT_HORSES} chiến mã)`;
+        isAvailable = false;
+      } else {
+        status = 'AVAILABLE';
+        statusText = `Đang có ${count}/${TRACK_MAX_LIGHT_HORSES} chiến mã (Còn ${TRACK_MAX_LIGHT_HORSES - count} chỗ an toàn)`;
+        isAvailable = true;
+      }
+
+      return {
+        surface: s,
+        surfaceName: surfaceNames[s],
+        currentCount: count,
+        maxCapacity: targetCapacity,
+        isAvailable,
+        status,
+        statusText,
+        activeHorses,
+      };
     });
   }
 }

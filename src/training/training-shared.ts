@@ -96,6 +96,7 @@ export type PlanForCheck = {
   id: string;
   status: PlanStatus;
   horseId: string;
+  trainerUserId?: string | null;
   startDate: Date;
   endDate: Date;
   phases: Prisma.JsonValue;
