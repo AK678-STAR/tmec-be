@@ -4,6 +4,7 @@ import { CurrentUser, CurrentUserPayload } from '../common/decorators/current-us
 import { Roles } from '../common/decorators/roles.decorator';
 import { UserRole } from '../common/enums/role.enum';
 import { DailyTasksService } from './daily-tasks.service';
+import { RejectDailyTaskDto } from './dto/reject-daily-task.dto';
 import {
   CompleteDailyTaskDto,
   GenerateDailyTasksDto,
@@ -61,5 +62,16 @@ export class DailyTasksController {
   @ApiOperation({ summary: 'Hoàn tác trạng thái hoàn thành trong vòng 15 phút an toàn' })
   uncompleteTask(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
     return this.service.uncompleteTask(id, user);
+  }
+
+  @Post(':id/reject')
+  @Roles(UserRole.CLUB_MANAGER)
+  @HttpCode(HttpStatus.OK)
+  rejectTask(
+    @Param('id') id: string,
+    @Body() dto: RejectDailyTaskDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.service.uncompleteTask(id, user, dto);
   }
 }

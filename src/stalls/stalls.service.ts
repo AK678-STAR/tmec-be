@@ -1,3 +1,4 @@
+import { stallMove } from '../business-mail/templates/health-templates';
 import { HttpStatus, Injectable, Optional } from '@nestjs/common';
 import { HorseStatus, Prisma, Role, StallStatus, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -18,7 +19,7 @@ import { DailyTasksService } from '../daily-tasks/daily-tasks.service';
 import { shiftCovers, STALL_HANDOVER_PREFIX } from '../daily-tasks/daily-schedule';
 import { NotificationsService } from '../notifications/notifications.service';
 import { clubTime } from '../training/training-rules';
-import { groomZoneIds, rosterDay } from '../shift-rosters/groom-zones';
+import { groomZoneIds, rosterDay, zoneGroomIds } from '../shift-rosters/groom-zones';
 import { assertTrainerZone, LIVE_TRAINER_PLAN_STATUSES } from '../training/trainer-zones';
 
 type Tx = Prisma.TransactionClient;
@@ -597,6 +598,11 @@ export class StallsService {
         data: {
           taskCode: STALL_HANDOVER_PREFIX + created.id,
           taskType: 'OTHER',
+          itemsSnapshotJson: {
+            kind: 'STALL_HANDOVER',
+            fromStallCode: old.stall.code,
+            toStallCode: target.code,
+          },
           title: 'Chuẩn bị và bàn giao ngựa chuyển chuồng',
           description: `Bàn giao ${old.horse.name} từ ô ${old.stall.code} sang ô ${target.code}.`,
           horseId: old.horseId,
@@ -629,6 +635,54 @@ export class StallsService {
       dedupeKey: handover.taskCode ?? undefined,
       senderName: user.fullName,
     });
+    await this.notifications?.notifyHorse(
+      result.horseId,
+      { roles: [Role.CLUB_MANAGER], owner: true, trainer: true, groom: true },
+      {
+        type: 'STALL_MOVED',
+        category: 'SYSTEM',
+        title: 'Đổi chuồng',
+        message: handover.description ?? handover.title,
+        link: '/stalls',
+        dedupeKey: 'stall-moved:' + result.id,
+        email: {
+          eventCode: 'STALL_MOVED',
+          body: {
+            ...stallMove(
+              { id: result.horseId, name: result.horseName },
+              { code: result.fromStallCode },
+              { code: result.stallCode },
+              dto.notes ?? 'Điều phối chuồng',
+              result.startDate,
+              { name: user.fullName },
+            ),
+            refId: result.id,
+          },
+        },
+      },
+    );
+    await this.notifications?.notifyUsers([handover.assignedGroomUserId], {
+      type: 'STALL_MOVED',
+      category: 'SYSTEM',
+      title: 'Bàn giao chuyển chuồng',
+      message: handover.description ?? handover.title,
+      link: '/tasks',
+      dedupeKey: 'stall-moved-source:' + result.id,
+      email: {
+        eventCode: 'STALL_MOVED',
+        body: {
+          ...stallMove(
+            { id: result.horseId, name: result.horseName },
+            { code: result.fromStallCode },
+            { code: result.stallCode },
+            dto.notes ?? 'Điều phối chuồng',
+            result.startDate,
+            { name: user.fullName },
+          ),
+          refId: result.id,
+        },
+      },
+    });
     return {
       ...result,
       handoverTaskId: handover.id,
@@ -639,7 +693,7 @@ export class StallsService {
   }
 
   async returnStall(allocationId: string, dto: ReturnStallDto, user: CurrentUserPayload) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "StallAllocation" WHERE "id" = ${allocationId} FOR UPDATE`;
       const old = await tx.stallAllocation.findUnique({
         where: { id: allocationId },
@@ -659,6 +713,7 @@ export class StallsService {
           `Ngựa ${old.horse.name} đang bị lưu giữ do nợ phí. Không thể xuất chuồng / trả ô chuồng. Vui lòng chuyển sang Khu Lưu giữ nếu cần giải phóng ô chuồng hiện tại.`,
         );
       }
+      const sourceGroomIds = await zoneGroomIds(tx, old.stall.zoneId);
       await tx.stallAllocation.update({
         where: { id: allocationId },
         data: { isActive: false, endDate: new Date() },
@@ -680,8 +735,63 @@ export class StallsService {
         },
         tx,
       );
-      return { success: true, stallCode: old.stall.code, horseName: old.horse.name };
+      return {
+        success: true,
+        stallCode: old.stall.code,
+        horseName: old.horse.name,
+        horseId: old.horseId,
+        sourceGroomIds,
+      };
     });
+    await this.notifications?.notifyHorse(
+      result.horseId,
+      { roles: [Role.CLUB_MANAGER], owner: true, trainer: true },
+      {
+        type: 'STALL_RETURNED',
+        category: 'SYSTEM',
+        title: 'Trả ô chuồng',
+        message: result.horseName + ' đã rời ô ' + result.stallCode,
+        link: '/stalls',
+        dedupeKey: 'stall-returned:' + allocationId,
+        email: {
+          eventCode: 'STALL_RETURNED',
+          body: {
+            ...stallMove(
+              { id: result.horseId, name: result.horseName },
+              { code: result.stallCode },
+              { code: 'Đã trả ô' },
+              dto.notes ?? 'Trả ô chuồng',
+              new Date(),
+              { name: user.fullName },
+            ),
+            refId: allocationId,
+          },
+        },
+      },
+    );
+    await this.notifications?.notifyUsers(result.sourceGroomIds, {
+      type: 'STALL_RETURNED',
+      category: 'SYSTEM',
+      title: 'Trả ô chuồng',
+      message: result.horseName + ' đã rời ô ' + result.stallCode,
+      link: '/stalls',
+      dedupeKey: 'stall-returned:' + allocationId,
+      email: {
+        eventCode: 'STALL_RETURNED',
+        body: {
+          ...stallMove(
+            { id: result.horseId, name: result.horseName },
+            { code: result.stallCode },
+            { code: 'Đã trả ô' },
+            dto.notes ?? 'Trả ô chuồng',
+            new Date(),
+            { name: user.fullName },
+          ),
+          refId: allocationId,
+        },
+      },
+    });
+    return { success: result.success, stallCode: result.stallCode, horseName: result.horseName };
   }
 
   /** Groom đang hoạt động để chọn khi gán ô (DL-1.02), kèm số ngựa đang phụ trách. */

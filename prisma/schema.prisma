@@ -324,11 +324,14 @@ model User {
 // Mail nghiệp vụ (nhắc nợ, cảnh báo, chứng từ) — mỗi người nhận 1 bản ghi riêng,
 // chống trùng theo sự kiện + mốc nhắc + người nhận. SMTP accept != đã vào inbox.
 enum MailingStatus {
+  PENDING
   SENT
   FAILED
 }
 
 model BusinessMailing {
+  refId String?
+  bodyHtml String?
   id        String        @id @default(uuid())
   eventCode String
   milestone String?
@@ -370,6 +373,11 @@ model Complaint {
   status      ComplaintStatus @default(OPEN)
   reviewedById String?
   reviewedAt  DateTime?
+  reviewNote String?
+  responseDueAt DateTime?
+  conclusion String?
+  regulation String?
+  measures String?
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 

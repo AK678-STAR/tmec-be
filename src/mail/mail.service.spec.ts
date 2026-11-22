@@ -89,7 +89,8 @@ describe('MailService', () => {
         providers: [MailService, mailpitConfig],
       }).compile();
       const service = module.get<MailService>(MailService);
-      const transporter = (service as unknown as { transporter: { sendMail: () => unknown } }).transporter;
+      const transporter = (service as unknown as { transporter: { sendMail: () => unknown } })
+        .transporter;
       expect(transporter).toBeDefined();
       const sendMail = jest.fn().mockResolvedValue({ messageId: 'accept' });
       transporter.sendMail = sendMail;
@@ -103,9 +104,12 @@ describe('MailService', () => {
         providers: [MailService, mailpitConfig],
       }).compile();
       const service = module.get<MailService>(MailService);
-      const transporter = (service as unknown as { transporter: { sendMail: () => unknown } }).transporter;
+      const transporter = (service as unknown as { transporter: { sendMail: () => unknown } })
+        .transporter;
       transporter.sendMail = jest.fn().mockRejectedValue(new Error('connection refused'));
-      await expect(service.sendBusiness('owner@example.com', 'Nhắc hạn', 'Body')).resolves.toBe(false);
+      await expect(service.sendBusiness('owner@example.com', 'Nhắc hạn', 'Body')).resolves.toBe(
+        false,
+      );
     });
   });
 

@@ -40,4 +40,32 @@ describe('FinancialController owner summary scope', () => {
     await controller.getClubCashflow('2026-10');
     expect(getClubCashflow).toHaveBeenCalledWith('2026-10');
   });
+  it.each(['remind', 'paymentFailure'] as const)('restricts %s to Club Manager', (method) => {
+    expect(Reflect.getMetadata(ROLES_KEY, FinancialController.prototype[method])).toEqual([
+      UserRole.CLUB_MANAGER,
+    ]);
+  });
+
+  it('delegates reminder and failure reporting with the authenticated actor', async () => {
+    const service = {
+      remindInvoice: jest.fn().mockResolvedValue({ sent: false }),
+      recordPaymentFailure: jest.fn().mockResolvedValue(undefined),
+    };
+    const controller = new FinancialController(service as unknown as FinancialService);
+    const user = {
+      userId: 'mgr',
+      fullName: 'Manager',
+      email: 'qa@example.test',
+      role: UserRole.CLUB_MANAGER,
+    };
+    await expect(controller.remind('inv', user)).resolves.toEqual({ sent: false });
+    await expect(controller.paymentFailure('inv', { txRef: 'tx' }, user)).resolves.toEqual({
+      ok: true,
+    });
+    expect(service.recordPaymentFailure).toHaveBeenCalledWith(
+      'inv',
+      { txRef: 'tx' },
+      { id: 'mgr', name: 'Manager', role: UserRole.CLUB_MANAGER },
+    );
+  });
 });

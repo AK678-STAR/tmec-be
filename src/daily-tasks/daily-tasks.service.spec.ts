@@ -32,6 +32,7 @@ describe('DailyTasksService', () => {
 
     auditService = { record: jest.fn().mockResolvedValue(undefined) };
     notifications = {
+      notifyHorse: jest.fn().mockResolvedValue(true),
       notifyRoles: jest.fn().mockResolvedValue(undefined),
       notifyUsers: jest.fn().mockResolvedValue(undefined),
     };
@@ -646,6 +647,74 @@ describe('DailyTasksService', () => {
           }),
         }),
       );
+    });
+  });
+  describe('care email events', () => {
+    const manager = { userId: 'manager', role: Role.CLUB_MANAGER, fullName: 'QA Manager' } as any;
+
+    it('sends handover completion after the task transaction commits', async () => {
+      const task = {
+        id: 'task-h',
+        taskCode: 'STALL-HANDOVER:allocation',
+        title: 'Handover',
+        taskType: DailyTaskType.OTHER,
+        horseId: 'horse',
+        date: new Date('2026-01-01'),
+        isCompleted: false,
+        assignedGroomUserId: 'groom',
+        horse: { id: 'horse', name: 'QA' },
+        itemsSnapshotJson: { toStallCode: 'B01' },
+      };
+      // Use the production handover prefix.
+      const { STALL_HANDOVER_PREFIX } = await import('./daily-schedule');
+      task.taskCode = STALL_HANDOVER_PREFIX + 'allocation';
+      prisma.dailyCareTask.findUnique.mockResolvedValue(task);
+      prisma.dailyCareTask.update.mockResolvedValue({ ...task, isCompleted: true });
+      await service.completeTask(task.id, { notes: 'Destination checked' }, manager);
+      expect(notifications.notifyHorse).toHaveBeenCalledWith(
+        'horse',
+        expect.objectContaining({ owner: true, trainer: true, groom: true }),
+        expect.objectContaining({
+          email: expect.objectContaining({
+            eventCode: 'STALL_HANDOVER_DONE',
+            body: expect.objectContaining({ refId: task.id, text: expect.stringContaining('B01') }),
+          }),
+        }),
+      );
+    });
+
+    it('a rejected non-consumable task sends a reason to its original worker', async () => {
+      const task = {
+        id: 'task-r',
+        taskCode: 'QA',
+        title: 'Clean stall',
+        date: new Date('2026-01-01'),
+        taskType: DailyTaskType.CLEANING,
+        completedById: 'groom',
+        isCompleted: true,
+        horse: { name: 'QA' },
+      };
+      prisma.dailyCareTask.findUnique.mockResolvedValue(task);
+      prisma.dailyCareTask.update.mockResolvedValue({ ...task, isCompleted: false });
+      await service.uncompleteTask(task.id, manager, { reason: 'Please check bedding again' });
+      expect(notifications.notifyUsers).toHaveBeenCalledWith(
+        ['groom'],
+        expect.objectContaining({ email: expect.objectContaining({ eventCode: 'TASK_REJECTED' }) }),
+      );
+    });
+
+    it('does not turn an administered medicine into a repeat dose when reviewed', async () => {
+      prisma.dailyCareTask.findUnique.mockResolvedValue({
+        id: 'med',
+        taskType: DailyTaskType.MEDICATION,
+        isCompleted: true,
+      });
+      await expect(
+        service.uncompleteTask('med', manager, { reason: 'Wrong dose' }),
+      ).rejects.toThrow();
+      expect(prisma.dailyCareTask.update).not.toHaveBeenCalled();
+      expect(inventoryService.restoreStockForFeeding).not.toHaveBeenCalled();
+      expect(notifications.notifyUsers).not.toHaveBeenCalled();
     });
   });
 });

@@ -1,3 +1,4 @@
+import { renderMail, linkBase } from '../business-mail/templates/html';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { apiError } from '../common/exceptions/api-error';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
@@ -81,6 +82,21 @@ export class MedicalRecordsService {
       horseId,
       { roles: [Role.CLUB_MANAGER], trainer: true, owner: true, groom: true },
       {
+        email: {
+          eventCode: 'INCIDENT_CONFIRMED',
+          body: {
+            ...renderMail('Kết luận y tế đã xác nhận', [
+              { label: 'Hồ sơ', value: recordId },
+              { label: 'Bác sĩ xác nhận', value: actor.fullName },
+              {
+                label: 'Hướng dẫn và hạn chế',
+                value: 'Xem chỉ định đang có hiệu lực trong hồ sơ sau đăng nhập.',
+              },
+              { label: 'Xem hồ sơ', value: linkBase() + '/medical/horses/' + horseId },
+            ]),
+            refId: recordId,
+          },
+        },
         type: 'MEDICAL_DIAGNOSIS_CONFIRMED',
         category: 'MEDICAL',
         title: 'Veterinary diagnosis confirmed',

@@ -46,7 +46,7 @@ describe('Medical services', () => {
       create: jest.fn(),
       findFirst: jest.fn(),
       findUnique: jest.fn(),
-      findMany: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
       count: jest.fn(),
       update: jest.fn(),
     },

@@ -6,6 +6,7 @@ import {
   IsBoolean,
   IsDateString,
   IsIn,
+  IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
@@ -15,6 +16,25 @@ import {
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
 
 export type ApplyScope = 'ONLY_THIS_DAY' | 'REST_OF_WEEK' | 'SAME_DAY_4_WEEKS';
+
+export class SwapCandidatesQueryDto {
+  @ApiProperty({ description: 'Phân công ca trực cần xin đổi' })
+  @IsUUID('4')
+  rosterId: string;
+}
+
+export class RequestShiftSwapDto {
+  @ApiProperty({ description: 'Nhân viên chăm sóc đề nghị thay ca' })
+  @IsUUID('4')
+  targetGroomUserId: string;
+
+  @ApiProperty({ description: 'Lý do xin đổi ca (quản lý sẽ xem xét)' })
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  reason: string;
+}
 
 /** DL-4.01 Phân ca (một ô: Ngày x Ca x Khu) */
 export class AssignShiftRosterDto {

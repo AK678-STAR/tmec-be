@@ -6,6 +6,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  ParseUUIDPipe,
   Post,
   Query,
 } from '@nestjs/common';
@@ -18,6 +19,8 @@ import {
   AssignShiftRosterDto,
   CopyWeekRosterDto,
   QueryShiftRosterDto,
+  RequestShiftSwapDto,
+  SwapCandidatesQueryDto,
 } from './dto/shift-roster.dto';
 
 const STAFF = [UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.VETERINARIAN, UserRole.GROOM];
@@ -49,6 +52,28 @@ export class ShiftRostersController {
   @ApiOperation({ summary: 'SC-4.01 / SC-4.05 Ca trực của tôi và ngựa phụ trách' })
   getMyShifts(@CurrentUser() user: CurrentUserPayload, @Query() query: QueryShiftRosterDto) {
     return this.service.getMyShifts(user, query);
+  }
+
+  @Get('swap-candidates')
+  @Roles(UserRole.GROOM)
+  @ApiOperation({ summary: 'Đồng nghiệp còn trống ca để xin đổi' })
+  getSwapCandidates(
+    @Query() query: SwapCandidatesQueryDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.service.getSwapCandidates(query.rosterId, user);
+  }
+
+  @Post(':id/swap-request')
+  @Roles(UserRole.GROOM)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Gửi yêu cầu đổi ca tới quản lý, chưa thay đổi phân công' })
+  requestSwap(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() dto: RequestShiftSwapDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.service.requestSwap(id, dto, user);
   }
 
   @Post()

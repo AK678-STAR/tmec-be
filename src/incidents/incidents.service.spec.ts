@@ -91,12 +91,21 @@ describe('IncidentsService', () => {
       );
       expect(notifications.notifyHorse.mock.calls[0][2].message).not.toContain('data:image');
       expect(notifications.notifyHorse.mock.calls[0][2].message).toContain('Ngựa quằn quại');
+      expect(notifications.notifyHorse.mock.calls[0][2].email).toEqual(
+        expect.objectContaining({
+          eventCode: 'INCIDENT_REPORTED',
+          body: expect.objectContaining({
+            refId: res.id,
+            text: expect.stringContaining('chờ xác minh'),
+          }),
+        }),
+      );
 
       expect(notifications.notifyHorse).toHaveBeenCalledWith(
         'horse-1',
         {
-          roles: [Role.VETERINARIAN, Role.HEAD_TRAINER, Role.CLUB_MANAGER],
-          owner: true,
+          roles: [Role.VETERINARIAN, Role.CLUB_MANAGER],
+          trainer: true,
           groom: true,
         },
         expect.objectContaining({
@@ -145,8 +154,8 @@ describe('IncidentsService', () => {
       expect(notifications.notifyHorse).toHaveBeenCalledWith(
         'horse-2',
         {
-          roles: [Role.VETERINARIAN],
-          owner: true,
+          roles: [Role.VETERINARIAN, Role.CLUB_MANAGER],
+          trainer: true,
           groom: true,
         },
         expect.objectContaining({
@@ -157,7 +166,9 @@ describe('IncidentsService', () => {
       // Negative check: HT and CM must not be included for MODERATE
       const opts = notifications.notifyHorse.mock.calls[0][1];
       expect(opts.roles).not.toContain(Role.HEAD_TRAINER);
-      expect(opts.roles).not.toContain(Role.CLUB_MANAGER);
+      expect(opts.roles).toContain(Role.CLUB_MANAGER);
+      expect(opts.trainer).toBe(true);
+      expect(opts.owner).toBeUndefined();
     });
 
     it('creates a low severity incident with empty symptoms defaulting to OTHER', async () => {
@@ -422,8 +433,8 @@ describe('IncidentsService', () => {
       expect(notifications.notifyHorse).toHaveBeenCalledWith(
         'horse-1',
         {
-          roles: [Role.VETERINARIAN, Role.HEAD_TRAINER, Role.CLUB_MANAGER],
-          owner: true,
+          roles: [Role.VETERINARIAN, Role.CLUB_MANAGER],
+          trainer: true,
           groom: true,
         },
         expect.objectContaining({

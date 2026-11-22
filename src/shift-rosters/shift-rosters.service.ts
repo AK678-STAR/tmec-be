@@ -5,11 +5,13 @@ import { AuditService } from '../audit/audit.service';
 import { apiError } from '../common/exceptions/api-error';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { DailyTasksService } from '../daily-tasks/daily-tasks.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { rosterDay } from './groom-zones';
 import {
   AssignShiftRosterDto,
   CopyWeekRosterDto,
   QueryShiftRosterDto,
+  RequestShiftSwapDto,
 } from './dto/shift-roster.dto';
 
 function parseDateOnly(dateStr: string): Date {
@@ -27,13 +29,154 @@ function getMondayOfDate(d: Date): Date {
   return date;
 }
 
+// Half-open intervals let a worker finish one shift exactly as another starts.
+function shiftInterval(
+  date: Date,
+  shift: { startTime: string; endTime: string; isOvernight: boolean },
+) {
+  const minutes = (time: string) => {
+    const [h, m] = time.split(':').map(Number);
+    return h * 60 + m;
+  };
+  const start = date.getTime() - 7 * 3600000 + minutes(shift.startTime) * 60000;
+  let end = date.getTime() - 7 * 3600000 + minutes(shift.endTime) * 60000;
+  if (shift.isOvernight || end <= start) end += 86400000;
+  return { start, end };
+}
+
 @Injectable()
 export class ShiftRostersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
     @Optional() private readonly dailyTasks?: DailyTasksService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
+
+  private async swappableRoster(id: string, actor: CurrentUserPayload) {
+    if (actor.role !== Role.GROOM)
+      throw apiError(
+        HttpStatus.FORBIDDEN,
+        'GROOM_REQUIRED',
+        'Chỉ nhân viên chăm sóc được xin đổi ca.',
+      );
+    const roster = await this.prisma.shiftRoster.findUnique({
+      where: { id },
+      include: { shift: true, zone: true },
+    });
+    if (!roster)
+      throw apiError(HttpStatus.NOT_FOUND, 'ROSTER_NOT_FOUND', 'Bản ghi phân ca không tồn tại.');
+    if (roster.groomUserId !== actor.userId)
+      throw apiError(HttpStatus.FORBIDDEN, 'ROSTER_NOT_OWNED', 'Chỉ được xin đổi ca của mình.');
+    if (
+      !roster.shift.isActive ||
+      !roster.zone.isActive ||
+      shiftInterval(roster.date, roster.shift).end <= Date.now()
+    ) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'SHIFT_NOT_AVAILABLE',
+        'Ca đã kết thúc hoặc ngừng hoạt động.',
+      );
+    }
+    return roster;
+  }
+
+  private async availableGrooms(
+    roster: Awaited<ReturnType<ShiftRostersService['swappableRoster']>>,
+  ) {
+    const [grooms, assignments] = await Promise.all([
+      this.prisma.user.findMany({
+        where: { role: Role.GROOM, status: UserStatus.ACTIVE, id: { not: roster.groomUserId } },
+        select: { id: true, fullName: true },
+        orderBy: { fullName: 'asc' },
+      }),
+      this.prisma.shiftRoster.findMany({
+        where: {
+          date: {
+            gte: new Date(roster.date.getTime() - 86400000),
+            lte: new Date(roster.date.getTime() + 86400000),
+          },
+          shift: { isActive: true },
+        },
+        include: { shift: true },
+      }),
+    ]);
+    const requested = shiftInterval(roster.date, roster.shift);
+    const busy = new Set(
+      assignments
+        .filter((row) => {
+          const assigned = shiftInterval(row.date, row.shift);
+          return assigned.start < requested.end && requested.start < assigned.end;
+        })
+        .map((row) => row.groomUserId),
+    );
+    return grooms
+      .filter((groom) => !busy.has(groom.id))
+      .map(({ id, fullName }) => ({ id, fullName }));
+  }
+
+  async getSwapCandidates(id: string, actor: CurrentUserPayload) {
+    return this.availableGrooms(await this.swappableRoster(id, actor));
+  }
+
+  async requestSwap(id: string, dto: RequestShiftSwapDto, actor: CurrentUserPayload) {
+    const reason = typeof dto.reason === 'string' ? dto.reason.trim() : '';
+    if (!reason || reason.length > 1000)
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'INVALID_SWAP_REASON',
+        'Lý do xin đổi ca phải từ 1 đến 1000 ký tự.',
+      );
+    const roster = await this.swappableRoster(id, actor);
+    const candidates = await this.availableGrooms(roster);
+    const target = candidates.find((groom) => groom.id === dto.targetGroomUserId);
+    if (!target)
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'SWAP_TARGET_UNAVAILABLE',
+        'Đồng nghiệp không hoạt động hoặc đã có ca trùng giờ.',
+      );
+    const date = roster.date.toISOString().slice(0, 10);
+    // Passing the transaction makes AuditService propagate storage errors. This audit IS the request.
+    await this.prisma.$transaction((tx) =>
+      this.auditService.record(
+        { id: actor.userId, name: actor.fullName },
+        'SHIFT_SWAP_REQUESTED',
+        `Xin đổi ca ${roster.shift.name} ngày ${date} với ${target.fullName}: ${reason}`,
+        id,
+        {
+          entityName: 'ShiftRoster',
+          newValues: {
+            sourceGroomUserId: actor.userId,
+            targetGroomUserId: target.id,
+            date,
+            shiftId: roster.shiftId,
+            zoneId: roster.zoneId,
+            reason,
+          },
+        },
+        tx,
+      ),
+    );
+    await this.notifications?.notifyRoles([Role.CLUB_MANAGER], {
+      type: 'SHIFT_SWAP_REQUESTED',
+      category: 'SYSTEM',
+      title: 'Yêu cầu đổi ca cần xem xét',
+      message: `${actor.fullName} xin đổi ca ${roster.shift.name} ngày ${date}, khu ${roster.zone.name}, với ${target.fullName}. Lý do: ${reason}. Chưa thay đổi phân công.`,
+      link: '/stable/shifts',
+      senderName: actor.fullName,
+      dedupeKey: `shift-swap:${id}:${actor.userId}:${target.id}:${date}`,
+      params: {
+        rosterId: id,
+        sourceGroomUserId: actor.userId,
+        targetGroomUserId: target.id,
+        date,
+        reason,
+      },
+    });
+    return { requested: true };
+  }
 
   /**
    * #2: Tổng quan ca trực trong ngày cho Club Manager: mỗi khu × ca có ai trực,

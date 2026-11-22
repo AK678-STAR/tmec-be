@@ -3,6 +3,19 @@ import { InvoiceStatus, Prisma, RestockStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { BusinessMailService, BusinessMailEvent } from '../business-mail/business-mail.service';
+import {
+  invoiceIssued,
+  invoicePaid,
+  invoiceCancelled,
+  dueSoon,
+  overdueNow,
+  paymentFailed,
+  refundNotice,
+  BillingInvoiceLike,
+  HorseLike,
+  OwnerLike,
+} from '../business-mail/templates/billing-templates';
 import { apiError } from '../common/exceptions/api-error';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { UpdateInvoiceDto } from './dto/update-invoice.dto';
@@ -62,7 +75,135 @@ export class FinancialService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly notifications: NotificationsService,
+    private readonly businessMail: BusinessMailService,
   ) {}
+
+  /**
+   * Gọi BusinessMailService.emit SAU khi ghi DB thành công. Lỗi mail không làm
+   * hỏng giao dịch chính (Global Constraint NOTE.md §6.3).
+   */
+  private async emitMailSafe(event: BusinessMailEvent): Promise<boolean> {
+    try {
+      const mailings = await this.businessMail.emit(event);
+      return mailings.some((mailing) => mailing.accepted);
+    } catch (err) {
+      this.logger.warn(`business-mail emit failed (${event.eventCode}): ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  /** Chuẩn hóa invoice + owner/horse → tham số templates billing. */
+  private invoiceCtx<
+    T extends {
+      id: string;
+      boardingFee?: unknown;
+      medicalFee?: unknown;
+      trainingFee?: unknown;
+      prizeCredit?: unknown;
+      netAmount?: unknown;
+      dueAt?: unknown;
+      status?: unknown;
+      billingPeriod?: string;
+    },
+  >(
+    inv: T,
+    ownerId: string | null | undefined,
+  ): { inv: BillingInvoiceLike; owner: OwnerLike; horse: HorseLike } {
+    return {
+      inv: {
+        id: inv.id,
+        billingPeriod: inv.billingPeriod ?? '',
+        boardingFee: Number(inv.boardingFee ?? 0),
+        medicalFee: inv.medicalFee == null ? undefined : Number(inv.medicalFee),
+        trainingFee: inv.trainingFee == null ? undefined : Number(inv.trainingFee),
+        prizeCredit: inv.prizeCredit == null ? undefined : Number(inv.prizeCredit),
+        netAmount: Number(inv.netAmount ?? 0),
+        dueAt: (inv.dueAt as Date | string | null) ?? null,
+        status: String(inv.status ?? ''),
+      },
+      owner: { id: ownerId ?? '', fullName: '—' },
+      horse: { id: '', name: '—' },
+    };
+  }
+
+  private async emitInvoiceStatusMail(
+    invoice: Prisma.FinancialInvoiceGetPayload<object>,
+    previousStatus: InvoiceStatus | null,
+    ownerId: string,
+    horseName?: string,
+  ): Promise<void> {
+    const status = invoice.status;
+    if (ownerId && previousStatus !== status) {
+      const ctx = this.invoiceCtx(invoice, ownerId);
+      ctx.owner.fullName = await this.ownerFullName(ownerId);
+      ctx.horse.name = horseName ?? ctx.horse.name;
+      if (status === InvoiceStatus.SENT) {
+        await this.emitMailSafe({
+          eventCode: 'INVOICE_ISSUED',
+          recipients: [
+            {
+              userId: ownerId,
+              body: { ...invoiceIssued(ctx.inv, ctx.horse, ctx.owner), refId: invoice.id },
+            },
+          ],
+        });
+      }
+      if (status === InvoiceStatus.PAID) {
+        await this.emitMailSafe({
+          eventCode: 'INVOICE_PAID',
+          recipients: [
+            {
+              userId: ownerId,
+              body: {
+                ...invoicePaid(ctx.inv, ctx.horse, ctx.owner, invoice.paymentRef ?? null),
+                refId: invoice.id,
+              },
+            },
+          ],
+        });
+      }
+      if (status === InvoiceStatus.CANCELLED) {
+        await this.emitMailSafe({
+          eventCode: 'INVOICE_CANCELLED',
+          recipients: [
+            {
+              userId: ownerId,
+              body: { ...invoiceCancelled(ctx.inv, ctx.horse, ctx.owner), refId: invoice.id },
+            },
+          ],
+        });
+      }
+      if (status === InvoiceStatus.OVERDUE) {
+        await this.emitMailSafe({
+          eventCode: 'INVOICE_OVERDUE',
+          recipients: [
+            {
+              userId: ownerId,
+              body: {
+                ...overdueNow(ctx.inv, ctx.owner),
+                milestone: 'overdue-now',
+                refId: invoice.id,
+              },
+            },
+          ],
+        });
+      }
+    }
+  }
+
+  /** Tra tên chủ khi query hóa đơn chưa bao gồm owner. */
+  private async ownerFullName(ownerId: string | null | undefined): Promise<string> {
+    if (!ownerId) return '—';
+    try {
+      const u = await this.prisma.user.findUnique({
+        where: { id: ownerId },
+        select: { fullName: true },
+      });
+      return u?.fullName ?? '—';
+    } catch {
+      return '—';
+    }
+  }
 
   /**
    * Lấy danh sách hóa đơn theo phân quyền
@@ -351,6 +492,8 @@ export class FinancialService {
       { entityName: 'FinancialInvoice', newValues: invoice },
     );
 
+    await this.emitInvoiceStatusMail(invoice, null, invoice.ownerId, invoice.horse?.name);
+
     return {
       ...invoice,
       boardingFee: Number(invoice.boardingFee),
@@ -454,12 +597,48 @@ export class FinancialService {
       await this.checkAndReleaseDebtSanctions(existing.horseId, existing.ownerId, user);
     }
 
+    // Điều chỉnh / hoàn tiền (NOTE.md §6.2 dòng 347): khi số tiền chủ phải trả GIẢM
+    // (điều chỉnh phí hoặc cấn trừ tiền thưởng tăng) → báo chủ bằng chứng từ thay thế.
+    const oldNet = Number(existing.netAmount);
+    const newNet = Number(updated.netAmount);
+    if (newNet < oldNet) {
+      const ctx = this.invoiceCtx(updated, existing.ownerId);
+      ctx.owner.fullName = updated.owner?.fullName ?? ctx.owner.fullName;
+      ctx.horse.name = updated.horse?.name ?? ctx.horse.name;
+      await this.emitMailSafe({
+        eventCode: 'REFUND_NOTIFIED',
+        recipients: [
+          {
+            userId: existing.ownerId,
+            body: {
+              ...refundNotice(
+                ctx.inv,
+                oldNet,
+                newNet,
+                dto.notes || 'Điều chỉnh hóa đơn theo đối soát của Câu lạc bộ',
+                ctx.owner,
+              ),
+              refId: id,
+              milestone: updated.updatedAt.toISOString(),
+            },
+          },
+        ],
+      });
+    }
+
     await this.audit.record(
       { id: user.id, name: user.name },
       'INVOICE_UPDATED',
       `Updated invoice ${id} (${updated.billingPeriod})`,
       id,
       { entityName: 'FinancialInvoice', oldValues: existing, newValues: updated },
+    );
+
+    await this.emitInvoiceStatusMail(
+      updated,
+      existing.status,
+      existing.ownerId,
+      updated.horse?.name,
     );
 
     return serializeInvoice(updated);
@@ -557,6 +736,13 @@ export class FinancialService {
         user.id ?? undefined,
       );
     }
+
+    await this.emitInvoiceStatusMail(
+      updated,
+      existing.status,
+      existing.ownerId,
+      existing.horse?.name,
+    );
 
     return {
       ...updated,
@@ -656,6 +842,25 @@ export class FinancialService {
 
     await this.checkAndReleaseDebtSanctions(existing.horseId, existing.ownerId, user);
 
+    // Mail chứng từ PAID (chứng từ: số tiền, mã giao dịch, thời điểm) — NOTE.md §6.2
+    if (existing.ownerId) {
+      const ctx = this.invoiceCtx(updated, existing.ownerId);
+      ctx.owner.fullName = await this.ownerFullName(existing.ownerId);
+      ctx.horse.name = existing.horse?.name ?? ctx.horse.name;
+      await this.emitMailSafe({
+        eventCode: 'INVOICE_PAID',
+        recipients: [
+          {
+            userId: existing.ownerId,
+            body: {
+              ...invoicePaid(ctx.inv, ctx.horse, ctx.owner, updated.paymentRef ?? ref),
+              refId: id,
+            },
+          },
+        ],
+      });
+    }
+
     return {
       ...updated,
       boardingFee: Number(updated.boardingFee),
@@ -666,6 +871,102 @@ export class FinancialService {
       prizeCredit: Number(updated.prizeCredit),
       netAmount: Number(updated.netAmount),
     };
+  }
+
+  /**
+   * 6.2 dòng 346 — ghi nhận thanh toán THẤT BẠI khi CM đối soát phát hiện giao dịch lỗi.
+   * Gửi mail PAYMENT_FAILED cho người thực hiện giao dịch (chủ ngựa); KHÔNG nói "đã thanh toán".
+   */
+  async recordPaymentFailure(
+    id: string,
+    detail: { txRef?: string; reason?: string },
+    user: FinancialActor,
+  ): Promise<void> {
+    if (user.role !== 'CLUB_MANAGER') {
+      throw apiError(
+        HttpStatus.FORBIDDEN,
+        'FORBIDDEN',
+        'Chỉ Club Manager mới được ghi nhận thanh toán thất bại.',
+      );
+    }
+    const existing = await this.prisma.financialInvoice.findUnique({
+      where: { id },
+      include: { horse: true },
+    });
+    if (!existing) {
+      throw apiError(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', 'Không tìm thấy hóa đơn.');
+    }
+
+    if (
+      ![InvoiceStatus.SENT, InvoiceStatus.OVERDUE].includes(
+        existing.status as 'SENT' | 'OVERDUE',
+      ) ||
+      Number(existing.netAmount) <= 0
+    ) {
+      throw apiError(HttpStatus.BAD_REQUEST, 'INVALID_STATUS', 'Invoice has no payable balance.');
+    }
+
+    const ctx = this.invoiceCtx(existing, existing.ownerId);
+    ctx.owner.fullName = await this.ownerFullName(existing.ownerId);
+    ctx.horse.name = existing.horse?.name ?? ctx.horse.name;
+    await this.emitMailSafe({
+      eventCode: 'PAYMENT_FAILED',
+      recipients: [
+        {
+          userId: existing.ownerId,
+          body: {
+            ...paymentFailed(ctx.inv, detail?.txRef ?? existing.paymentRef ?? null),
+            refId: id,
+          },
+        },
+      ],
+    });
+  }
+
+  /**
+   * Nhắc nợ THỦ CÔNG (nút [🔔 Nhắc nợ] của Club Manager — Task 8). Milestone 'manual'
+   * riêng để không phá mốc tự động của cron (dedupeKey theo refId + milestone).
+   */
+  async remindInvoice(id: string, user: FinancialActor): Promise<{ sent: boolean }> {
+    if (user.role !== 'CLUB_MANAGER') {
+      throw apiError(HttpStatus.FORBIDDEN, 'FORBIDDEN', 'Chỉ Club Manager được nhắc nợ chủ ngựa.');
+    }
+    const existing = await this.prisma.financialInvoice.findUnique({
+      where: { id },
+      include: { horse: true },
+    });
+    if (!existing) {
+      throw apiError(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', 'Không tìm thấy hóa đơn.');
+    }
+
+    if (
+      ![InvoiceStatus.SENT, InvoiceStatus.OVERDUE].includes(
+        existing.status as 'SENT' | 'OVERDUE',
+      ) ||
+      Number(existing.netAmount) <= 0
+    ) {
+      throw apiError(HttpStatus.BAD_REQUEST, 'INVALID_STATUS', 'Invoice has no payable balance.');
+    }
+
+    const ctx = this.invoiceCtx(existing, existing.ownerId);
+    ctx.owner.fullName = await this.ownerFullName(existing.ownerId);
+    ctx.horse.name = existing.horse?.name ?? ctx.horse.name;
+    const sent = await this.emitMailSafe({
+      eventCode: 'MANUAL_REMIND',
+      recipients: [
+        {
+          userId: existing.ownerId,
+          body: {
+            ...(existing.status === InvoiceStatus.OVERDUE
+              ? overdueNow(ctx.inv, ctx.owner)
+              : dueSoon(ctx.inv, ctx.horse, ctx.owner)),
+            milestone: 'manual',
+            refId: id,
+          },
+        },
+      ],
+    });
+    return { sent };
   }
 
   /**
@@ -728,7 +1029,20 @@ export class FinancialService {
   async sweepOverdue(): Promise<number> {
     const overdueCandidates = await this.prisma.financialInvoice.findMany({
       where: { status: InvoiceStatus.SENT, dueAt: { lt: new Date() }, netAmount: { gt: 0 } },
-      select: { id: true, horseId: true, ownerId: true },
+      select: {
+        id: true,
+        horseId: true,
+        ownerId: true,
+        billingPeriod: true,
+        boardingFee: true,
+        medicalFee: true,
+        trainingFee: true,
+        prizeCredit: true,
+        netAmount: true,
+        dueAt: true,
+        status: true,
+        horse: { select: { name: true } },
+      },
     });
 
     const { count } = await this.prisma.financialInvoice.updateMany({
@@ -741,6 +1055,23 @@ export class FinancialService {
       const ownerIds = Array.from(new Set(overdueCandidates.map((i) => i.ownerId)));
       await this.applyDebtImpoundToHorses(horseIds);
       await this.applyBadDebtToOwners(ownerIds);
+
+      // Mốc vừa quá hạn tách riêng các mốc nhắc 3/7 ngày.
+      for (const inv of overdueCandidates) {
+        if (!inv.ownerId || Number(inv.netAmount) <= 0) continue;
+        const ctx = this.invoiceCtx(inv, inv.ownerId);
+        ctx.owner.fullName = await this.ownerFullName(inv.ownerId);
+        ctx.horse.name = inv.horse?.name ?? ctx.horse.name;
+        await this.emitMailSafe({
+          eventCode: 'INVOICE_OVERDUE',
+          recipients: [
+            {
+              userId: inv.ownerId,
+              body: { ...overdueNow(ctx.inv, ctx.owner), milestone: 'overdue-now', refId: inv.id },
+            },
+          ],
+        });
+      }
     }
 
     return count;

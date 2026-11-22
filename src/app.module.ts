@@ -29,6 +29,7 @@ import { ShiftRostersModule } from './shift-rosters/shift-rosters.module';
 import { NutritionModule } from './nutrition/nutrition.module';
 import { DailyTasksModule } from './daily-tasks/daily-tasks.module';
 import { IncidentsModule } from './incidents/incidents.module';
+import { ComplaintsModule } from './complaints/complaints.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { SimulatorModule } from './simulator/simulator.module';
 
@@ -65,6 +66,7 @@ import { SimulatorModule } from './simulator/simulator.module';
     NutritionModule,
     DailyTasksModule,
     IncidentsModule,
+    ComplaintsModule,
     InventoryModule,
     SimulatorModule,
   ],

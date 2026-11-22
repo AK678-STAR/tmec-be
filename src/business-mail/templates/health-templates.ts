@@ -18,7 +18,16 @@ export interface HorseLike {
 }
 
 const fmtDate = (d: Date | string | null | undefined) =>
-  d ? new Date(d).toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit' }) : '—';
+  d
+    ? new Date(d).toLocaleString('vi-VN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'Asia/Ho_Chi_Minh',
+      })
+    : '—';
 
 /** 6.3 dòng 1 — BAN HÀNH đổi chuồng. */
 export function stallMove(
@@ -36,7 +45,7 @@ export function stallMove(
     { label: 'Lý do', value: reason },
     { label: 'Thời điểm hiệu lực', value: fmtDate(effectiveAt) },
     { label: 'Người ban hành', value: actor.name },
-    { label: 'Xem bảng chuồng', value: `${linkBase()}/club/stalls` },
+    { label: 'Xem bảng chuồng', value: `${linkBase()}/stalls` },
   ]);
 }
 
@@ -56,19 +65,23 @@ export function stallMoveCompleted(
     { label: 'Thời điểm bàn giao', value: fmtDate(at) },
     { label: 'Ghi chú', value: notes || 'Không có ghi chú' },
     { label: 'Ảnh bằng chứng', value: evidenceUrl || 'Không đính kèm' },
-    { label: 'Xem lịch sử bàn giao', value: `${linkBase()}/club/stalls` },
+    { label: 'Xem lịch sử bàn giao', value: `${linkBase()}/stalls` },
   ]);
 }
 
 /** 6.3 dòng 3 — báo sự cố (Vet+CM+HLV+Groom khu), ghi rõ CHƯA được Vet xác nhận. */
-export function incidentReported(incident: { incidentNumber: string | null; severity: string }, horse: HorseLike, reporter: ActorLike): BusinessMailContent {
+export function incidentReported(
+  incident: { incidentNumber: string | null; severity: string },
+  horse: HorseLike,
+  reporter: ActorLike,
+): BusinessMailContent {
   return renderMail(`Sự cố sức khỏe cần xác minh — ${horse.name}`, [
     { label: 'Mã sự cố', value: incident.incidentNumber },
     { label: 'Ngựa', value: horse.name },
     { label: 'Mức độ', value: incident.severity },
     { label: 'Người báo', value: reporter.name },
     { label: 'Trạng thái', value: 'Chưa được Bác sĩ xác nhận — chờ xác minh' },
-    { label: 'Xem hồ sơ sự cố', value: `${linkBase()}/medical/incidents` },
+    { label: 'Xem hồ sơ sự cố', value: `${linkBase()}/incidents` },
   ]);
 }
 
@@ -100,7 +113,12 @@ export function lockChanged(
   actor: ActorLike,
   remainingActiveLocks: string[] = [],
 ): BusinessMailContent {
-  const actionLabel = action === 'planned' ? 'Đặt khóa y tế' : action === 'extended' ? 'Gia hạn khóa y tế' : 'Gỡ khóa y tế';
+  const actionLabel =
+    action === 'planned'
+      ? 'Đặt khóa y tế'
+      : action === 'extended'
+        ? 'Gia hạn khóa y tế'
+        : 'Gỡ khóa y tế';
   const rows = [
     { label: 'Ngựa', value: horse.name },
     { label: 'Loại khóa', value: lock.type },
@@ -117,7 +135,11 @@ export function lockChanged(
 }
 
 /** 6.3 dòng 5 — đến hạn tái khám. */
-export function followUpDue(schedule: { dueAt: Date | string; procedure: string }, horse: HorseLike, assignedTo?: ActorLike): BusinessMailContent {
+export function followUpDue(
+  schedule: { dueAt: Date | string; procedure: string },
+  horse: HorseLike,
+  assignedTo?: ActorLike,
+): BusinessMailContent {
   return renderMail(`Đến hạn tái khám — ${horse.name}`, [
     { label: 'Thủ tục', value: schedule.procedure },
     { label: 'Hạn tái khám', value: fmtDate(schedule.dueAt) },
@@ -127,29 +149,41 @@ export function followUpDue(schedule: { dueAt: Date | string; procedure: string 
 }
 
 /** 6.3 dòng 6 — bỏ lỡ y lệnh (thuốc/chăm sóc y tế) quá hạn. */
-export function medicalTaskOverdue(task: { taskCode: string; title: string; scheduledTime?: string }, horse: HorseLike): BusinessMailContent {
+export function medicalTaskOverdue(
+  task: { taskCode: string; title: string; scheduledTime?: string },
+  horse: HorseLike,
+): BusinessMailContent {
   return renderMail(`Bỏ lỡ y lệnh — ${horse.name}`, [
     { label: 'Mã task', value: task.taskCode },
     { label: 'Nội dung', value: task.title },
     { label: 'Lịch dự kiến', value: task.scheduledTime || '—' },
     { label: 'Hành động', value: 'Vui lòng thực hiện bù và báo bác sĩ phụ trách' },
-    { label: 'Xem công việc y tế', value: `${linkBase()}/groom/today` },
+    { label: 'Xem công việc y tế', value: `${linkBase()}/tasks` },
   ]);
 }
 
 /** §6.2 tiền thưởng — chỉ khi settledAt có (đã công bố chính thức). */
 export function prizeWon(
-  result: { finalRank: number; prizeMoneyWon: number; netOwnerPayout: number; settledAt: Date | null },
+  result: {
+    finalRank: number;
+    prizeMoneyWon: number;
+    netOwnerPayout: number;
+    settledAt: Date | null;
+  },
   tournament: { name: string },
   horse: HorseLike,
 ): BusinessMailContent {
-  const fmtVnd = (n: number) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(n);
+  const fmtVnd = (n: number) =>
+    new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(n);
   return renderMail(`Tiền thưởng đã xác nhận — ${horse.name}`, [
     { label: 'Giải đấu', value: tournament.name },
     { label: 'Hạng', value: `Thứ ${result.finalRank}` },
     { label: 'Tiền thưởng', value: fmtVnd(result.prizeMoneyWon) },
     { label: 'Tiền thực nhận (sau trích)', value: fmtVnd(result.netOwnerPayout) },
-    { label: 'Trạng thái', value: result.settledAt ? 'Đã xác nhận (settled)' : 'Đã công bố — chờ chốt kỳ' },
-    { label: 'Xem báo cáo tài chính', value: `${linkBase()}/owner/financial` },
+    {
+      label: 'Trạng thái',
+      value: result.settledAt ? 'Đã xác nhận (settled)' : 'Đã công bố — chờ chốt kỳ',
+    },
+    { label: 'Xem báo cáo tài chính', value: `${linkBase()}/financial-reports` },
   ]);
 }

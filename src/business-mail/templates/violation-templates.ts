@@ -24,10 +24,20 @@ export interface ComplaintLike {
   createdAt: Date | string;
 }
 
-const fmtDate = (d: Date | string | null | undefined) => (d ? new Date(d).toLocaleString('vi-VN') : '—');
+const fmtDate = (d: Date | string | null | undefined) =>
+  d ? new Date(d).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) : '—';
+
+const taskDeadline = (task: TaskLike) =>
+  task.scheduledTime && /^([01]\d|2[0-3]):[0-5]\d$/.test(task.scheduledTime)
+    ? fmtDate(`${task.date.slice(0, 10)}T${task.scheduledTime}:00+07:00`)
+    : task.date;
 
 /** Template mồ côi #1 — giao việc quan trọng. */
-export function taskAssigned(task: TaskLike, horseName: string | undefined, assignee: ActorLike): BusinessMailContent {
+export function taskAssigned(
+  task: TaskLike,
+  horseName: string | undefined,
+  assignee: ActorLike,
+): BusinessMailContent {
   return renderMail(`Được giao nhiệm vụ: ${task.taskCode}`, [
     { label: 'Mã task', value: task.taskCode },
     { label: 'Nội dung', value: task.title },
@@ -35,7 +45,7 @@ export function taskAssigned(task: TaskLike, horseName: string | undefined, assi
     { label: 'Ngày / giờ', value: `${task.date} ${task.scheduledTime || ''}` },
     { label: 'Người được giao', value: assignee.name },
     { label: 'Vai trò', value: 'Chăm sóc theo quy định — cần hoàn thành đúng hạn' },
-    { label: 'Xem công việc', value: `${linkBase()}/groom/today` },
+    { label: 'Xem công việc', value: `${linkBase()}/tasks` },
   ]);
 }
 
@@ -44,19 +54,23 @@ export function taskDueSoon(task: TaskLike, assignee: ActorLike): BusinessMailCo
   return renderMail(`Sắp đến hạn: ${task.taskCode}`, [
     { label: 'Mã task', value: task.taskCode },
     { label: 'Nội dung', value: task.title },
-    { label: 'Hạn thực hiện', value: fmtDate(task.scheduledTime) },
+    { label: 'Hạn thực hiện', value: taskDeadline(task) },
     { label: 'Người phụ trách', value: assignee.name },
     { label: 'Trạng thái', value: 'Sắp đến hạn (3 giờ)' },
   ]);
 }
 
 /** Việc quá hạn (kèm mã, hạn gốc, lịch sử); nếu chưa giao → "cần phân công". */
-export function taskOverdue(task: TaskLike, assignee: ActorLike | null, history?: string): BusinessMailContent {
+export function taskOverdue(
+  task: TaskLike,
+  assignee: ActorLike | null,
+  history?: string,
+): BusinessMailContent {
   if (!assignee) {
     return renderMail(`Quá hạn — cần phân công: ${task.taskCode}`, [
       { label: 'Mã task', value: task.taskCode },
       { label: 'Nội dung', value: task.title },
-      { label: 'Hạn gốc', value: fmtDate(task.scheduledTime) },
+      { label: 'Hạn gốc', value: taskDeadline(task) },
       { label: 'Trạng thái', value: 'Quá hạn, CHƯA có người nhận — cần phân công' },
       { label: 'Lịch sử', value: history || '—' },
     ]);
@@ -64,7 +78,7 @@ export function taskOverdue(task: TaskLike, assignee: ActorLike | null, history?
   return renderMail(`Quá hạn: ${task.taskCode}`, [
     { label: 'Mã task', value: task.taskCode },
     { label: 'Nội dung', value: task.title },
-    { label: 'Hạn gốc', value: fmtDate(task.scheduledTime) },
+    { label: 'Hạn gốc', value: taskDeadline(task) },
     { label: 'Người phụ trách', value: assignee.name },
     { label: 'Lịch sử giao / đổi', value: history || '—' },
     { label: 'Trạng thái', value: 'Quá hạn — cần làm bù' },
@@ -72,7 +86,11 @@ export function taskOverdue(task: TaskLike, assignee: ActorLike | null, history?
 }
 
 /** Lặp lại nhiều lần → kèm quản lý phụ trách. */
-export function repeatOverdue(user: ActorLike, taskCount: number, manager: ActorLike): BusinessMailContent {
+export function repeatOverdue(
+  user: ActorLike,
+  taskCount: number,
+  manager: ActorLike,
+): BusinessMailContent {
   return renderMail(`Nhiều việc quá hạn lặp lại`, [
     { label: 'Người phụ trách', value: user.name },
     { label: 'Số việc quá hạn lặp lại', value: taskCount },
@@ -82,7 +100,12 @@ export function repeatOverdue(user: ActorLike, taskCount: number, manager: Actor
 }
 
 /** Template mồ côi #3 — việc bị yêu cầu làm lại (người kiểm tra, lý do, hạn mới). */
-export function taskRejected(task: TaskLike, checker: ActorLike, reason: string, retryBy?: Date | string): BusinessMailContent {
+export function taskRejected(
+  task: TaskLike,
+  checker: ActorLike,
+  reason: string,
+  retryBy?: Date | string,
+): BusinessMailContent {
   return renderMail(`Yêu cầu làm lại: ${task.taskCode}`, [
     { label: 'Mã task', value: task.taskCode },
     { label: 'Nội dung', value: task.title },
@@ -90,7 +113,7 @@ export function taskRejected(task: TaskLike, checker: ActorLike, reason: string,
     { label: 'Lý do', value: reason },
     { label: 'Hạn thực hiện lại', value: fmtDate(retryBy) },
     { label: 'Ghi chú / bằng chứng', value: 'Xem ảnh & log trong công việc' },
-    { label: 'Xem công việc', value: `${linkBase()}/groom/today` },
+    { label: 'Xem công việc', value: `${linkBase()}/tasks` },
   ]);
 }
 
@@ -107,7 +130,11 @@ export function complaintFiled(complaint: ComplaintLike, handler: ActorLike): Bu
 }
 
 /** Yêu cầu giải trình (UNDER_REVIEW) cho người bị phản ánh. */
-export function reviewRequested(complaint: ComplaintLike, subject: ActorLike, deadline?: Date | string): BusinessMailContent {
+export function reviewRequested(
+  complaint: ComplaintLike,
+  subject: ActorLike,
+  deadline?: Date | string,
+): BusinessMailContent {
   return renderMail(`Yêu cầu giải trình: ${complaint.code}`, [
     { label: 'Mã phản ánh', value: complaint.code },
     { label: 'Nội dung', value: complaint.reason },
@@ -130,7 +157,10 @@ export function violationConfirmed(
     { label: 'Đối tượng', value: subject.name },
     { label: 'Người xác nhận', value: confirmer.name },
     { label: 'Nội dung', value: complaint.reason },
-    { label: 'Quy định liên quan', value: 'Quy tắc chăm sóc & quy định nội bộ (link: /complaints)' },
+    {
+      label: 'Quy định liên quan',
+      value: 'Quy tắc chăm sóc & quy định nội bộ (link: /complaints)',
+    },
     { label: 'Biện pháp xử lý', value: measures || 'Đang xử lý theo quy định' },
     { label: 'Bằng chứng', value: 'Ảnh, log, ghi chú được đính kèm' },
   ]);

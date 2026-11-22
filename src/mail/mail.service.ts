@@ -36,12 +36,17 @@ export class MailService {
       }
     } else if (provider === 'smtp') {
       const mailHost = config.get<string>('MAIL_HOST') || config.get<string>('SMTP_HOST') || '';
-      const mailPort = Number(config.get<string>('MAIL_PORT') || config.get<string>('SMTP_PORT') || 587);
+      const mailPort = Number(
+        config.get<string>('MAIL_PORT') || config.get<string>('SMTP_PORT') || 587,
+      );
       if (smtpUser) {
         this.provider = 'smtp';
         this.transporter = nodemailer.createTransport({
           host: mailHost,
           port: mailPort,
+          connectionTimeout: 10000,
+          greetingTimeout: 10000,
+          socketTimeout: 20000,
           auth: { user: smtpUser, pass: config.get<string>('SMTP_PASS') || '' },
         });
       } else if (mailHost) {
@@ -50,6 +55,9 @@ export class MailService {
         this.transporter = nodemailer.createTransport({
           host: mailHost,
           port: mailPort,
+          connectionTimeout: 10000,
+          greetingTimeout: 10000,
+          socketTimeout: 20000,
           secure: false,
         });
       } else {

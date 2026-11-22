@@ -1,10 +1,5 @@
-import {
-  invoiceIssued,
-  dueSoon,
-  paymentFailed,
-  refundNotice,
-  overdue7,
-} from './billing-templates';
+import { renderMail } from './html';
+import { invoiceIssued, dueSoon, paymentFailed, refundNotice, overdue7 } from './billing-templates';
 import {
   stallMove,
   stallMoveCompleted,
@@ -58,6 +53,8 @@ describe('billing templates', () => {
     const m = overdue7(inv, owner, 3);
     expect(m.text).toContain('đã nhắc 3 lần');
     expect(m.text).toContain('Hậu quả');
+    expect(m.subject).not.toContain('trước khi áp dụng');
+    expect(m.text).toContain('Kiểm tra hạn chế dịch vụ');
   });
 
   it('paymentFailed NEVER says "đã thanh toán" / "xác nhận" (Review Focus)', () => {
@@ -77,32 +74,52 @@ describe('billing templates', () => {
 
 describe('health / stall / prize templates', () => {
   it('stallMove shows old/new stall + reason + issuer', () => {
-    const m = stallMove(horse, { code: 'A-01' }, { code: 'A-12' }, 'Khu cũ bảo trì', new Date(), { id: 'x', name: 'CM An' });
+    const m = stallMove(horse, { code: 'A-01' }, { code: 'A-12' }, 'Khu cũ bảo trì', new Date(), {
+      id: 'x',
+      name: 'CM An',
+    });
     expect(m.text).toContain('A-01');
     expect(m.text).toContain('A-12');
     expect(m.text).toContain('CM An');
   });
 
   it('stallMoveCompleted shows performer + time + evidence (NOTE 6.3 line 2)', () => {
-    const m = stallMoveCompleted(horse, { code: 'A-12' }, { id: 'g', name: 'Lê Groom' }, new Date('2026-07-09T12:00:00Z'), 'đã kiểm tra sức ngựa', 'https://tmec/e1.jpg');
+    const m = stallMoveCompleted(
+      horse,
+      { code: 'A-12' },
+      { id: 'g', name: 'Lê Groom' },
+      new Date('2026-07-09T12:00:00Z'),
+      'đã kiểm tra sức ngựa',
+      'https://tmec/e1.jpg',
+    );
     expect(m.text).toContain('Lê Groom');
     expect(m.text).toContain('đã kiểm tra sức ngựa');
     expect(m.text).toContain('e1.jpg');
   });
 
   it('incidentReported marks UNCONFIRMED (no vet verdict yet)', () => {
-    const m = incidentReported({ incidentNumber: 'INC-1', severity: 'HIGH' }, horse, { name: 'Groom B' });
+    const m = incidentReported({ incidentNumber: 'INC-1', severity: 'HIGH' }, horse, {
+      name: 'Groom B',
+    });
     expect(m.text.toLowerCase()).toContain('chưa được bác sĩ xác nhận');
   });
 
   it('incidentConfirmed shows vet verdict + restrictions', () => {
-    const m = incidentConfirmed({ incidentNumber: 'INC-1', vetNotes: 'Đầu gối sưng nhẹ', status: 'CONFIRMED' }, horse, vet, 'nghỉ 2 tuần');
+    const m = incidentConfirmed(
+      { incidentNumber: 'INC-1', vetNotes: 'Đầu gối sưng nhẹ', status: 'CONFIRMED' },
+      horse,
+      vet,
+      'nghỉ 2 tuần',
+    );
     expect(m.text).toContain('BS Phạm');
     expect(m.text).toContain('nghỉ 2 tuần');
   });
 
   it('lockChanged on release lists remaining active locks (Review Focus #5)', () => {
-    const m = lockChanged(horse, { type: 'EXERCISE_LOCK' }, 'released', vet, ['MEDICATION_LOCK', 'ICING_LOCK']);
+    const m = lockChanged(horse, { type: 'EXERCISE_LOCK' }, 'released', vet, [
+      'MEDICATION_LOCK',
+      'ICING_LOCK',
+    ]);
     expect(m.text).toContain('Gỡ khóa');
     expect(m.text).toContain('MEDICATION_LOCK');
     expect(m.text).toContain('ICING_LOCK');
@@ -114,22 +131,38 @@ describe('health / stall / prize templates', () => {
   });
 
   it('medicalTaskOverdue shows task code', () => {
-    const m = medicalTaskOverdue({ taskCode: 'M-ICE-1', title: 'Đắp đá lạnh', scheduledTime: '07:30' }, horse);
+    const m = medicalTaskOverdue(
+      { taskCode: 'M-ICE-1', title: 'Đắp đá lạnh', scheduledTime: '07:30' },
+      horse,
+    );
     expect(m.text).toContain('M-ICE-1');
   });
 
   it('prizeWon shows payout only meaningful when settled (NOTE 6.2)', () => {
-    const settled = prizeWon({ finalRank: 2, prizeMoneyWon: 10000000, netOwnerPayout: 8500000, settledAt: new Date() }, { name: 'Giải A' }, horse);
+    const settled = prizeWon(
+      { finalRank: 2, prizeMoneyWon: 10000000, netOwnerPayout: 8500000, settledAt: new Date() },
+      { name: 'Giải A' },
+      horse,
+    );
     expect(settled.text).toContain('Đã xác nhận');
     expect(settled.text).toContain('8.500.000');
 
-    const unsettled = prizeWon({ finalRank: 1, prizeMoneyWon: 20000000, netOwnerPayout: 17000000, settledAt: null }, { name: 'Giải B' }, horse);
+    const unsettled = prizeWon(
+      { finalRank: 1, prizeMoneyWon: 20000000, netOwnerPayout: 17000000, settledAt: null },
+      { name: 'Giải B' },
+      horse,
+    );
     expect(unsettled.text).toContain('chờ chốt');
   });
 });
 
 describe('violation templates', () => {
-  const task = { taskCode: 'T-1', title: 'Vệ sinh chuồng', date: '2026-07-08', scheduledTime: '07:00' };
+  const task = {
+    taskCode: 'T-1',
+    title: 'Vệ sinh chuồng',
+    date: '2026-07-08',
+    scheduledTime: '07:00',
+  };
 
   it('taskAssigned names assignee + task', () => {
     const m = taskAssigned(task, 'Silver Bolt', groom);
@@ -162,13 +195,37 @@ describe('violation templates', () => {
   });
 
   it('complaintFiled does NOT conclude violation (NOTE 6.4)', () => {
-    const m = complaintFiled({ code: 'CMP-1', reason: 'Không cho ăn đúng giờ', status: 'OPEN', createdAt: new Date() }, { name: 'CM An' });
+    const m = complaintFiled(
+      { code: 'CMP-1', reason: 'Không cho ăn đúng giờ', status: 'OPEN', createdAt: new Date() },
+      { name: 'CM An' },
+    );
     expect(m.text).toContain('chưa phải kết luận');
   });
 
   it('violationConfirmed names confirmer + measures', () => {
-    const m = violationConfirmed({ code: 'CMP-1', reason: 'bỏ chăm sóc', status: 'VIOLATION_CONFIRMED', createdAt: new Date() }, groom, { name: 'CM An' }, 'cảnh cáo');
+    const m = violationConfirmed(
+      {
+        code: 'CMP-1',
+        reason: 'bỏ chăm sóc',
+        status: 'VIOLATION_CONFIRMED',
+        createdAt: new Date(),
+      },
+      groom,
+      { name: 'CM An' },
+      'cảnh cáo',
+    );
     expect(m.text).toContain('CM An');
     expect(m.text).toContain('cảnh cáo');
+  });
+});
+
+describe('safe mail markup', () => {
+  it('escapes untrusted names and keeps plain text readable', () => {
+    const unsafe = '<img src=x onerror=alert(1)> & text';
+    const output = renderMail(unsafe, [{ label: unsafe, value: unsafe }]);
+    expect(output.html).not.toContain('<img');
+    expect(output.html).toContain('&lt;img');
+    expect(output.html).toContain('&amp; text');
+    expect(output.text).toContain(unsafe);
   });
 });

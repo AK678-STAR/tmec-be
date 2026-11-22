@@ -1,3 +1,4 @@
+import { followUpDue } from '../business-mail/templates/health-templates';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { MedicalRecordStatus, PreventiveStatus, Role } from '@prisma/client';
@@ -47,6 +48,17 @@ export class PreventiveScheduler {
           groom: true,
         });
         await this.notifications.notifyUsers([...audience, r.veterinarianUserId], {
+          email: {
+            eventCode: 'FOLLOW_UP_DUE',
+            body: {
+              ...followUpDue(
+                { dueAt: r.followUpDate!, procedure: 'Tái khám theo bệnh án' },
+                { id: r.horseId, name: r.horse.name },
+              ),
+              refId: r.id,
+              milestone: date,
+            },
+          },
           type: 'FOLLOW_UP_DUE',
           category: 'MEDICAL',
           title: 'Follow-up visit coming up',

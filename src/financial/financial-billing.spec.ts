@@ -3,6 +3,7 @@ import { FinancialService } from './financial.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { BusinessMailService } from '../business-mail/business-mail.service';
 
 describe('Financial billing lifecycle', () => {
   const manager = { id: 'manager', name: 'Manager', role: 'CLUB_MANAGER' };
@@ -60,6 +61,7 @@ describe('Financial billing lifecycle', () => {
       db as PrismaService,
       { record: jest.fn() } as unknown as AuditService,
       { notifyUsers: jest.fn() } as unknown as NotificationsService,
+      { emit: jest.fn().mockResolvedValue([]) } as unknown as BusinessMailService,
     );
   });
   afterEach(() => jest.useRealTimers());

@@ -1,3 +1,5 @@
+import { stallMoveCompleted } from '../business-mail/templates/health-templates';
+import { taskAssigned, taskRejected } from '../business-mail/templates/violation-templates';
 import {
   BadRequestException,
   HttpStatus,
@@ -76,6 +78,47 @@ export class DailyTasksService {
     private readonly notifications: NotificationsService,
     private readonly inventoryService: InventoryService,
   ) {}
+
+  private async publishAssignment(task: {
+    id: string;
+    taskCode?: string | null;
+    title: string;
+    horseId: string;
+    date: Date;
+    scheduledTime?: string | null;
+    assignedGroomUserId?: string | null;
+  }): Promise<void> {
+    if (!task.assignedGroomUserId) return;
+    try {
+      await this.notifications.notifyUsers([task.assignedGroomUserId], {
+        type: 'TASK_ASSIGNED',
+        category: 'SYSTEM',
+        title: 'Được giao nhiệm vụ chăm sóc',
+        message: task.title,
+        link: '/tasks?date=' + task.date.toISOString().slice(0, 10),
+        dedupeKey: 'task-assigned:' + task.id + ':' + task.assignedGroomUserId,
+        email: {
+          eventCode: 'TASK_ASSIGNED',
+          body: {
+            ...taskAssigned(
+              {
+                taskCode: task.taskCode ?? task.id,
+                title: task.title,
+                date: task.date.toISOString().slice(0, 10),
+                scheduledTime: task.scheduledTime ?? undefined,
+              },
+              undefined,
+              { name: 'Nhân viên được phân công' },
+            ),
+            refId: task.id,
+            milestone: task.assignedGroomUserId,
+          },
+        },
+      });
+    } catch (error) {
+      this.logger.warn('Could not publish task assignment: ' + (error as Error).message);
+    }
+  }
 
   /**
    * TASK F4-04-BE: Sinh danh sách công việc chăm sóc hàng ngày cho từng con ngựa.
@@ -375,11 +418,17 @@ export class DailyTasksService {
           itemsSnapshotJson: (t.itemsSnapshotJson as any) || null,
           assignedGroomUserId: t.assignedGroomUserId,
         };
+        let created;
         if (t.taskCode) {
-          await this.prisma.dailyCareTask.upsert({ where: { taskCode }, create: data, update: {} });
+          created = await this.prisma.dailyCareTask.upsert({
+            where: { taskCode },
+            create: data,
+            update: {},
+          });
         } else {
-          await this.prisma.dailyCareTask.create({ data });
+          created = await this.prisma.dailyCareTask.create({ data });
         }
+        if (created) await this.publishAssignment(created);
         totalGenerated++;
       } else {
         const nextZoneId = t.zoneId ?? null;
@@ -401,7 +450,7 @@ export class DailyTasksService {
             (existing.medicalLockNotes ?? null) !== nextLockNotes ||
             JSON.stringify(existing.itemsSnapshotJson ?? null) !== JSON.stringify(nextItemsJson))
         ) {
-          await this.prisma.dailyCareTask.update({
+          const updated = await this.prisma.dailyCareTask.update({
             where: { id: existing.id, isCompleted: false },
             data: {
               date: dayDate,
@@ -416,6 +465,9 @@ export class DailyTasksService {
               itemsSnapshotJson: nextItemsJson,
             },
           });
+          if (updated && existing.assignedGroomUserId !== nextGroomId) {
+            await this.publishAssignment(updated);
+          }
         }
       }
     }
@@ -875,6 +927,37 @@ export class DailyTasksService {
       },
     );
 
+    if (task.taskCode?.startsWith(STALL_HANDOVER_PREFIX)) {
+      const snapshot = task.itemsSnapshotJson as { toStallCode?: string } | null;
+      const input = {
+        type: 'STALL_HANDOVER_DONE',
+        category: 'SYSTEM' as const,
+        title: 'Hoàn tất bàn giao chuồng',
+        message: task.title,
+        link: '/tasks',
+        dedupeKey: 'handover-done:' + task.id,
+        email: {
+          eventCode: 'STALL_HANDOVER_DONE',
+          body: {
+            ...stallMoveCompleted(
+              task.horse,
+              { code: snapshot?.toStallCode ?? 'Xem lịch sử chuyển chuồng' },
+              { name: currentUser.fullName },
+              now,
+              dto.notes,
+            ),
+            refId: task.id,
+          },
+        },
+      };
+      await this.notifications.notifyHorse(
+        task.horseId,
+        { roles: [Role.CLUB_MANAGER], owner: true, trainer: true, groom: true },
+        input,
+      );
+      await this.notifications.notifyUsers([task.assignedGroomUserId, currentUser.userId], input);
+    }
+
     return updated;
   }
 
@@ -882,7 +965,11 @@ export class DailyTasksService {
    * TASK F4-05-BE: Hoàn tác trạng thái hoàn thành trong vòng 15 phút nếu bấm nhầm.
    * Sau 15 phút, khóa không cho phép hoàn tác.
    */
-  async uncompleteTask(id: string, currentUser: CurrentUserPayload) {
+  async uncompleteTask(
+    id: string,
+    currentUser: CurrentUserPayload,
+    review?: { reason: string; retryBy?: string },
+  ) {
     const task = await this.prisma.dailyCareTask.findUnique({
       where: { id },
       include: { horse: true },
@@ -892,6 +979,19 @@ export class DailyTasksService {
       throw new NotFoundException('Không tìm thấy công việc chăm sóc.');
     }
 
+    if (
+      review &&
+      (currentUser.role !== Role.CLUB_MANAGER ||
+        [DailyTaskType.FEEDING, DailyTaskType.MEDICATION].includes(
+          task.taskType as 'FEEDING' | 'MEDICATION',
+        ))
+    ) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'TASK_REVIEW_NOT_ALLOWED',
+        'Chỉ quản lý được yêu cầu làm lại công việc. Với cho ăn hoặc thuốc đã dùng, hãy lập báo cáo sai lệch.',
+      );
+    }
     if (!task.isCompleted) {
       return task; // Đang chưa hoàn thành sẵn
     }
@@ -980,6 +1080,9 @@ export class DailyTasksService {
             completedAt: null,
             completedById: null,
             undoUntil: null,
+            ...(review && {
+              description: (task.description ?? '') + '\n[Kiểm tra lại] ' + review.reason,
+            }),
           },
           include: TASK_DETAIL_INCLUDE,
         });
@@ -1014,6 +1117,34 @@ export class DailyTasksService {
       },
     );
 
+    if (review && task.completedById) {
+      await this.notifications.notifyUsers([task.completedById], {
+        type: 'TASK_REJECTED',
+        category: 'SYSTEM',
+        title: 'Yêu cầu kiểm tra và làm lại',
+        message: review.reason,
+        link: '/tasks',
+        dedupeKey: 'task-rejected:' + task.id + ':' + now.toISOString(),
+        email: {
+          eventCode: 'TASK_REJECTED',
+          body: {
+            ...taskRejected(
+              {
+                taskCode: task.taskCode ?? task.id,
+                title: task.title,
+                date: task.date.toISOString().slice(0, 10),
+                scheduledTime: task.scheduledTime ?? undefined,
+              },
+              { name: currentUser.fullName },
+              review.reason,
+              review.retryBy,
+            ),
+            refId: task.id,
+            milestone: now.toISOString(),
+          },
+        },
+      });
+    }
     return updated;
   }
 }

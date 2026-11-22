@@ -7,6 +7,7 @@ import { UserRole } from '../common/enums/role.enum';
 import { FinancialService } from './financial.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { UpdateInvoiceDto } from './dto/update-invoice.dto';
+import { PaymentFailureDto } from './dto/payment-failure.dto';
 import { QueryInvoiceDto } from './dto/query-invoice.dto';
 import { GenerateMonthlyDto } from './dto/generate-monthly.dto';
 
@@ -129,6 +130,31 @@ export class FinancialController {
       name: user.fullName || user.email,
       role: user.role,
     });
+  }
+
+  @Post(':id/remind')
+  @Roles(UserRole.CLUB_MANAGER)
+  async remind(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
+    return this.financialService.remindInvoice(id, {
+      id: user.userId,
+      name: user.fullName || user.email,
+      role: user.role,
+    });
+  }
+
+  @Post(':id/payment-failure')
+  @Roles(UserRole.CLUB_MANAGER)
+  async paymentFailure(
+    @Param('id') id: string,
+    @Body() dto: PaymentFailureDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    await this.financialService.recordPaymentFailure(id, dto, {
+      id: user.userId,
+      name: user.fullName || user.email,
+      role: user.role,
+    });
+    return { ok: true };
   }
 
   @Post(':id/pay')

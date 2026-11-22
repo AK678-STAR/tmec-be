@@ -1,3 +1,4 @@
+import { incidentReported, incidentConfirmed } from '../business-mail/templates/health-templates';
 import { incidentDescription, incidentNotificationText } from './incident-evidence';
 import {
   BadRequestException,
@@ -95,18 +96,15 @@ export class IncidentsService {
 
     await this.notifications.notifyHorse(
       horse.id,
-      isCritical
-        ? {
-            roles: [Role.VETERINARIAN, Role.HEAD_TRAINER, Role.CLUB_MANAGER],
-            owner: true,
-            groom: true,
-          }
-        : {
-            roles: [Role.VETERINARIAN],
-            owner: true,
-            groom: true,
-          },
+      { roles: [Role.VETERINARIAN, Role.CLUB_MANAGER], trainer: true, groom: true },
       {
+        email: {
+          eventCode: 'INCIDENT_REPORTED',
+          body: {
+            ...incidentReported(incident, horse, { name: reporter.fullName }),
+            refId: incident.id,
+          },
+        },
         type: isCritical ? 'CRITICAL_INCIDENT_REPORTED' : 'HEALTH_ANOMALY_LOGGED',
         category: 'MEDICAL',
         title: `${titlePrefix} ${horse.name} (${horse.horseCode || ''})`,
@@ -253,18 +251,15 @@ export class IncidentsService {
 
     await this.notifications.notifyHorse(
       horse.id,
-      isCritical
-        ? {
-            roles: [Role.VETERINARIAN, Role.HEAD_TRAINER, Role.CLUB_MANAGER],
-            owner: true,
-            groom: true,
-          }
-        : {
-            roles: [Role.VETERINARIAN],
-            owner: true,
-            groom: true,
-          },
+      { roles: [Role.VETERINARIAN, Role.CLUB_MANAGER], trainer: true, groom: true },
       {
+        email: {
+          eventCode: 'INCIDENT_REPORTED',
+          body: {
+            ...incidentReported(incident, horse, { name: reporter.fullName }),
+            refId: incident.id,
+          },
+        },
         type: isCritical ? 'CRITICAL_INCIDENT_REPORTED' : 'HEALTH_ANOMALY_LOGGED',
         category: 'MEDICAL',
         title: `${titlePrefix} ${horse.name} (${horse.horseCode || ''})`,
@@ -473,6 +468,28 @@ export class IncidentsService {
         },
       },
     );
+
+    if (dto.status === IncidentStatus.RESOLVED) {
+      await this.notifications.notifyHorse(
+        incident.horseId,
+        { roles: [Role.CLUB_MANAGER], owner: true, trainer: true, groom: true },
+        {
+          type: 'INCIDENT_CONFIRMED',
+          category: 'MEDICAL',
+          title: 'Sự cố đã được bác sĩ xử lý',
+          message: 'Xem kết luận và chỉ định trong hồ sơ.',
+          link: '/incidents',
+          dedupeKey: 'incident-resolved:' + updated.id,
+          email: {
+            eventCode: 'INCIDENT_CONFIRMED',
+            body: {
+              ...incidentConfirmed(updated, incident.horse, { name: reviewer.fullName }),
+              refId: updated.id,
+            },
+          },
+        },
+      );
+    }
 
     return updated;
   }
