@@ -7,6 +7,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './auth/auth.module';
 import { MailModule } from './mail/mail.module';
+import { BusinessMailModule } from './business-mail/business-mail.module';
 import { AuditModule } from './audit/audit.module';
 import { AccountsModule } from './accounts/accounts.module';
 import { MedicalModule } from './medical/medical.module';
@@ -46,6 +47,7 @@ import { SimulatorModule } from './simulator/simulator.module';
     PrismaModule,
     HealthModule,
     MailModule,
+    BusinessMailModule,
     AuditModule,
     NotificationsModule,
     AuthModule,

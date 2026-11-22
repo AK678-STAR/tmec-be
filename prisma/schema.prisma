@@ -311,11 +311,69 @@ model User {
   transfersFrom            HorseTransferRequest[]   @relation("TransferFromOwner")
   transfersTo              HorseTransferRequest[]   @relation("TransferToOwner")
   transfersRequested       HorseTransferRequest[]   @relation("TransferRequestedBy")
+  businessMailings         BusinessMailing[]
+  complaintsFiled          Complaint[]              @relation("ComplaintReporter")
+  complaintsRaised         Complaint[]              @relation("ComplaintSubject")
 
   @@index([email])
   @@index([role])
   @@index([status])
   @@index([isBadDebtFlagged])
+}
+
+// Mail nghiệp vụ (nhắc nợ, cảnh báo, chứng từ) — mỗi người nhận 1 bản ghi riêng,
+// chống trùng theo sự kiện + mốc nhắc + người nhận. SMTP accept != đã vào inbox.
+enum MailingStatus {
+  SENT
+  FAILED
+}
+
+model BusinessMailing {
+  id        String        @id @default(uuid())
+  eventCode String
+  milestone String?
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  toEmail   String
+  subject   String
+  bodyText  String
+  dedupeKey String        @unique
+  status    MailingStatus @default(SENT)
+  accepted  Boolean       @default(false) // SMTP accept != đã đến inbox (NOTE.md §6.5)
+  attempts  Int           @default(0)
+  lastError String?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@index([eventCode, userId])
+  @@index([status, attempts])
+}
+
+// Tố cáo / phản ánh nội bộ (NOTE.md §6.4): chưa phải kết luận vi phạm.
+// Chỉ khi người có thẩm quyền (CM/VET) xác nhận mới gửi mail VIOLATION_CONFIRMED.
+enum ComplaintStatus {
+  OPEN
+  UNDER_REVIEW
+  VIOLATION_CONFIRMED
+  DISMISSED
+}
+
+model Complaint {
+  id          String          @id @default(uuid())
+  code        String          @unique // CMP-YYYYMMDD-NNN
+  subjectUserId String
+  subject     User            @relation("ComplaintSubject", fields: [subjectUserId], references: [id], onDelete: Cascade)
+  reporterId  String
+  reporter    User            @relation("ComplaintReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reason      String
+  evidenceJson Json?
+  status      ComplaintStatus @default(OPEN)
+  reviewedById String?
+  reviewedAt  DateTime?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([status, createdAt])
 }
 
 model GoogleIdentity {
