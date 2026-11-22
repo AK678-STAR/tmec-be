@@ -44,6 +44,29 @@ describe('ComplaintsService', () => {
       mail as BusinessMailService,
     );
   });
+  it('combines role filters with independent-handler scope and identical count criteria', async () => {
+    await service.list(
+      { page: 1, pageSize: 20, reporterRole: 'HEAD_TRAINER', targetRole: 'GROOM' } as any,
+      actor,
+    );
+    const where = db.complaint.findMany.mock.calls[0][0].where;
+    expect(where.reporter).toEqual({ role: 'HEAD_TRAINER' });
+    expect(where.subject).toEqual({ role: 'GROOM' });
+    expect(where.OR).toEqual([
+      { reporterId: { not: actor.userId }, subjectUserId: { not: actor.userId } },
+    ]);
+    expect(db.complaint.count).toHaveBeenCalledWith({ where });
+  });
+  it('does not let a subject infer the confidential reporter role through filtering', async () => {
+    await expect(
+      service.list({ page: 1, pageSize: 20, reporterRole: 'HEAD_TRAINER' } as any, {
+        ...actor,
+        userId: 'subject',
+        role: 'GROOM',
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(db.complaint.findMany).not.toHaveBeenCalled();
+  });
   it('files with handler and separate reporter receipt, never notifying subject or confirming', async () => {
     await service.create(
       { subjectUserId: 'subject', reason: 'A detailed complaint' },

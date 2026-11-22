@@ -77,6 +77,10 @@ export class ComplaintsService {
 
   async list(query: QueryComplaintsDto, user: CurrentUserPayload) {
     if (![...REPORTERS, Role.CLUB_MANAGER].includes(user.role)) throw new ForbiddenException();
+    if (query.reporterRole && !HANDLERS.includes(user.role))
+      throw new ForbiddenException(
+        'Reporter-role filtering is limited to independent case handlers.',
+      );
     const page = query.page ?? 1;
     const pageSize = Math.min(query.pageSize ?? 20, 100);
     const scopes: Prisma.ComplaintWhereInput[] = [
@@ -86,7 +90,11 @@ export class ComplaintsService {
     if (HANDLERS.includes(user.role))
       scopes.push({ reporterId: { not: user.userId }, subjectUserId: { not: user.userId } });
     const where: Prisma.ComplaintWhereInput = {
-      OR: scopes,
+      OR: query.reporterRole
+        ? [{ reporterId: { not: user.userId }, subjectUserId: { not: user.userId } }]
+        : scopes,
+      ...(query.reporterRole && { reporter: { role: query.reporterRole } }),
+      ...(query.targetRole && { subject: { role: query.targetRole } }),
       ...(query.status && { status: query.status }),
     };
     const [rows, total] = await Promise.all([

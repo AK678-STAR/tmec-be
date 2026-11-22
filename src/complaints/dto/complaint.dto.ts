@@ -15,7 +15,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { ComplaintStatus } from '@prisma/client';
+import { ComplaintStatus, Role } from '@prisma/client';
 
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
 
@@ -68,6 +68,14 @@ export class ConfirmViolationDto extends DismissComplaintDto {
 }
 
 export class QueryComplaintsDto {
+  @IsOptional()
+  @IsEnum(Role)
+  reporterRole?: Role;
+
+  @IsOptional()
+  @IsEnum(Role)
+  targetRole?: Role;
+
   @IsOptional()
   @IsEnum(ComplaintStatus)
   status?: ComplaintStatus;
