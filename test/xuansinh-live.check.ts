@@ -4,6 +4,8 @@ import { IncidentsService } from '../src/incidents/incidents.service';
 import { AuditService } from '../src/audit/audit.service';
 import { CounterService } from '../src/audit/counter.service';
 import { MedicalRecordsService } from '../src/medical/medical-records.service';
+import { StallsService } from '../src/stalls/stalls.service';
+import { rosterDay } from '../src/shift-rosters/groom-zones';
 
 const target = new URL(process.env.DATABASE_URL ?? '');
 assert.equal(target.hostname, '127.0.0.1');
@@ -220,6 +222,107 @@ async function main() {
   );
   console.log(
     'PASS: atomic finalize binds source protection; recovered close preserves other locks; selected merge releases only assessed sources; injected finalize failure rolls back lock and record.',
+  );
+  const manager = await db.user.create({
+    data: {
+      email: `xuansinh-manager-${stamp}@example.test`,
+      fullName: 'QA Manager',
+      role: 'CLUB_MANAGER',
+      status: 'ACTIVE',
+    },
+  });
+  const replacement = await db.user.create({
+    data: {
+      email: `xuansinh-replacement-${stamp}@example.test`,
+      fullName: 'QA replacement',
+      role: 'GROOM',
+      status: 'ACTIVE',
+    },
+  });
+  const zone = await db.stallZone.create({
+    data: { code: `XS-${stamp}`, name: `QA zone ${stamp}` },
+  });
+  const stall = await db.stall.create({
+    data: {
+      code: `XS-${stamp}`,
+      zone: zone.name,
+      zoneId: zone.id,
+      row: 1,
+      col: 1,
+      status: 'OCCUPIED',
+    },
+  });
+  const shift = await db.shiftCatalog.create({
+    data: {
+      code: `XS-${stamp}`,
+      name: `QA full day ${stamp}`,
+      startTime: '00:00',
+      endTime: '00:00',
+      isOvernight: true,
+    },
+  });
+  await db.shiftRoster.create({
+    data: { date: rosterDay(), shiftId: shift.id, zoneId: zone.id, groomUserId: replacement.id },
+  });
+  const allocation = await db.stallAllocation.create({
+    data: { horseId: horse.id, stallId: stall.id, assignedGroomUserId: user.id },
+  });
+  const completed = await db.dailyCareTask.create({
+    data: {
+      horseId: horse.id,
+      stallId: stall.id,
+      stallZoneId: zone.id,
+      shiftId: shift.id,
+      date: rosterDay(),
+      taskType: 'FEEDING',
+      title: 'QA already fed',
+      mealType: 'MORNING',
+      scheduledTime: '06:00',
+      isCompleted: true,
+      completedById: user.id,
+      assignedGroomUserId: user.id,
+    },
+  });
+  const pending = await db.dailyCareTask.create({
+    data: {
+      horseId: horse.id,
+      stallId: stall.id,
+      stallZoneId: zone.id,
+      shiftId: shift.id,
+      date: rosterDay(),
+      taskType: 'FEEDING',
+      title: 'QA pending meal',
+      mealType: 'NOON',
+      scheduledTime: '11:30',
+      assignedGroomUserId: user.id,
+    },
+  });
+  const stables = new StallsService(db as any, audit, undefined, notifications);
+  const managerActor = {
+    userId: manager.id,
+    fullName: manager.fullName,
+    email: manager.email,
+    role: manager.role,
+  };
+  const candidates = await stables.groomCandidates(allocation.id, managerActor);
+  assert.ok(candidates.some((row) => row.id === replacement.id));
+  await assert.rejects(stables.assignAllocationGroom(allocation.id, vet.userId, managerActor));
+  await stables.assignAllocationGroom(allocation.id, replacement.id, managerActor);
+  assert.equal(
+    (await db.dailyCareTask.findUniqueOrThrow({ where: { id: pending.id } })).assignedGroomUserId,
+    replacement.id,
+  );
+  assert.equal(
+    (await db.dailyCareTask.findUniqueOrThrow({ where: { id: completed.id } })).completedById,
+    user.id,
+  );
+  await db.stallAllocation.update({
+    where: { id: allocation.id },
+    data: { isActive: false, endDate: new Date() },
+  });
+  await assert.rejects(stables.assignAllocationGroom(allocation.id, replacement.id, managerActor));
+  console.log(
+    'PASS: allocation selects actual on-duty Groom, rejects Vet/stale allocation, reassigns pending work and preserves completed care history.',
   );
   console.log(
     'PASS: real PostgreSQL concurrent reports use distinct codes; severe protection commits; injected failure rolls back incident; concurrent simulator retry creates one incident/lock.',

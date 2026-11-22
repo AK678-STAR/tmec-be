@@ -1,4 +1,5 @@
 import { stallMove } from '../business-mail/templates/health-templates';
+import { onDutyGrooms } from '../shift-rosters/groom-zones';
 import { HttpStatus, Injectable, Optional } from '@nestjs/common';
 import { HorseStatus, Prisma, Role, StallStatus, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -94,6 +95,123 @@ export class StallsService {
     @Optional() private readonly dailyTasks?: DailyTasksService,
     @Optional() private readonly notifications?: NotificationsService,
   ) {}
+
+  private async alertGroomAssignment(allocationId: string) {
+    if (!this.notifications) return false;
+    try {
+      const row = await this.prisma.stallAllocation.findUnique({
+        where: { id: allocationId },
+        include: { horse: true, stall: true },
+      });
+      if (!row || !row.isActive || row.assignedGroomUserId) return true;
+      const managers = await this.prisma.user.findMany({
+        where: { role: Role.CLUB_MANAGER, status: UserStatus.ACTIVE },
+        select: { id: true },
+      });
+      return await this.notifications.notifyUsers(
+        managers.map((user) => user.id),
+        {
+          type: 'STALL_GROOM_ASSIGNMENT_REQUIRED',
+          category: 'SYSTEM',
+          title: 'Cần phân công Groom chăm sóc',
+          message: `Ngựa ${row.horse.name} đã đến ô ${row.stall.code}. Yêu cầu chỉ định Groom đang trực tại khu.`,
+          link: `/stalls?assignGroom=${row.id}`,
+          params: { allocationId: row.id, horseId: row.horseId, zoneId: row.stall.zoneId ?? '' },
+          dedupeKey: `allocation-groom:${row.id}`,
+        },
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  async groomCandidates(allocationId: string, user: CurrentUserPayload) {
+    if (user.role !== Role.CLUB_MANAGER)
+      throw apiError(HttpStatus.FORBIDDEN, 'MANAGER_REQUIRED', 'Only Manager can assign care.');
+    const allocation = await this.prisma.stallAllocation.findUnique({
+      where: { id: allocationId },
+      include: { stall: true },
+    });
+    if (!allocation?.isActive || !allocation.stall.zoneId)
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'ALLOCATION_NOT_ACTIVE',
+        'Allocation is no longer active.',
+      );
+    const rows = await onDutyGrooms(this.prisma, allocation.stall.zoneId);
+    return [...new Map(rows.map((row) => [row.groom.id, row.groom])).values()];
+  }
+
+  async assignAllocationGroom(allocationId: string, groomUserId: string, user: CurrentUserPayload) {
+    if (user.role !== Role.CLUB_MANAGER)
+      throw apiError(HttpStatus.FORBIDDEN, 'MANAGER_REQUIRED', 'Only Manager can assign care.');
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "StallAllocation" WHERE "id" = ${allocationId} FOR UPDATE`;
+      const row = await tx.stallAllocation.findUnique({
+        where: { id: allocationId },
+        include: { stall: true },
+      });
+      if (!row?.isActive || !row.stall.zoneId)
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'ALLOCATION_NOT_ACTIVE',
+          'Allocation is no longer active.',
+        );
+      await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${row.horseId} FOR UPDATE`;
+      const candidates = await onDutyGrooms(tx, row.stall.zoneId);
+      if (!candidates.some((candidate) => candidate.groomUserId === groomUserId))
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'GROOM_NOT_ON_DUTY',
+          'Selected Groom is not currently on duty in this zone.',
+        );
+      const updated = await tx.stallAllocation.update({
+        where: { id: allocationId },
+        data: { assignedGroomUserId: groomUserId },
+      });
+      const candidate = candidates.find((candidate) => candidate.groomUserId === groomUserId)!;
+      await tx.dailyCareTask.updateMany({
+        where: {
+          horseId: row.horseId,
+          stallZoneId: row.stall.zoneId,
+          date: rosterDay(),
+          shiftId: candidate.shiftId,
+          isCompleted: false,
+          OR: [{ taskCode: null }, { NOT: { taskCode: { startsWith: STALL_HANDOVER_PREFIX } } }],
+        },
+        data: { assignedGroomUserId: groomUserId },
+      });
+      await this.auditService.record(
+        this.actor(user),
+        'ASSIGN_ALLOCATION_GROOM',
+        `Allocation ${allocationId} assigned to ${groomUserId}`,
+        allocationId,
+        { entityName: 'StallAllocation' },
+        tx,
+      );
+      return updated;
+    });
+    let careSyncFailed = false;
+    try {
+      await this.dailyTasks?.syncMedicalTasksForHorse(result.horseId);
+    } catch {
+      careSyncFailed = true;
+    }
+    let sent: boolean | undefined;
+    try {
+      sent = await this.notifications?.notifyUsers([groomUserId], {
+        type: 'GROOM_CARE_ASSIGNED',
+        category: 'SYSTEM',
+        title: 'Đã phân công ngựa chăm sóc',
+        message: 'Mở checklist ca đang trực để xem công việc.',
+        link: '/tasks',
+        dedupeKey: `allocation-groom-assigned:${result.id}:${result.updatedAt.toISOString()}`,
+      });
+    } catch {
+      sent = false;
+    }
+    return { ...result, careSyncFailed, notificationFailed: sent === false };
+  }
 
   private actor(user: CurrentUserPayload) {
     return { id: user.userId, name: user.fullName || user.email };
@@ -447,10 +565,17 @@ export class StallsService {
         'Nhân viên chăm sóc phải được phân ca hôm nay tại khu chuồng được chọn.',
       );
     }
+    if (!(await onDutyGrooms(tx, zoneId)).some((row) => row.groomUserId === groomId)) {
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'GROOM_NOT_ON_DUTY',
+        'Nhân viên được chọn chưa bắt đầu ca hoặc đã kết thúc ca trực tại khu.',
+      );
+    }
   }
 
   async assignHorse(stallId: string, dto: AssignHorseDto, user: CurrentUserPayload) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       // Khóa dòng ô và dòng ngựa: 2 người gán cùng lúc thì người sau chờ và thấy ô đã có ngựa.
       await tx.$queryRaw`SELECT "id" FROM "Stall" WHERE "id" = ${stallId} FOR UPDATE`;
       await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${dto.horseId} FOR UPDATE`;
@@ -505,6 +630,8 @@ export class StallsService {
       );
       return { ...allocation, stallCode: stall.code, horseName: horse.name };
     });
+    const notified = await this.alertGroomAssignment(result.id);
+    return { ...result, assignmentNotificationFailed: !notified };
   }
 
   async transferHorse(allocationId: string, dto: TransferHorseDto, user: CurrentUserPayload) {
@@ -685,6 +812,7 @@ export class StallsService {
     });
     return {
       ...result,
+      assignmentNotificationFailed: !(await this.alertGroomAssignment(result.id)),
       handoverTaskId: handover.id,
       handoverUnassigned: !handover.assignedGroomUserId,
       careSyncFailed,
