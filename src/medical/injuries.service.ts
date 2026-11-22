@@ -196,9 +196,9 @@ export class InjuriesService {
         coordinateX: dto.coordinateX,
         coordinateY: dto.coordinateY,
         viewSide: dto.viewSide || 'LEFT',
-        layer: dto.layer === 'SKELETON' ? 'BONE' : dto.layer || 'MUSCLE',
+        layer: dto.layer || 'MUSCLE',
         anatomicalZone: dto.anatomicalZone,
-        bodySide: dto.bodySide || BodySide.LEFT,
+        bodySide: dto.viewSide === 'RIGHT' ? BodySide.RIGHT : BodySide.LEFT,
         injuryType: dto.injuryType,
         severity: dto.severity || SeverityLevel.MODERATE,
         stage: initialStage,
@@ -290,10 +290,12 @@ export class InjuriesService {
     const dataToUpdate: any = {};
     if (dto.coordinateX !== undefined) dataToUpdate.coordinateX = dto.coordinateX;
     if (dto.coordinateY !== undefined) dataToUpdate.coordinateY = dto.coordinateY;
-    if (dto.viewSide) dataToUpdate.viewSide = dto.viewSide;
+    if (dto.viewSide) {
+      dataToUpdate.viewSide = dto.viewSide;
+      dataToUpdate.bodySide = dto.viewSide === 'RIGHT' ? BodySide.RIGHT : BodySide.LEFT;
+    }
     if (dto.layer) dataToUpdate.layer = dto.layer;
     if (dto.anatomicalZone) dataToUpdate.anatomicalZone = dto.anatomicalZone;
-    if (dto.bodySide) dataToUpdate.bodySide = dto.bodySide;
     if (dto.injuryType) dataToUpdate.injuryType = dto.injuryType;
     if (dto.severity) dataToUpdate.severity = dto.severity;
     if (dto.stage) {

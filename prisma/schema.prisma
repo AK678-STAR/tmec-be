@@ -731,7 +731,7 @@ model InjuryLog {
   coordinateX     Float // Normalized 0.0 - 1.0 (Lateral Skeleton Map)
   coordinateY     Float // Normalized 0.0 - 1.0 (Lateral Skeleton Map)
   viewSide        String         @default("LEFT") // LEFT | RIGHT
-  layer           String         @default("MUSCLE") // MUSCLE | BONE
+  layer           String         @default("MUSCLE") // MUSCLE | SKELETON
   anatomicalZone  String
   bodySide        BodySide       @default(LEFT)
   injuryType      String

@@ -50,10 +50,6 @@ export class AdjustStockDto {
   @IsOptional()
   @IsString()
   reason?: string;
-
-  @IsOptional()
-  @IsString()
-  notes?: string;
 }
 
 export class CreateRestockRequestDto {

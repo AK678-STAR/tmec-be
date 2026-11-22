@@ -206,8 +206,8 @@ export class DailyTasksService {
                 const start = phase.startDate ? String(phase.startDate).slice(0, 10) : '';
                 const end = phase.endDate ? String(phase.endDate).slice(0, 10) : '';
                 if ((!start || dateStr >= start) && (!end || dateStr <= end)) {
-                  if (phase.allowedActivity || phase.allowedActivityLevel) {
-                    allowedActivityLevel = phase.allowedActivity || phase.allowedActivityLevel;
+                  if (phase.allowedActivity) {
+                    allowedActivityLevel = phase.allowedActivity;
                   }
                   const instructions = Array.isArray(phase.careInstructions)
                     ? phase.careInstructions
@@ -602,9 +602,8 @@ export class DailyTasksService {
       where.isCompleted = query.isCompleted;
     }
 
-    // Nếu người dùng bật cờ "Chỉ việc của tôi" hoặc là Groom xem mặc định (khi cả onlyMine và onlyMyTasks chưa được truyền)
-    const isOnlyMine =
-      query.onlyMine === true || query.onlyMyTasks === true || currentUser.role === Role.GROOM;
+    // Nếu người dùng bật cờ "Chỉ việc của tôi" hoặc là Groom xem mặc định (khi onlyMine chưa được truyền)
+    const isOnlyMine = query.onlyMine === true || currentUser.role === Role.GROOM;
 
     if (isOnlyMine && currentUser.userId) {
       const myRosters = await this.prisma.shiftRoster.findMany({

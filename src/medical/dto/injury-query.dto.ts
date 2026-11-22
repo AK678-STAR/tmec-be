@@ -19,7 +19,7 @@ export class InjuryQueryDto {
   @IsString()
   viewSide?: string;
 
-  @ApiPropertyOptional({ description: 'Lọc theo lớp hiển thị: MUSCLE | BONE' })
+  @ApiPropertyOptional({ description: 'Lọc theo lớp hiển thị: MUSCLE | SKELETON' })
   @IsOptional()
   @IsString()
   layer?: string;

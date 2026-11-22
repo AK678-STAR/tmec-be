@@ -706,7 +706,7 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
               : new Prisma.Decimal(10),
           lastInventoryDate: now,
           lastAdjustedById: currentUser.userId,
-          notes: dto.notes || dto.reason,
+          notes: dto.reason || 'Kiểm kê định kỳ',
         },
         update: {
           quantity: new Prisma.Decimal(dto.actualQuantity),
@@ -715,7 +715,7 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
             : {}),
           lastInventoryDate: now,
           lastAdjustedById: currentUser.userId,
-          notes: dto.notes || dto.reason,
+          notes: dto.reason || 'Kiểm kê định kỳ',
         },
         include: {
           zone: { select: { id: true, code: true, name: true } },

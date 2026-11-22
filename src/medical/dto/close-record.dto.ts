@@ -1,4 +1,4 @@
-import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
 export class CloseMedicalRecordDto {
   @IsString()
@@ -13,15 +13,9 @@ export class CloseMedicalRecordDto {
 }
 
 export class ReopenMedicalRecordDto {
-  @IsOptional()
+  @IsNotEmpty({ message: 'Reason for reopening is required' })
   @IsString()
   @MinLength(10, { message: 'Reason for reopening must be at least 10 characters' })
   @MaxLength(500, { message: 'Reason for reopening cannot exceed 500 characters' })
-  reason?: string;
-
-  @IsOptional()
-  @IsString()
-  @MinLength(10, { message: 'Reason for reopening must be at least 10 characters' })
-  @MaxLength(500, { message: 'Reason for reopening cannot exceed 500 characters' })
-  reopenReason?: string;
+  reason: string;
 }

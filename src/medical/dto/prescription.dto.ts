@@ -1,4 +1,4 @@
-import { IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 
 export class CreatePrescriptionDto {
   @IsString()
@@ -6,14 +6,6 @@ export class CreatePrescriptionDto {
 
   @IsOptional()
   dosage?: any;
-
-  @IsOptional()
-  @IsString()
-  administrationRoute?: string;
-
-  @IsOptional()
-  @IsString()
-  frequency?: string;
 
   @IsString()
   startDate: string;
@@ -70,11 +62,13 @@ export class UpdatePrescriptionDto {
 
   @IsOptional()
   @IsString()
-  administrationRoute?: string;
+  route?: string;
 
   @IsOptional()
-  @IsString()
-  frequency?: string;
+  @IsNumber()
+  @Min(1)
+  @Max(3)
+  frequencyPerDay?: number;
 
   @IsOptional()
   @IsString()
@@ -95,17 +89,9 @@ export class UpdatePrescriptionDto {
 }
 
 export class StopPrescriptionDto {
-  @IsOptional()
+  @IsNotEmpty({ message: 'Reason for stopping prescription is required' })
   @IsString()
-  reason?: string;
-
-  @IsOptional()
-  @IsString()
-  stoppedReason?: string;
-
-  @IsOptional()
-  @IsString()
-  stopNotes?: string;
+  reason: string;
 
   @IsOptional()
   @IsString()

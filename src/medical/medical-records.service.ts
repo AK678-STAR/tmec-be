@@ -907,7 +907,7 @@ export class MedicalRecordsService {
   async reopenMedicalRecord(id: string, actor: CurrentUserPayload, dto: ReopenMedicalRecordDto) {
     this.access.assertVet(actor, 'reopen medical records');
 
-    const effectiveReason = (dto.reason || dto.reopenReason || '').trim();
+    const effectiveReason = (dto.reason || '').trim();
     if (!effectiveReason || effectiveReason.length < 10) {
       throw apiError(
         HttpStatus.BAD_REQUEST,
@@ -1025,7 +1025,7 @@ export class MedicalRecordsService {
       }
     }
 
-    const allowedActivity = dto.allowedActivity || dto.allowedActivityLevel || '';
+    const allowedActivity = dto.allowedActivity || '';
 
     const phase = {
       id: `phase-${Date.now()}`,
@@ -1104,8 +1104,7 @@ export class MedicalRecordsService {
     const updatedPhase = {
       ...phases[index],
       ...dto,
-      allowedActivity:
-        dto.allowedActivity || dto.allowedActivityLevel || phases[index].allowedActivity,
+      allowedActivity: dto.allowedActivity || phases[index].allowedActivity || '',
       updatedAt: new Date().toISOString(),
     };
 
@@ -1221,8 +1220,9 @@ export class MedicalRecordsService {
     const { supply, unit } = await this.resolveRxSupply(dto.supplyId);
     const dose = this.assertDose(dto.dosage ?? 1);
 
-    const adminRoute = dto.administrationRoute || dto.route || '';
-    const freq = dto.frequency || (dto.frequencyPerDay ? `${dto.frequencyPerDay} lần/ngày` : '');
+    const route = dto.route || '';
+    const frequencyPerDay = dto.frequencyPerDay || 1;
+    const freq = `${frequencyPerDay} lần/ngày`;
 
     let effectiveEndDate = dto.endDate;
     if (!effectiveEndDate) {
@@ -1238,9 +1238,8 @@ export class MedicalRecordsService {
       medicationName: supply.name,
       dosage: dosageStr,
       unit,
-      route: adminRoute,
-      administrationRoute: adminRoute,
-      frequencyPerDay: dto.frequencyPerDay || dto.frequency,
+      route,
+      frequencyPerDay,
       frequency: freq,
       startDate: dto.startDate,
       endDate: effectiveEndDate,
@@ -1425,8 +1424,8 @@ export class MedicalRecordsService {
     }
 
     rx.status = 'STOPPED';
-    rx.stoppedReason = dto.stoppedReason || dto.reason || 'Bác sĩ yêu cầu dừng thuốc';
-    rx.stopNotes = dto.stopNotes || '';
+    rx.stoppedReason = dto.reason || 'Bác sĩ yêu cầu dừng thuốc';
+    rx.stopNotes = '';
     rx.stoppedDate = dto.stoppedDate || new Date().toISOString().split('T')[0];
     rx.stoppedAt = new Date().toISOString();
 
@@ -1466,7 +1465,7 @@ export class MedicalRecordsService {
       );
     }
 
-    const rawVisitDate = dto.followUpDate || dto.visitDate;
+    const rawVisitDate = dto.followUpDate;
     const visitDate = rawVisitDate ? new Date(rawVisitDate) : new Date();
 
     let followUps: any[] = [];
@@ -1482,9 +1481,9 @@ export class MedicalRecordsService {
     const followUp = {
       id: `fu-${Date.now()}`,
       followUpDate: visitDate.toISOString().split('T')[0],
-      temperature: dto.temperature ?? (dto.vitals?.temperature || null),
-      restingHeartRate: dto.restingHeartRate ?? (dto.vitals?.restingHeartRate || null),
-      respiratoryRate: dto.respiratoryRate ?? (dto.vitals?.respiratoryRate || null),
+      temperature: dto.temperature ?? null,
+      restingHeartRate: dto.restingHeartRate ?? null,
+      respiratoryRate: dto.respiratoryRate ?? null,
       progressNotes: dto.progressNotes,
       adjustments: dto.adjustments || null,
       vetName: actor.fullName || actor.email || 'Veterinarian',

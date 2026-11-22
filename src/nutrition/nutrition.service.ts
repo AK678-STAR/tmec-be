@@ -218,7 +218,7 @@ export class NutritionService {
 
     return {
       items: items.map((item) => {
-        const horseWeight =
+        const horseWeightSnapshot =
           item.horseWeightSnapshot ??
           item.horse?.weightKg ??
           item.horse?.medicalRecords[0]?.weightKg ??
@@ -227,7 +227,7 @@ export class NutritionService {
         const currentStallCode = item.horse?.stallAllocations[0]?.stall?.code ?? null;
         return {
           ...item,
-          horseWeight,
+          horseWeightSnapshot,
           currentZone,
           currentStallCode,
           isWithinSafeRange: item.targetWeightRatioPct >= 1.5 && item.targetWeightRatioPct <= 3.0,
@@ -288,7 +288,7 @@ export class NutritionService {
       }
     }
 
-    const horseWeight =
+    const horseWeightSnapshot =
       item.horseWeightSnapshot ??
       item.horse?.weightKg ??
       item.horse?.medicalRecords[0]?.weightKg ??
@@ -296,7 +296,7 @@ export class NutritionService {
 
     return {
       ...item,
-      horseWeight,
+      horseWeightSnapshot,
       isWithinSafeRange: item.targetWeightRatioPct >= 1.5 && item.targetWeightRatioPct <= 3.0,
     };
   }

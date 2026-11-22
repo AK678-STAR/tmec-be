@@ -31,11 +31,6 @@ export class CreateMedicalLockDto {
   })
   @IsOptional()
   @IsEnum(HorseStatus)
-  medicalStatus?: HorseStatus;
-
-  @ApiPropertyOptional({ enum: HorseStatus, description: 'Alias cho medicalStatus' })
-  @IsOptional()
-  @IsEnum(HorseStatus)
   appliedMedicalStatus?: HorseStatus;
 
   @ApiProperty({ description: 'Lý do đặt Khóa huấn luyện (10-500 ký tự)' })
@@ -50,13 +45,6 @@ export class CreateMedicalLockDto {
   @IsOptional()
   @IsDateString({}, { message: 'The review date is not valid' })
   recheckDate?: string;
-
-  @ApiPropertyOptional({
-    description: 'Alias cho recheckDate',
-  })
-  @IsOptional()
-  @IsDateString({}, { message: 'The review date is not valid' })
-  reviewDate?: string;
 
   @ApiPropertyOptional({ description: 'Số ngày nghỉ dự kiến (1 - 180 ngày)', default: 7 })
   @IsOptional()
@@ -105,11 +93,6 @@ export class ExtendMedicalLockDto {
   @IsDateString({}, { message: 'The new review date is not valid' })
   recheckDate?: string;
 
-  @ApiPropertyOptional({ description: 'Alias cho recheckDate' })
-  @IsOptional()
-  @IsDateString({}, { message: 'The new review date is not valid' })
-  newReviewDate?: string;
-
   @ApiPropertyOptional({ description: 'Số ngày gia hạn thêm (1 - 180 ngày)' })
   @IsOptional()
   @IsInt()
@@ -117,15 +100,10 @@ export class ExtendMedicalLockDto {
   @Max(180)
   additionalDays?: number;
 
-  @ApiProperty({ description: 'Lý do gia hạn (10-500 ký tự)' })
-  @IsNotEmpty({ message: 'Enter the reason for the extension' })
-  @IsString()
-  @Length(10, 500, { message: 'The reason for the extension must be 10 to 500 characters' })
-  recheckNotes?: string;
-
-  @ApiPropertyOptional({ description: 'Alias cho recheckNotes' })
+  @ApiPropertyOptional({ description: 'Lý do gia hạn (10-500 ký tự)' })
   @IsOptional()
   @IsString()
+  @Length(10, 500, { message: 'The reason for the extension must be 10 to 500 characters' })
   extendReason?: string;
 }
 
@@ -134,11 +112,6 @@ export class MedicalLockQueryDto {
   @IsOptional()
   @IsUUID()
   horseId?: string;
-
-  @ApiPropertyOptional({ description: 'Trạng thái khóa (true = đang khóa, false = đã gỡ)' })
-  @IsOptional()
-  @IsString()
-  isLocked?: string;
 
   @ApiPropertyOptional({ description: 'Tab chế độ: ACTIVE (Đang khóa) | HISTORY (Lịch sử)' })
   @IsOptional()

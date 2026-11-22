@@ -3,6 +3,7 @@ import { apiError } from '../common/exceptions/api-error';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { Role, HorseStatus, Prisma, PreventiveStatus } from '@prisma/client';
 import { HealthBoardQueryDto } from './dto/health-board-query.dto';
+import { ObservationNotesQueryDto, UrgencyFilter } from './dto/observation-notes-query.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { groomZoneIds, horsesInZones } from '../shift-rosters/groom-zones';
 import { MedicalAccessService } from './medical-access.service';
@@ -250,21 +251,33 @@ export class HealthOverviewService {
     };
   }
 
-  async getHorseObservations(horseId: string, currentUser: CurrentUserPayload, _urgency?: string) {
+  async getHorseObservations(
+    horseId: string,
+    currentUser: CurrentUserPayload,
+    query?: ObservationNotesQueryDto,
+  ) {
     await this.access.checkHorseAccess(horseId, currentUser);
 
+    const where: any = {
+      horseId,
+      healthObservations: { not: null },
+    };
+
+    if (query?.startDate || query?.endDate) {
+      where.shiftDate = {};
+      if (query.startDate) where.shiftDate.gte = new Date(query.startDate);
+      if (query.endDate) where.shiftDate.lte = new Date(query.endDate);
+    }
+
     const logs = await this.prisma.dailyGroomingLog.findMany({
-      where: {
-        horseId,
-        healthObservations: { not: null },
-      },
+      where,
       orderBy: { shiftDate: 'desc' },
       include: {
         groom: { select: { id: true, fullName: true } },
       },
     });
 
-    const mapped = logs.map((g) => ({
+    let mapped = logs.map((g) => ({
       id: g.id,
       horseId: g.horseId,
       shift: g.shiftType,
@@ -274,6 +287,10 @@ export class HealthOverviewService {
       urgency: 'NORMAL',
       content: g.healthObservations || '',
     }));
+
+    if (query?.urgency && query.urgency !== UrgencyFilter.ALL) {
+      mapped = mapped.filter((o) => o.urgency === query.urgency);
+    }
 
     return { observations: mapped };
   }

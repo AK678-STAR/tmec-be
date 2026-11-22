@@ -45,12 +45,7 @@ export class IncidentsService {
     const allocation = horse.stallAllocations[0];
     const stallZoneId = dto.stallZoneId || allocation?.stall?.zoneId || undefined;
 
-    const symptomsList =
-      dto.symptoms && dto.symptoms.length > 0
-        ? dto.symptoms
-        : dto.symptomsJson && dto.symptomsJson.length > 0
-          ? dto.symptomsJson
-          : ['OTHER'];
+    const symptomsList = dto.symptoms && dto.symptoms.length > 0 ? dto.symptoms : ['OTHER'];
 
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const countToday = await this.prisma.incidentReport.count({

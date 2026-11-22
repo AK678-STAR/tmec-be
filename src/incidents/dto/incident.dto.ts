@@ -54,15 +54,6 @@ export class CreateIncidentDto {
   @IsString({ each: true })
   symptoms?: string[];
 
-  @ApiPropertyOptional({
-    description: 'Danh sách các triệu chứng quan sát được (alias for symptoms)',
-    example: ['LOSS_OF_APPETITE', 'FEVER'],
-  })
-  @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
-  symptomsJson?: string[];
-
   @ApiProperty({
     description: 'Mô tả chi tiết quan sát hiện trường (diễn biến, biểu hiện, thân nhiệt...)',
   })

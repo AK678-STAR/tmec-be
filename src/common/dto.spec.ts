@@ -55,7 +55,7 @@ describe('Stable and Inventory DTOs', () => {
     const q = new QueryDailyTasksDto();
     q.date = '2026-10-18';
     q.zoneId = 'zone-1';
-    q.onlyMyTasks = true;
+    q.onlyMine = true;
     expect(q.date).toBe('2026-10-18');
 
     const g = new GenerateDailyTasksDto();
@@ -73,7 +73,6 @@ describe('Stable and Inventory DTOs', () => {
     create.horseId = 'h1';
     create.severity = SeverityLevel.CRITICAL;
     create.symptoms = ['FEVER'];
-    create.symptomsJson = ['FEVER'];
     create.description = 'Colic signs';
     expect(create.severity).toBe(SeverityLevel.CRITICAL);
 
