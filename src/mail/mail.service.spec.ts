@@ -70,6 +70,45 @@ describe('MailService', () => {
     expect(service).toBeDefined();
   });
 
+  describe('business send over unauthenticated SMTP (Mailpit)', () => {
+    const mailpitConfig = {
+      provide: ConfigService,
+      useValue: {
+        get: (key: string) => {
+          if (key === 'EMAIL_PROVIDER') return 'smtp';
+          if (key === 'MAIL_HOST') return '127.0.0.1';
+          if (key === 'MAIL_PORT') return '1025';
+          if (key === 'EMAIL_FROM') return 'EquiFlow <noreply@tmec.site>';
+          return null;
+        },
+      },
+    };
+
+    it('uses a real SMTP transporter (not mock) when SMTP_USER is empty but MAIL_HOST is set', async () => {
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [MailService, mailpitConfig],
+      }).compile();
+      const service = module.get<MailService>(MailService);
+      const transporter = (service as unknown as { transporter: { sendMail: () => unknown } }).transporter;
+      expect(transporter).toBeDefined();
+      const sendMail = jest.fn().mockResolvedValue({ messageId: 'accept' });
+      transporter.sendMail = sendMail;
+      const accepted = await service.sendBusiness('owner@example.com', 'Nhắc hạn', 'Body');
+      expect(sendMail).toHaveBeenCalledTimes(1);
+      expect(accepted).toBe(true);
+    });
+
+    it('returns false (does not throw) when SMTP rejects', async () => {
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [MailService, mailpitConfig],
+      }).compile();
+      const service = module.get<MailService>(MailService);
+      const transporter = (service as unknown as { transporter: { sendMail: () => unknown } }).transporter;
+      transporter.sendMail = jest.fn().mockRejectedValue(new Error('connection refused'));
+      await expect(service.sendBusiness('owner@example.com', 'Nhắc hạn', 'Body')).resolves.toBe(false);
+    });
+  });
+
   it('should format and send OTP email without error in mock mode', async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
