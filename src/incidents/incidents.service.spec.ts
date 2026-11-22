@@ -135,7 +135,7 @@ describe('IncidentsService', () => {
           horseId: 'horse-2',
           severity: SeverityLevel.MODERATE,
           stallZoneId: 'zone-9',
-          symptomsJson: ['LOSS_OF_APPETITE'],
+          symptoms: ['LOSS_OF_APPETITE'],
           description: 'Ngựa ăn ít hơn bình thường.',
         },
         reporter,

@@ -70,11 +70,11 @@ export class MedicalLocksService {
   async createMedicalLock(actor: CurrentUserPayload, dto: CreateMedicalLockDto) {
     this.access.assertVet(actor, 'place a training lock');
 
-    const appliedStatus = dto.appliedMedicalStatus || dto.medicalStatus || HorseStatus.INJURED;
+    const appliedStatus = dto.appliedMedicalStatus || HorseStatus.INJURED;
 
     const now = new Date();
     let recheckDate: Date;
-    const inputDate = dto.recheckDate || dto.reviewDate;
+    const inputDate = dto.recheckDate;
     if (inputDate) {
       recheckDate = new Date(inputDate);
     } else {
@@ -465,7 +465,7 @@ export class MedicalLocksService {
       const now = new Date();
       let newRecheckDate: Date;
 
-      const targetDate = dto.recheckDate || dto.newReviewDate;
+      const targetDate = dto.recheckDate;
       if (targetDate) {
         newRecheckDate = new Date(targetDate);
       } else if (dto.additionalDays) {
@@ -516,7 +516,7 @@ export class MedicalLocksService {
         }
       }
 
-      const extensionReason = dto.recheckNotes || dto.extendReason || 'Gia hạn ngày xem xét lại';
+      const extensionReason = dto.extendReason || 'Gia hạn ngày xem xét lại';
 
       history.push({
         id: `ext-${Date.now()}`,
@@ -594,7 +594,6 @@ export class MedicalLocksService {
   async getMedicalLocks(currentUser: CurrentUserPayload, query: MedicalLockQueryDto) {
     const {
       horseId,
-      isLocked,
       tab,
       overdueOnly,
       appliedMedicalStatus,
@@ -620,8 +619,6 @@ export class MedicalLocksService {
       where.isLocked = true;
     } else if (tab === 'HISTORY') {
       where.isLocked = false;
-    } else if (isLocked !== undefined) {
-      where.isLocked = isLocked === 'true';
     }
 
     if (appliedMedicalStatus) {

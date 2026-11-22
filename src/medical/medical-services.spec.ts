@@ -943,7 +943,7 @@ describe('Medical services', () => {
 
       const result = await locks.extendMedicalLock('lock-1', mockVetUser, {
         recheckDate: newRecheck.toISOString(),
-        recheckNotes: 'Cần thêm 7 ngày điều trị dứt điểm',
+        extendReason: 'Cần thêm 7 ngày điều trị dứt điểm',
       });
 
       expect(result.recheckDate).toEqual(newRecheck);
@@ -989,7 +989,7 @@ describe('Medical services', () => {
 
     it('should not let a Club Manager extend a training lock (VET_ONLY)', async () => {
       const error = await locks
-        .extendMedicalLock('lock-1', mockManagerUser, { recheckNotes: 'Test', additionalDays: 7 })
+        .extendMedicalLock('lock-1', mockManagerUser, { extendReason: 'Test', additionalDays: 7 })
         .catch((e) => e);
       expect(error).toBeInstanceOf(ForbiddenException);
       expect(error.getResponse()).toEqual(expect.objectContaining({ code: 'VET_ONLY' }));

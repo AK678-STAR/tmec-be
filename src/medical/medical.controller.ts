@@ -43,6 +43,7 @@ import { CreateInjuryDto } from './dto/create-injury.dto';
 import { UpdateInjuryDto } from './dto/update-injury.dto';
 import { UpdateRecoveryProgressDto } from './dto/update-recovery-progress.dto';
 import { InjuryQueryDto } from './dto/injury-query.dto';
+import { ObservationNotesQueryDto } from './dto/observation-notes-query.dto';
 import {
   CreatePreventiveTypeCatalogDto,
   UpdatePreventiveTypeCatalogDto,
@@ -91,9 +92,9 @@ export class MedicalController {
   getHorseObservations(
     @Param('id') id: string,
     @CurrentUser() user: CurrentUserPayload,
-    @Query('urgency') urgency?: string,
+    @Query() query: ObservationNotesQueryDto,
   ) {
-    return this.overview.getHorseObservations(id, user, urgency);
+    return this.overview.getHorseObservations(id, user, query);
   }
 
   // ---------------------------------------------------------------------------

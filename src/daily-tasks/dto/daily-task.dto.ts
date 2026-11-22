@@ -54,14 +54,6 @@ export class QueryDailyTasksDto {
   @IsBoolean()
   onlyMine?: boolean;
 
-  @ApiPropertyOptional({
-    description: 'Chỉ lấy công việc được phân công cho tôi hoặc trong ca của tôi (alias onlyMine)',
-  })
-  @IsOptional()
-  @Transform(({ obj, key }) => parseOptionalBoolean(obj?.[key]))
-  @IsBoolean()
-  onlyMyTasks?: boolean;
-
   @ApiPropertyOptional({ description: 'Trang hiện tại', default: 1 })
   @IsOptional()
   @Type(() => Number)
