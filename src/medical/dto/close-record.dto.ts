@@ -1,6 +1,21 @@
-import { IsNotEmpty, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsIn,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 
 export class CloseMedicalRecordDto {
+  @IsOptional()
+  @IsBoolean()
+  recoveryConfirmed?: boolean;
+
+  @IsOptional()
+  @IsIn(['RESTING', 'ACTIVE'])
+  postTreatmentStatus?: 'RESTING' | 'ACTIVE';
   @IsString()
   @MinLength(10)
   @MaxLength(2000)
@@ -8,6 +23,7 @@ export class CloseMedicalRecordDto {
 
   // Kết quả điều trị (vd: RECOVERED, PARTIAL, UNCHANGED)
   @IsOptional()
+  @IsIn(['RECOVERED', 'PARTIAL', 'UNCHANGED'])
   @IsString()
   treatmentResult?: string;
 }

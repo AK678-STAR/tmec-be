@@ -323,6 +323,12 @@ export class MedicalLocksService {
 
     const { lock, unlocked, stillLocked, activeLockCodes } = await this.prisma.$transaction(
       async (tx) => {
+        const target = await tx.medicalLock.findUnique({
+          where: { id: lockId },
+          select: { horseId: true },
+        });
+        if (target)
+          await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${target.horseId} FOR UPDATE`;
         await tx.$queryRaw`SELECT "id" FROM "MedicalLock" WHERE "id" = ${lockId} FOR UPDATE`;
         const lock = await tx.medicalLock.findUnique({
           where: { id: lockId },
@@ -334,6 +340,24 @@ export class MedicalLocksService {
             'LOCK_NOT_ACTIVE',
             'The Training Lock was not found or is already lifted.',
           );
+        }
+
+        if (lock.source === 'INCIDENT_AUTO') {
+          const record = lock.medicalRecordId
+            ? await tx.medicalRecord.findUnique({ where: { id: lock.medicalRecordId } })
+            : null;
+          if (
+            !record ||
+            record.horseId !== lock.horseId ||
+            record.status !== 'CLOSED' ||
+            record.treatmentResult !== 'RECOVERED'
+          ) {
+            throw apiError(
+              HttpStatus.CONFLICT,
+              'RECOVERED_RECORD_REQUIRED',
+              'Incident protection requires recovery confirmed in its linked medical record.',
+            );
+          }
         }
 
         if (

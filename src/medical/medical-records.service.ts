@@ -1,3 +1,4 @@
+import { MedicalLifecycleService } from './medical-lifecycle.service';
 import { renderMail, linkBase } from '../business-mail/templates/html';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { apiError } from '../common/exceptions/api-error';
@@ -214,65 +215,126 @@ export class MedicalRecordsService {
       labTestsStr = JSON.stringify(dto.labTests);
     }
 
-    const record = await this.prisma.medicalRecord.create({
-      data: {
-        recordNumber,
-        horseId: dto.horseId,
-        veterinarianUserId: actor.userId,
-        examinationDate: examDate,
-        examinationType: dto.examinationType || 'Routine Clinical',
-        discoverySource: dto.discoverySource || null,
-        severity: dto.severity || SeverityLevel.MODERATE,
-        recommendedHorseStatus,
-        examinationReason: dto.reason || null,
-        temperature: dto.vitals?.temperature ? Number(dto.vitals.temperature) : null,
-        restingHeartRate: dto.vitals?.restingHeartRate ? Number(dto.vitals.restingHeartRate) : null,
-        respiratoryRate: dto.vitals?.respiratoryRate ? Number(dto.vitals.respiratoryRate) : null,
-        weightKg: dto.vitals?.weightKg ? Number(dto.vitals.weightKg) : null,
-        clinicalExamination: dto.vitals?.clinicalExamination || null,
-        symptoms: dto.symptoms || dto.reason || 'Khám tổng quát',
-        clinicalDiagnosis: dto.diagnosis || 'Chờ chẩn đoán',
-        treatmentProtocol: dto.reason || dto.vitals?.clinicalExamination || 'Theo dõi và điều trị',
-        labTests: labTestsStr,
-        requiresFollowUp: false,
-        status: isDraft ? 'DRAFT' : 'OPEN',
-      },
-      include: {
-        horse: true,
-        veterinarian: true,
-      },
-    });
+    const record = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${dto.horseId} FOR UPDATE`;
+      const currentHorse = await tx.horse.findUnique({ where: { id: dto.horseId } });
+      if (!currentHorse || currentHorse.deletedAt || currentHorse.status === 'RETIRED')
+        throw apiError(HttpStatus.CONFLICT, 'HORSE_RETIRED', 'Horse is no longer active.');
+      const open = await tx.medicalRecord.findFirst({
+        where: { horseId: dto.horseId, status: 'OPEN' },
+      });
+      if (!isDraft && open)
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'HORSE_HAS_OPEN_RECORD',
+          'Horse already has an open record.',
+        );
+      const record = await tx.medicalRecord.create({
+        data: {
+          recordNumber,
+          proposeMedicalLock:
+            !!dto.proposeMedicalLock || ['SEVERE', 'CRITICAL'].includes(dto.severity ?? ''),
+          lockExpectedRestDays: dto.lockExpectedRestDays ?? 7,
+          lockUnlockConditions: dto.lockUnlockConditions,
+          horseId: dto.horseId,
+          veterinarianUserId: actor.userId,
+          examinationDate: examDate,
+          examinationType: dto.examinationType || 'Routine Clinical',
+          discoverySource: dto.discoverySource || null,
+          severity: dto.severity || SeverityLevel.MODERATE,
+          recommendedHorseStatus,
+          examinationReason: dto.reason || null,
+          temperature: dto.vitals?.temperature ? Number(dto.vitals.temperature) : null,
+          restingHeartRate: dto.vitals?.restingHeartRate
+            ? Number(dto.vitals.restingHeartRate)
+            : null,
+          respiratoryRate: dto.vitals?.respiratoryRate ? Number(dto.vitals.respiratoryRate) : null,
+          weightKg: dto.vitals?.weightKg ? Number(dto.vitals.weightKg) : null,
+          clinicalExamination: dto.vitals?.clinicalExamination || null,
+          symptoms: dto.symptoms || dto.reason || 'Khám tổng quát',
+          clinicalDiagnosis: dto.diagnosis || 'Chờ chẩn đoán',
+          treatmentProtocol:
+            dto.reason || dto.vitals?.clinicalExamination || 'Theo dõi và điều trị',
+          labTests: labTestsStr,
+          requiresFollowUp: false,
+          status: isDraft ? 'DRAFT' : 'OPEN',
+        },
+        include: {
+          horse: true,
+          veterinarian: true,
+        },
+      });
 
-    if (!isDraft && recommendedHorseStatus) {
-      if (horse.status !== recommendedHorseStatus) {
-        await this.prisma.horse.update({
-          where: { id: dto.horseId },
-          data: { status: recommendedHorseStatus },
+      if (!isDraft && recommendedHorseStatus) {
+        if (horse.status !== recommendedHorseStatus) {
+          await tx.horse.update({
+            where: { id: dto.horseId },
+            data: { status: recommendedHorseStatus },
+          });
+
+          await this.audit.record(
+            { id: actor.userId, name: actor.fullName },
+            'HORSE_STATUS_CHANGED',
+            `Changed status of horse ${horse.name} from ${horse.status} to ${recommendedHorseStatus}. Reason: Đề xuất từ bệnh án #${recordNumber}`,
+            horse.id,
+            { entityName: 'Horse' },
+            tx,
+          );
+        }
+      }
+
+      await this.audit.record(
+        { id: actor.userId, name: actor.fullName },
+        isDraft ? 'CREATE_MEDICAL_RECORD_DRAFT' : 'CREATE_MEDICAL_RECORD',
+        `Medical record created for horse ${dto.horseId}`,
+        record.id,
+        { entityName: 'MedicalRecord' },
+        tx,
+      );
+
+      if (dto.incidentId) {
+        const sourceIncident = await tx.incidentReport.findUnique({
+          where: { id: dto.incidentId },
         });
+        if (
+          !sourceIncident ||
+          sourceIncident.horseId !== dto.horseId ||
+          !['REPORTED', 'UNDER_REVIEW'].includes(sourceIncident.status)
+        )
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'INCIDENT_STATE_CONFLICT',
+            'Incident is no longer available.',
+          );
+        await tx.incidentReport.update({
+          where: { id: dto.incidentId },
+          data: { medicalRecordId: record.id, status: 'UNDER_REVIEW' },
+        });
+      }
 
-        await this.audit.record(
-          { id: actor.userId, name: actor.fullName },
-          'HORSE_STATUS_CHANGED',
-          `Changed status of horse ${horse.name} from ${horse.status} to ${recommendedHorseStatus}. Reason: Đề xuất từ bệnh án #${recordNumber}`,
-          horse.id,
+      if (dto.incidentId)
+        await tx.medicalLock.updateMany({
+          where: { sourceIncidentId: dto.incidentId, isLocked: true },
+          data: { medicalRecordId: record.id },
+        });
+      if (
+        !isDraft &&
+        (['SEVERE', 'CRITICAL'].includes(dto.severity ?? '') || dto.proposeMedicalLock)
+      ) {
+        await new MedicalLifecycleService(this.audit).placeVeterinaryLock(
+          tx,
+          {
+            horseId: dto.horseId,
+            medicalRecordId: record.id,
+            appliedMedicalStatus: recommendedHorseStatus ?? HorseStatus.INJURED,
+            lockReason: `Bảo vệ từ bệnh án ${recordNumber}`,
+            expectedRestDays: 7,
+          },
+          actor,
         );
       }
-    }
-
-    await this.audit.record(
-      { id: actor.userId, name: actor.fullName },
-      isDraft ? 'CREATE_MEDICAL_RECORD_DRAFT' : 'CREATE_MEDICAL_RECORD',
-      `Medical record created for horse ${dto.horseId}`,
-      record.id,
-      { entityName: 'MedicalRecord' },
-    );
-
-    if (dto.incidentId) {
-      await this.prisma.incidentReport.update({
-        where: { id: dto.incidentId },
-        data: { medicalRecordId: record.id },
-      });
-    }
+      return record;
+    });
 
     const careSyncFailed = isDraft ? false : await this.syncHorseMedicalTasks(dto.horseId);
     const notificationFailed =
@@ -573,6 +635,16 @@ export class MedicalRecordsService {
     if (dto.examinationType !== undefined) dataToUpdate.examinationType = dto.examinationType;
     if (dto.discoverySource !== undefined) dataToUpdate.discoverySource = dto.discoverySource;
     if (dto.severity !== undefined) dataToUpdate.severity = dto.severity;
+    if (record.status === 'DRAFT') {
+      if (dto.proposeMedicalLock !== undefined)
+        dataToUpdate.proposeMedicalLock = dto.proposeMedicalLock;
+      if (dto.lockExpectedRestDays !== undefined)
+        dataToUpdate.lockExpectedRestDays = dto.lockExpectedRestDays;
+      if (dto.lockUnlockConditions !== undefined)
+        dataToUpdate.lockUnlockConditions = dto.lockUnlockConditions;
+      if (['SEVERE', 'CRITICAL'].includes(dto.severity ?? ''))
+        dataToUpdate.proposeMedicalLock = true;
+    }
     if (dto.recommendedHorseStatus !== undefined) {
       dataToUpdate.recommendedHorseStatus = this.toHorseStatus(dto.recommendedHorseStatus);
     }
@@ -611,6 +683,10 @@ export class MedicalRecordsService {
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${record.horseId} FOR UPDATE`;
+      const currentRecord = await tx.medicalRecord.findUnique({ where: { id } });
+      if (!currentRecord || currentRecord.status === 'CLOSED')
+        throw apiError(HttpStatus.CONFLICT, 'RECORD_CLOSED', 'Record was closed while editing.');
       let horseUpdateNeeded = false;
       let targetHorse: any = null;
 
@@ -658,6 +734,22 @@ export class MedicalRecordsService {
         });
       }
 
+      if (record.status === 'OPEN' && ['SEVERE', 'CRITICAL'].includes(dto.severity ?? '')) {
+        await new MedicalLifecycleService(this.audit).placeVeterinaryLock(
+          tx,
+          {
+            horseId: record.horseId,
+            medicalRecordId: id,
+            appliedMedicalStatus:
+              dataToUpdate.recommendedHorseStatus ??
+              record.recommendedHorseStatus ??
+              HorseStatus.INJURED,
+            lockReason: `Bảo vệ sau cập nhật bệnh án ${record.recordNumber ?? id}`,
+            expectedRestDays: dto.lockExpectedRestDays ?? record.lockExpectedRestDays ?? 7,
+          },
+          actor,
+        );
+      }
       return { updatedRecord, horseUpdateNeeded, targetHorse };
     });
 
@@ -722,202 +814,195 @@ export class MedicalRecordsService {
 
   async finalizeMedicalRecord(recordId: string, actor: CurrentUserPayload, dto: FinalizeRecordDto) {
     this.access.assertVet(actor, 'finalize medical records');
-
-    const record = await this.prisma.medicalRecord.findUnique({
-      where: { id: recordId },
-      include: { horse: true },
-    });
-    if (!record)
+    const initial = await this.prisma.medicalRecord.findUnique({ where: { id: recordId } });
+    if (!initial)
       throw apiError(HttpStatus.NOT_FOUND, 'RECORD_NOT_FOUND', 'Medical record not found.');
-    if (record.status !== 'DRAFT') {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'RECORD_ALREADY_FINALIZED',
-        'This medical record is already official.',
-      );
-    }
-
-    // Kiểm tra: Không thể chốt bản nháp nếu ngựa đã có một bệnh án khác đang mở
-    const existingOpenRecord = await this.prisma.medicalRecord.findFirst({
-      where: {
-        horseId: record.horseId,
-        status: 'OPEN',
-        id: { not: record.id },
-      },
-      select: { id: true, recordNumber: true },
-    });
-    if (existingOpenRecord) {
-      throw apiError(
-        HttpStatus.CONFLICT,
-        'HORSE_HAS_OPEN_RECORD',
-        `Chiến mã này đang có bệnh án khác ở trạng thái mở (${existingOpenRecord.recordNumber || existingOpenRecord.id}). Không thể chốt bệnh án này.`,
-      );
-    }
-
-    const targetStatus = record.recommendedHorseStatus;
-    const applyStatus =
-      !!dto.applyProposedStatus && !!targetStatus && record.horse?.status !== targetStatus;
-    if (applyStatus && record.horse?.status === HorseStatus.RETIRED) {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'HORSE_RETIRED',
-        'The horse is no longer managed by the club; its status cannot change.',
-      );
-    }
-
-    // 1. Đặt Khóa huấn luyện (nếu có) TRƯỚC khi chốt: khóa lỗi thì bệnh án vẫn là nháp.
-    let lockImpact:
-      Awaited<ReturnType<MedicalLocksService['createMedicalLock']>>['impactAssessment'] | undefined;
-    if (dto.proposeMedicalLock) {
-      try {
-        const placed = await this.locks.createMedicalLock(actor, {
-          horseId: record.horseId,
-          medicalRecordId: record.id,
-          appliedMedicalStatus: targetStatus || HorseStatus.INJURED,
-          lockReason: dto.lockReason || `Khóa do chốt bệnh án #${record.recordNumber || record.id}`,
-          unlockConditions: dto.lockUnlockConditions,
-          expectedRestDays: dto.lockExpectedRestDays || 7,
-        } as any);
-        lockImpact = placed?.impactAssessment;
-      } catch (err: any) {
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${initial.horseId} FOR UPDATE`;
+      const record = await tx.medicalRecord.findUnique({
+        where: { id: recordId },
+        include: { horse: true },
+      });
+      if (!record || record.status !== 'DRAFT')
         throw apiError(
-          HttpStatus.BAD_REQUEST,
-          'FINALIZE_LOCK_FAILED',
-          `The record was not made official: the Training Lock could not be placed (${err?.message || 'unknown error'}).`,
+          HttpStatus.CONFLICT,
+          'RECORD_ALREADY_FINALIZED',
+          'This record is already official.',
         );
+      const other = await tx.medicalRecord.findFirst({
+        where: { horseId: record.horseId, status: 'OPEN', id: { not: recordId } },
+      });
+      if (other)
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'HORSE_HAS_OPEN_RECORD',
+          'This horse already has an open medical record.',
+        );
+      const shouldLock =
+        (dto.proposeMedicalLock ?? record.proposeMedicalLock) ||
+        ['SEVERE', 'CRITICAL'].includes(record.severity ?? '');
+      if (shouldLock) {
+        try {
+          await new MedicalLifecycleService(this.audit).placeVeterinaryLock(
+            tx,
+            {
+              horseId: record.horseId,
+              medicalRecordId: record.id,
+              appliedMedicalStatus: record.recommendedHorseStatus ?? HorseStatus.INJURED,
+              lockReason:
+                dto.lockReason ?? `Khóa khi chốt bệnh án ${record.recordNumber ?? record.id}`,
+              expectedRestDays: dto.lockExpectedRestDays ?? record.lockExpectedRestDays ?? 7,
+              unlockConditions:
+                dto.lockUnlockConditions ?? record.lockUnlockConditions ?? undefined,
+            },
+            actor,
+          );
+        } catch (error) {
+          throw apiError(HttpStatus.BAD_REQUEST, 'FINALIZE_LOCK_FAILED', String(error));
+        }
+      } else if (dto.applyProposedStatus && record.recommendedHorseStatus) {
+        assertStatusTransition({
+          role: actor.role,
+          from: record.horse.status,
+          to: record.recommendedHorseStatus,
+          isMedicalLocked: record.horse.isMedicalLocked,
+          reason: 'Finalized veterinary recommendation',
+        });
+        await tx.horse.update({
+          where: { id: record.horseId },
+          data: { status: record.recommendedHorseStatus },
+        });
       }
-    }
-
-    // 2. Chốt bệnh án: chuyển sang OPEN
-    const updated = await this.prisma.medicalRecord.update({
-      where: { id: recordId },
-      data: { status: 'OPEN' },
-    });
-
-    // 3. Áp dụng trạng thái đề xuất lên ngựa (khóa ở bước 1 đã đặt trạng thái này rồi thì bỏ qua)
-    if (applyStatus && !dto.proposeMedicalLock && targetStatus) {
-      assertStatusTransition({
-        role: actor.role,
-        from: record.horse.status,
-        to: targetStatus,
-        isMedicalLocked: record.horse.isMedicalLocked,
-        reason: `Áp dụng đề xuất khi chốt bệnh án #${record.recordNumber || record.id}`,
+      const result = await tx.medicalRecord.update({
+        where: { id: recordId },
+        data: { status: 'OPEN' },
       });
-
-      await this.prisma.horse.update({
-        where: { id: record.horseId },
-        data: { status: targetStatus },
-      });
-
       await this.audit.record(
         { id: actor.userId, name: actor.fullName },
-        'HORSE_STATUS_CHANGED',
-        `Changed status of horse ${record.horse?.name} from ${record.horse?.status} to ${targetStatus}. Reason: Áp dụng đề xuất khi chốt bệnh án #${record.recordNumber || record.id}`,
-        record.horseId,
+        'FINALIZE_MEDICAL_RECORD',
+        `Finalized ${recordId}`,
+        recordId,
+        { entityName: 'MedicalRecord' },
+        tx,
       );
-    }
-
-    await this.audit.record(
-      { id: actor.userId, name: actor.fullName },
-      'FINALIZE_MEDICAL_RECORD',
-      `Medical record ${recordId} finalized`,
+      return result;
+    });
+    const careSyncFailed = await this.syncHorseMedicalTasks(initial.horseId);
+    const notificationFailed = await this.publishDiagnosis(
+      initial.horseId,
       recordId,
-      { entityName: 'MedicalRecord' },
+      initial.clinicalDiagnosis,
+      actor,
     );
-
-    const careSyncFailed = await this.syncHorseMedicalTasks(record.horseId);
-    let notificationFailed = lockImpact?.notificationFailed ?? false;
-    if (!dto.proposeMedicalLock) {
-      notificationFailed = await this.publishDiagnosis(
-        record.horseId,
-        record.id,
-        record.clinicalDiagnosis,
-        actor,
-      );
-    }
-    return {
-      record: updated,
-      notificationFailed,
-      careSyncFailed,
-      raceWithdrawal: lockImpact?.raceWithdrawal,
-    };
+    return { record: updated, notificationFailed, careSyncFailed };
   }
 
   async closeMedicalRecord(id: string, actor: CurrentUserPayload, dto: CloseMedicalRecordDto) {
     this.access.assertVet(actor, 'close medical records');
-
-    const record = await this.prisma.medicalRecord.findUnique({ where: { id } });
-    if (!record) {
+    const initial = await this.prisma.medicalRecord.findUnique({ where: { id } });
+    if (!initial)
       throw apiError(HttpStatus.NOT_FOUND, 'RECORD_NOT_FOUND', 'Medical record not found.');
-    }
-
-    if (record.status === 'CLOSED') {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'RECORD_ALREADY_CLOSED',
-        'This medical record is already closed.',
-      );
-    }
-    // Nháp phải chốt (OPEN) trước rồi mới kết thúc điều trị.
-    if (record.status === 'DRAFT') {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'RECORD_NOT_OPEN',
-        'Finalize the draft before concluding treatment.',
-      );
-    }
-
-    // Tự động dừng tất cả đơn thuốc đang ACTIVE của bệnh án
-    let currentRx: any[] = [];
-    const rxSource = record.prescriptions || record.prescriptionDetails;
-    if (rxSource) {
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${initial.horseId} FOR UPDATE`;
+      const record = await tx.medicalRecord.findUnique({ where: { id } });
+      if (!record || record.status !== 'OPEN')
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'RECORD_NOT_OPEN',
+          'Only an open medical record can be closed.',
+        );
+      const locks = await tx.medicalLock.findMany({
+        where: { medicalRecordId: id, isLocked: true },
+      });
+      const recovered = (dto.treatmentResult ?? 'RECOVERED') === 'RECOVERED';
+      if (recovered && locks.length && (!dto.recoveryConfirmed || !dto.postTreatmentStatus))
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'RECOVERY_CONFIRMATION_REQUIRED',
+          'Confirm recovery and select the discharge status before lifting protection.',
+        );
+      let rx: any[] = [];
       try {
-        currentRx = JSON.parse(rxSource);
-        if (!Array.isArray(currentRx)) currentRx = [];
+        const parsed = JSON.parse(record.prescriptions || record.prescriptionDetails || '[]');
+        if (Array.isArray(parsed)) rx = parsed;
       } catch {
-        currentRx = [];
+        /* Preserve closure for legacy malformed prescriptions. */
       }
-    }
-
-    const stoppedRx = currentRx.map((rx) => {
-      if (rx.status === 'ACTIVE') {
-        return {
-          ...rx,
-          status: 'STOPPED',
-          stoppedReason: 'Bệnh án kết thúc điều trị',
-          stoppedAt: new Date().toISOString(),
+      const now = new Date();
+      const stopped = rx.map((item) =>
+        item.status === 'ACTIVE'
+          ? {
+              ...item,
+              status: 'STOPPED',
+              stoppedAt: now.toISOString(),
+              stoppedReason: 'Bệnh án kết thúc điều trị',
+            }
+          : item,
+      );
+      const updated = await tx.medicalRecord.update({
+        where: { id },
+        data: {
+          status: 'CLOSED',
+          closedAt: now,
+          conclusion: dto.conclusion,
+          treatmentResult: dto.treatmentResult ?? 'RECOVERED',
+          requiresFollowUp: false,
+          treatmentProtocol: `${record.treatmentProtocol}\n[KẾT LUẬN]: ${dto.conclusion}`,
+          prescriptions: JSON.stringify(stopped),
+          prescriptionDetails: JSON.stringify(stopped),
+        },
+      });
+      let state: { remainingActiveLocks: any[]; isMedicalLocked: boolean; horseStatus: any };
+      if (recovered && dto.recoveryConfirmed && dto.postTreatmentStatus) {
+        state = await new MedicalLifecycleService(this.audit).releaseRecordLocks(
+          tx,
+          id,
+          actor,
+          dto.postTreatmentStatus,
+        );
+      } else {
+        const remainingActiveLocks = await tx.medicalLock.findMany({
+          where: { horseId: record.horseId, isLocked: true },
+        });
+        const horse = await tx.horse.findUnique({ where: { id: record.horseId } });
+        state = {
+          remainingActiveLocks,
+          isMedicalLocked: remainingActiveLocks.length > 0,
+          horseStatus: horse?.status,
         };
       }
-      return rx;
+      await this.audit.record(
+        { id: actor.userId, name: actor.fullName },
+        'CLOSE_MEDICAL_RECORD',
+        `Closed ${id}: ${dto.conclusion}`,
+        id,
+        { entityName: 'MedicalRecord' },
+        tx,
+      );
+      return { ...updated, ...state };
     });
-
-    const now = new Date();
-    // Cập nhật status CLOSED, closedAt, conclusion, treatmentResult và dừng đơn thuốc
-    const updated = await this.prisma.medicalRecord.update({
-      where: { id },
-      data: {
-        treatmentProtocol: `${record.treatmentProtocol}\n[KẾT LUẬN]: ${dto.conclusion}`,
-        conclusion: dto.conclusion,
-        treatmentResult: dto.treatmentResult || 'RECOVERED',
-        closedAt: now,
-        requiresFollowUp: false,
-        status: 'CLOSED',
-        prescriptions: JSON.stringify(stoppedRx),
-        prescriptionDetails: JSON.stringify(stoppedRx),
-      },
-    });
-
-    await this.audit.record(
-      { id: actor.userId, name: actor.fullName },
-      'CLOSE_MEDICAL_RECORD',
-      `Medical record ${id} closed with conclusion: ${dto.conclusion}`,
-      id,
-      { entityName: 'MedicalRecord' },
-    );
-
-    await this.syncHorseMedicalTasks(record.horseId);
-
-    return updated;
+    const careSyncFailed = await this.syncHorseMedicalTasks(initial.horseId);
+    let notificationFailed = false;
+    try {
+      const sent = await this.notifications.notifyHorse(
+        initial.horseId,
+        { roles: [Role.CLUB_MANAGER], trainer: true, owner: true, groom: true },
+        {
+          type: 'MEDICAL_TREATMENT_CLOSED',
+          category: 'MEDICAL',
+          title: 'Bệnh án đã kết thúc điều trị',
+          message: result.isMedicalLocked
+            ? `Ngựa vẫn còn ${result.remainingActiveLocks.length} khóa bảo vệ đang hiệu lực.`
+            : `Trạng thái sau điều trị: ${result.horseStatus}. Không tự khôi phục buổi tập hoặc đăng ký đã rút.`,
+          link: `/medical/records/${id}`,
+          dedupeKey: `record-closed:${id}:${result.closedAt?.toISOString()}`,
+        },
+      );
+      notificationFailed = sent === false;
+    } catch {
+      notificationFailed = true;
+    }
+    return { ...result, notificationFailed, careSyncFailed };
   }
 
   async reopenMedicalRecord(id: string, actor: CurrentUserPayload, dto: ReopenMedicalRecordDto) {

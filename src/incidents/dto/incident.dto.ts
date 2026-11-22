@@ -3,6 +3,9 @@ import { Transform, Type } from 'class-transformer';
 import { normalizeSeverity } from '../incident-lifecycle';
 import {
   IsArray,
+  ArrayUnique,
+  ArrayMaxSize,
+  Equals,
   IsDateString,
   IsEnum,
   IsInt,
@@ -75,6 +78,20 @@ export class ReviewIncidentDto {
   @IsOptional()
   @IsString()
   vetNotes?: string;
+}
+
+export class ResolveIncidentDto {
+  @IsUUID()
+  medicalRecordId: string;
+
+  @IsArray()
+  @ArrayUnique()
+  @ArrayMaxSize(100)
+  @IsUUID('4', { each: true })
+  duplicateIncidentIds: string[];
+
+  @Equals(true)
+  recoveryConfirmed: boolean;
 }
 
 export class QueryIncidentsDto {

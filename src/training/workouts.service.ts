@@ -142,11 +142,11 @@ export class WorkoutsService {
     const heavy = isHeavy(w.workoutType, w.intensity);
 
     // 1. Khóa y tế + bài nặng: chặn, không vai trò nào vượt qua (RULE-MED-01).
-    if (horse.isMedicalLocked && heavy) {
+    if (horse.isMedicalLocked) {
       throw apiError(
         HttpStatus.CONFLICT,
         'MEDICAL_LOCK_ACTIVE',
-        'Ngựa đang bị Khóa huấn luyện y tế. Không thể xếp bài tập nặng.',
+        'Ngựa đang bị Khóa huấn luyện y tế. Không thể xếp buổi tập mới cho đến khi bác sĩ giải trừ khóa.',
       );
     }
     // 1b. Lưu giữ do nợ phí + bài nặng: chặn, chỉ cho phép đi bộ / vận động nhẹ (WALK)

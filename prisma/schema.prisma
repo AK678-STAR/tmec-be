@@ -738,6 +738,9 @@ model WorkoutSession {
 }
 
 model MedicalRecord {
+  proposeMedicalLock Boolean @default(false)
+  lockExpectedRestDays Int @default(7)
+  lockUnlockConditions String?
   id                     String              @id @default(uuid())
   // Mã hồ sơ bệnh án định danh duy nhất theo định dạng BA-YYMM-NNN
   recordNumber           String?

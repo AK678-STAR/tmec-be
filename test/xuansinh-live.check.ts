@@ -1,0 +1,233 @@
+import { strict as assert } from 'node:assert';
+import { PrismaClient } from '@prisma/client';
+import { IncidentsService } from '../src/incidents/incidents.service';
+import { AuditService } from '../src/audit/audit.service';
+import { CounterService } from '../src/audit/counter.service';
+import { MedicalRecordsService } from '../src/medical/medical-records.service';
+
+const target = new URL(process.env.DATABASE_URL ?? '');
+assert.equal(target.hostname, '127.0.0.1');
+assert.equal(target.port, '55439');
+assert.equal(target.pathname, '/equiflow_qa');
+const db = new PrismaClient({ datasourceUrl: target.href });
+const notifications = { notifyHorse: async () => true, notifyUsers: async () => true } as any;
+const audit = new AuditService(db as any, new CounterService(db as any), notifications);
+const incidents = new IncidentsService(db as any, audit, notifications);
+async function main() {
+  const stamp = `${Date.now()}`;
+  const user = await db.user.create({
+    data: {
+      email: `xuansinh-${stamp}@example.test`,
+      fullName: 'QA Groom',
+      role: 'GROOM',
+      status: 'ACTIVE',
+    },
+  });
+  const actor = { userId: user.id, fullName: user.fullName, email: user.email, role: user.role };
+  const horse = await db.horse.create({
+    data: {
+      name: 'QA Xuansinh',
+      breed: 'QA',
+      color: 'Bay',
+      gender: 'MALE',
+      dob: new Date('2020-01-01'),
+      microchipRfid: stamp.padEnd(15, '7'),
+    },
+  });
+  const dto = {
+    horseId: horse.id,
+    severity: 'SEVERE' as const,
+    description: 'QA severe observation: temporary safety protection',
+  };
+  const [a, b] = await Promise.all([incidents.create(dto, actor), incidents.create(dto, actor)]);
+  assert.notEqual(a.incidentNumber, b.incidentNumber);
+  assert.equal(await db.medicalLock.count({ where: { horseId: horse.id, isLocked: true } }), 2);
+  const state = await db.horse.findUniqueOrThrow({ where: { id: horse.id } });
+  assert.equal(state.isMedicalLocked, true);
+  assert.equal(state.status, 'UNDER_OBSERVATION');
+  const count = await db.incidentReport.count({ where: { horseId: horse.id } });
+  const failingDb = new Proxy(db, {
+    get(client, key) {
+      if (key === '$transaction')
+        return (callback: any) =>
+          client.$transaction((tx) =>
+            callback(
+              new Proxy(tx, {
+                get(transaction, field) {
+                  if (field === 'medicalLock')
+                    return {
+                      ...transaction.medicalLock,
+                      create: async () => {
+                        throw new Error('Injected storage failure');
+                      },
+                    };
+                  return Reflect.get(transaction, field);
+                },
+              }),
+            ),
+          );
+      const value = Reflect.get(client, key);
+      return typeof value === 'function' ? value.bind(client) : value;
+    },
+  });
+  await assert.rejects(
+    new IncidentsService(failingDb as any, audit, notifications).create(dto, actor),
+    /Injected storage failure/,
+  );
+  assert.equal(await db.incidentReport.count({ where: { horseId: horse.id } }), count);
+  const packet = { horse: { horse_id: horse.id }, incident: { kind: 'FRACTURE' } };
+  const key = `qa-source-${stamp}`;
+  const [first, retry] = await Promise.all([
+    incidents.createFromSimulator(key, packet, actor),
+    incidents.createFromSimulator(key, packet, actor),
+  ]);
+  assert.equal(first.id, retry.id);
+  assert.equal(await db.medicalLock.count({ where: { sourceIncidentId: first.id } }), 1);
+  const vetUser = await db.user.create({
+    data: {
+      email: `xuansinh-vet-${stamp}@example.test`,
+      fullName: 'QA Vet',
+      role: 'VETERINARIAN',
+      status: 'ACTIVE',
+    },
+  });
+  const vet = {
+    userId: vetUser.id,
+    fullName: vetUser.fullName,
+    email: vetUser.email,
+    role: vetUser.role,
+  };
+  const record = await db.medicalRecord.create({
+    data: {
+      horseId: horse.id,
+      veterinarianUserId: vetUser.id,
+      status: 'DRAFT',
+      severity: 'SEVERE',
+      clinicalDiagnosis: 'QA recovery',
+      symptoms: 'QA symptoms',
+      treatmentProtocol: 'QA treatment',
+      recommendedHorseStatus: 'INJURED',
+    },
+  });
+  await db.incidentReport.update({
+    where: { id: a.id },
+    data: { medicalRecordId: record.id, status: 'UNDER_REVIEW' },
+  });
+  await db.medicalLock.update({
+    where: { sourceIncidentId: a.id },
+    data: { medicalRecordId: record.id },
+  });
+  const records = new MedicalRecordsService(
+    db as any,
+    audit,
+    { assertVet: () => undefined } as any,
+    {} as any,
+    notifications,
+  );
+  await records.finalizeMedicalRecord(record.id, vet, { proposeMedicalLock: true });
+  assert.equal(
+    (await db.medicalRecord.findUniqueOrThrow({ where: { id: record.id } })).status,
+    'OPEN',
+  );
+  const closed = await records.closeMedicalRecord(record.id, vet, {
+    conclusion: 'QA verified clinical recovery',
+    treatmentResult: 'RECOVERED',
+    recoveryConfirmed: true,
+    postTreatmentStatus: 'RESTING',
+  });
+  assert.equal(closed.isMedicalLocked, true);
+  assert.equal(
+    (await db.medicalLock.findUniqueOrThrow({ where: { sourceIncidentId: a.id } })).isLocked,
+    false,
+  );
+  assert.equal(
+    (await db.medicalLock.findUniqueOrThrow({ where: { sourceIncidentId: b.id } })).isLocked,
+    true,
+  );
+  assert.equal(closed.horseStatus, 'INJURED');
+  const merged = await incidents.resolve(
+    a.id,
+    { medicalRecordId: record.id, duplicateIncidentIds: [b.id, first.id], recoveryConfirmed: true },
+    vet,
+  );
+  assert.equal(merged.mergedCount, 2);
+  assert.equal(
+    (await db.incidentReport.findUniqueOrThrow({ where: { id: b.id } })).parentIncidentId,
+    a.id,
+  );
+  assert.equal(
+    (await db.horse.findUniqueOrThrow({ where: { id: horse.id } })).isMedicalLocked,
+    false,
+  );
+  const failingHorse = await db.horse.create({
+    data: {
+      name: 'QA atomic finalize',
+      breed: 'QA',
+      color: 'Bay',
+      gender: 'MALE',
+      dob: new Date('2020-01-01'),
+      microchipRfid: `f${stamp}`.padEnd(15, '8'),
+    },
+  });
+  const failingRecord = await db.medicalRecord.create({
+    data: {
+      horseId: failingHorse.id,
+      veterinarianUserId: vetUser.id,
+      status: 'DRAFT',
+      severity: 'SEVERE',
+      clinicalDiagnosis: 'QA rollback',
+      symptoms: 'QA',
+      treatmentProtocol: 'QA',
+    },
+  });
+  const finalizeDb = new Proxy(db, {
+    get(client, key) {
+      if (key === '$transaction')
+        return (callback: any) =>
+          client.$transaction((tx) =>
+            callback(
+              new Proxy(tx, {
+                get(t, k) {
+                  if (k === 'medicalRecord')
+                    return {
+                      ...t.medicalRecord,
+                      update: async () => {
+                        throw new Error('Injected finalize failure');
+                      },
+                    };
+                  return Reflect.get(t, k);
+                },
+              }),
+            ),
+          );
+      const value = Reflect.get(client, key);
+      return typeof value === 'function' ? value.bind(client) : value;
+    },
+  });
+  await assert.rejects(
+    new MedicalRecordsService(
+      finalizeDb as any,
+      audit,
+      { assertVet: () => undefined } as any,
+      {} as any,
+      notifications,
+    ).finalizeMedicalRecord(failingRecord.id, vet, {}),
+  );
+  assert.equal(await db.medicalLock.count({ where: { horseId: failingHorse.id } }), 0);
+  assert.equal(
+    (await db.medicalRecord.findUniqueOrThrow({ where: { id: failingRecord.id } })).status,
+    'DRAFT',
+  );
+  console.log(
+    'PASS: atomic finalize binds source protection; recovered close preserves other locks; selected merge releases only assessed sources; injected finalize failure rolls back lock and record.',
+  );
+  console.log(
+    'PASS: real PostgreSQL concurrent reports use distinct codes; severe protection commits; injected failure rolls back incident; concurrent simulator retry creates one incident/lock.',
+  );
+}
+main()
+  .finally(() => db.$disconnect())
+  .catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
