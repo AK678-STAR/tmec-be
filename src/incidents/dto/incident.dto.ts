@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
+import { normalizeSeverity } from '../incident-lifecycle';
 import {
   IsArray,
   IsDateString,
@@ -41,6 +42,7 @@ export class CreateIncidentDto {
     description: 'Mức độ nghiêm trọng của sự cố',
     default: SeverityLevel.MODERATE,
   })
+  @Transform(({ value }) => normalizeSeverity(value))
   @IsEnum(SeverityLevel)
   severity: SeverityLevel = SeverityLevel.MODERATE;
 

@@ -171,6 +171,12 @@ enum IncidentStatus {
   UNDER_REVIEW
   RESOLVED
   DISMISSED
+  MERGED_INTO_TREATMENT
+}
+
+enum MedicalLockSource {
+  VET
+  INCIDENT_AUTO
 }
 
 enum RestockStatus {
@@ -815,14 +821,18 @@ model InjuryLog {
 }
 
 model MedicalLock {
+  source               MedicalLockSource @default(VET)
+  sourceIncidentId     String? @unique
+  sourceIncident       IncidentReport? @relation(fields: [sourceIncidentId], references: [id], onDelete: Restrict)
+  issuedByUserId       String?
   id                   String         @id @default(uuid())
   lockCode             String?        @unique // e.g. KH-000001
   horseId              String
   horse                Horse          @relation(fields: [horseId], references: [id], onDelete: Restrict)
   medicalRecordId      String?
   medicalRecord        MedicalRecord? @relation(fields: [medicalRecordId], references: [id], onDelete: SetNull)
-  veterinarianUserId   String
-  veterinarian         User           @relation("VetLocksIssued", fields: [veterinarianUserId], references: [id], onDelete: Restrict)
+  veterinarianUserId   String?
+  veterinarian         User?          @relation("VetLocksIssued", fields: [veterinarianUserId], references: [id], onDelete: Restrict)
   lockedAt             DateTime       @default(now())
   expectedRestDays     Int            @default(7)
   recheckDate          DateTime? // Ngày xem xét lại (DL-3.01)
@@ -1186,6 +1196,11 @@ model DailyCareTask {
 }
 
 model IncidentReport {
+  parentIncidentId String?
+  parentIncident IncidentReport? @relation("IncidentDuplicates", fields: [parentIncidentId], references: [id], onDelete: Restrict)
+  duplicateIncidents IncidentReport[] @relation("IncidentDuplicates")
+  safetyLock MedicalLock?
+  resolvedAt DateTime?
   id              String         @id @default(uuid())
   sourceEventId   String?        @unique
   incidentNumber  String?        @unique // e.g. "INC-20261018-0001"
@@ -1208,6 +1223,7 @@ model IncidentReport {
   updatedAt       DateTime       @updatedAt
 
   @@index([horseId])
+  @@index([parentIncidentId])
   @@index([reportedById])
   @@index([severity, status])
   @@index([createdAt])
