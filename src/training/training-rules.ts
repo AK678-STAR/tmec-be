@@ -58,7 +58,7 @@ export const PENDING_WORKOUT_STATUSES: WorkoutStatus[] = [
 ];
 
 /** #5: số ngựa tối đa một HLV phụ trách cùng lúc. */
-export const MAX_HORSES_PER_TRAINER = 3;
+export const MAX_HORSES_PER_TRAINER = 8;
 
 export const MAX_WORKOUTS_PER_DAY = 3; // Q-2.13
 

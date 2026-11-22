@@ -562,7 +562,7 @@ describe('DailyTasksService', () => {
 
       expect(prisma.dailyCareTask.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'existing-task' },
+          where: { id: 'existing-task', isCompleted: false },
           data: expect.objectContaining({
             shiftId: null,
             assignedGroomUserId: null,

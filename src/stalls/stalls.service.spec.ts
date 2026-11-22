@@ -53,10 +53,13 @@ describe('StallsService (SC-1.04, SC-1.07, DL-1.02, DL-1.03)', () => {
       },
       stallAllocation: {
         count: jest.fn().mockResolvedValue(0),
+        findFirst: jest.fn().mockResolvedValue(null),
         findUnique: jest.fn(),
         create: jest.fn(({ data }) => Promise.resolve({ id: 'al-1', ...data })),
         update: jest.fn(),
       },
+      shiftRoster: { findMany: jest.fn().mockResolvedValue([]) },
+      dailyCareTask: { create: jest.fn(({ data }) => ({ id: 'handover-1', ...data })) },
       horse: { findUnique: jest.fn() },
       user: { findUnique: jest.fn() },
     };
@@ -65,29 +68,10 @@ describe('StallsService (SC-1.04, SC-1.07, DL-1.02, DL-1.03)', () => {
   });
 
   describe('zones', () => {
-    it('caps the club at 6 zones and each zone at 12 stalls', async () => {
-      const code = (p: Promise<unknown>) => p.catch((e) => e.getResponse().code);
-      expect(
-        await code(service.createZone({ code: 'X', name: 'Khu X', rows: 4, cols: 4 }, manager)),
-      ).toBe('ZONE_TOO_LARGE');
-      prisma.stallZone.count.mockResolvedValueOnce(6);
-      expect(
-        await code(service.createZone({ code: 'X', name: 'Khu X', rows: 3, cols: 4 }, manager)),
-      ).toBe('ZONE_LIMIT_REACHED');
-      expect(await code(service.updateZone('z-1', { rows: 4, cols: 4 } as any, manager))).toBe(
-        'ZONE_TOO_LARGE',
-      );
-    });
-
-    it('creates a whole grid of stalls named {zone}-{nn} when asked', async () => {
-      await service.createZone(
-        { code: 'B', name: 'Khu B', rows: 2, cols: 3, autoCreateStalls: true },
-        manager,
-      );
-      const { data } = prisma.stall.createMany.mock.calls[0][0];
-      expect(data).toHaveLength(6);
-      expect(data[0]).toMatchObject({ code: 'B-01', row: 1, col: 1 });
-      expect(data[5]).toMatchObject({ code: 'B-06', row: 2, col: 3 });
+    it('caps each zone grid at 12 stalls', async () => {
+      await expect(service.updateZone('z-1', { rows: 4, cols: 4 }, manager)).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'ZONE_TOO_LARGE' }),
+      });
     });
 
     it('does not shrink the grid below a row already used by a stall', async () => {
@@ -124,17 +108,19 @@ describe('StallsService (SC-1.04, SC-1.07, DL-1.02, DL-1.03)', () => {
   });
 
   describe('stalls', () => {
-    it('rejects a position outside the zone grid', async () => {
-      await expect(
-        service.create({ zoneId: 'z-1', code: 'A-09', row: 3, col: 1 }, manager),
-      ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'ROW_OUT_OF_RANGE' }) });
+    it('rejects a position outside the zone grid when editing a stall', async () => {
+      prisma.stall.findUnique.mockResolvedValue(freeStall);
+      await expect(service.update('s-1', { row: 3 }, manager)).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'ROW_OUT_OF_RANGE' }),
+      });
     });
 
-    it('rejects a position already taken by another stall', async () => {
+    it('rejects a position already taken by another stall when editing', async () => {
+      prisma.stall.findUnique.mockResolvedValue(freeStall);
       prisma.stall.findFirst.mockResolvedValue({ id: 's-2', code: 'A-02' });
-      await expect(
-        service.create({ zoneId: 'z-1', code: 'A-09', row: 1, col: 2 }, manager),
-      ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'POSITION_TAKEN' }) });
+      await expect(service.update('s-1', { col: 2 }, manager)).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'POSITION_TAKEN' }),
+      });
     });
 
     it('an occupied stall cannot go to maintenance or inactive (Q-1.C)', async () => {
@@ -220,6 +206,76 @@ describe('StallsService (SC-1.04, SC-1.07, DL-1.02, DL-1.03)', () => {
       await expect(
         service.assignHorse('s-1', { horseId: 'h-1', assignedGroomUserId: 'u-1' }, manager),
       ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'INVALID_GROOM' }) });
+    });
+
+    it('rejects a directly assigned Groom rostered in a different zone', async () => {
+      prisma.stall.findUnique.mockResolvedValue(freeStall);
+      prisma.horse.findUnique.mockResolvedValue({
+        id: 'h-1',
+        name: 'Thunderbolt',
+        stallAllocations: [],
+        trainingPlans: [],
+      });
+      prisma.user.findUnique.mockResolvedValue({ id: 'g-1', role: 'GROOM', status: 'ACTIVE' });
+      prisma.shiftRoster.findMany.mockResolvedValue([{ zoneId: 'z-other' }]);
+
+      await expect(
+        service.assignHorse('s-1', { horseId: 'h-1', assignedGroomUserId: 'g-1' }, manager),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'GROOM_ZONE_MISMATCH' }),
+      });
+      expect(prisma.stallAllocation.create).not.toHaveBeenCalled();
+    });
+
+    it('blocks a move that would assign an active trainer horses across zones', async () => {
+      prisma.stall.findUnique.mockResolvedValue({ ...freeStall, id: 's-2', zoneId: 'z-other' });
+      prisma.stallAllocation.findUnique.mockResolvedValue({
+        id: 'al-1',
+        horseId: 'h-1',
+        isActive: true,
+        stallId: 's-1',
+        stall: freeStall,
+        horse: { name: 'Thunderbolt', trainingPlans: [{ trainerUserId: 't-1' }] },
+      });
+      prisma.stallAllocation.findFirst.mockResolvedValue({ id: 'trainer-other-horse' });
+      await expect(
+        service.transferHorse('al-1', { newStallId: 's-2' }, manager),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'TRAINER_ZONE_MISMATCH' }),
+      });
+      expect(prisma.stallAllocation.update).not.toHaveBeenCalled();
+    });
+
+    it('does not carry the previous Groom into a different zone', async () => {
+      prisma.stall.findUnique.mockResolvedValue({ ...freeStall, id: 's-2', zoneId: 'z-other' });
+      prisma.stallAllocation.findUnique.mockResolvedValue({
+        id: 'al-1',
+        horseId: 'h-1',
+        assignedGroomUserId: 'g-1',
+        isActive: true,
+        stallId: 's-1',
+        stall: freeStall,
+        horse: { name: 'Thunderbolt', trainingPlans: [] },
+      });
+      prisma.shiftRoster.findMany.mockResolvedValue([
+        {
+          shiftId: 'shift-1',
+          groomUserId: 'g-1',
+          shift: { startTime: '00:00', endTime: '00:00', isOvernight: true },
+        },
+      ]);
+      const result = await service.transferHorse('al-1', { newStallId: 's-2' }, manager);
+      expect(result.handoverTaskId).toBe('handover-1');
+      expect(prisma.dailyCareTask.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          stallId: 's-1',
+          stallZoneId: 'z-1',
+          assignedGroomUserId: 'g-1',
+        }),
+      });
+      expect(prisma.stallAllocation.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ assignedGroomUserId: null }),
+      });
     });
 
     it('transfer to the same stall is refused', async () => {

@@ -5,7 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { DailyTaskType, Prisma, Role, HorseStatus } from '@prisma/client';
+import { DailyTaskType, Prisma, Role, HorseStatus, WorkoutStatus } from '@prisma/client';
 import { apiError } from '../common/exceptions/api-error';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -13,7 +13,17 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { CompleteDailyTaskDto, QueryDailyTasksDto } from './dto/daily-task.dto';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { InventoryService } from '../inventory/inventory.service';
-import { planDailyTasks, ScheduleHorse, ScheduleCareInstruction } from './daily-schedule';
+import {
+  planDailyTasks,
+  ScheduleHorse,
+  ScheduleCareInstruction,
+  requiresStallRest,
+  STALL_HANDOVER_PREFIX,
+  WORKOUT_PREP_PREFIX,
+  shiftCovers,
+  toMinutes,
+} from './daily-schedule';
+import { clubTime } from '../training/training-rules';
 
 const UNDO_WINDOW_MS = 15 * 60 * 1000; // 15 phút (900.000 ms)
 const CLUB_OFFSET_MS = 7 * 60 * 60 * 1000;
@@ -119,6 +129,16 @@ export class DailyTasksService {
             where: { isLocked: true },
             take: 1,
           },
+          workoutSessions: {
+            where: {
+              status: WorkoutStatus.SCHEDULED,
+              scheduledDate: {
+                gte: new Date(dayDate.getTime() - CLUB_OFFSET_MS),
+                lt: new Date(dayDate.getTime() - CLUB_OFFSET_MS + 86400000),
+              },
+            },
+            select: { id: true, scheduledDate: true },
+          },
           nutritionPlans: {
             where: { status: 'APPROVED' },
             orderBy: { updatedAt: 'desc' },
@@ -139,7 +159,11 @@ export class DailyTasksService {
     // Bảng phân ca trong ngày: mỗi việc giao cho Groom trực ca chứa giờ đó, việc của một Groom xếp nối tiếp (không trùng giờ)
     const shiftRosters =
       (await this.prisma.shiftRoster.findMany({
-        where: { date: dayDate },
+        where: {
+          date: dayDate,
+          shift: { isActive: true },
+          groom: { role: Role.GROOM, status: 'ACTIVE' },
+        },
         include: { shift: true },
       })) || [];
 
@@ -263,7 +287,15 @@ export class DailyTasksService {
         stallCode: stall?.code,
         allocationGroomId: horse.stallAllocations[0]?.assignedGroomUserId || undefined,
         isLocked,
-        allowedActivityLevel,
+        allowedActivityLevel:
+          horse.status === HorseStatus.ISOLATED ? 'strict' : allowedActivityLevel,
+        workouts: horse.workoutSessions?.map((workout) => {
+          const { hour, minute } = clubTime(workout.scheduledDate);
+          return {
+            id: workout.id,
+            time: `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`,
+          };
+        }),
         mealsJson: horse.nutritionPlans[0]?.mealsJson,
         medications: activeMeds,
         careInstructions: activeCareInstructions,
@@ -281,6 +313,19 @@ export class DailyTasksService {
       })),
     );
     const lockedHorses = new Set(scheduleHorses.filter((h) => h.isLocked).map((h) => h.id));
+    const restingHorses = scheduleHorses.filter(requiresStallRest).map((horse) => horse.id);
+    const prepCodes = planned.flatMap((task) => (task.taskCode ? [task.taskCode] : []));
+    await this.prisma.dailyCareTask.deleteMany?.({
+      where: {
+        date: dayDate,
+        isCompleted: false,
+        horseId: { in: scheduleHorses.map((horse) => horse.id) },
+        OR: [
+          { taskType: DailyTaskType.WALKING, horseId: { in: restingHorses } },
+          { taskCode: { startsWith: WORKOUT_PREP_PREFIX, notIn: prepCodes } },
+        ],
+      },
+    });
 
     let totalGenerated = 0;
 
@@ -301,33 +346,40 @@ export class DailyTasksService {
     // Upsert từng task để bảo đảm Idempotent (nhận diện theo ngựa + loại + tiêu đề, vì giờ có thể dời khi đàn thay đổi)
     for (const t of planned) {
       const existing = await this.prisma.dailyCareTask.findFirst({
-        where: { date: dayDate, horseId: t.horseId, taskType: t.taskType, title: t.title },
+        where: t.taskCode
+          ? { taskCode: t.taskCode }
+          : { date: dayDate, horseId: t.horseId, taskType: t.taskType, title: t.title },
       });
       const isLocked = lockedHorses.has(t.horseId);
       const lockNotes = lockNotesByHorse.get(t.horseId);
 
       if (!existing) {
-        const taskCode = `TSK-${dateStr.replace(/-/g, '')}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-        await this.prisma.dailyCareTask.create({
-          data: {
-            taskCode,
-            date: dayDate,
-            horseId: t.horseId,
-            stallZoneId: t.zoneId,
-            stallId: t.stallId,
-            taskType: t.taskType,
-            title: t.title,
-            description: t.description,
-            mealType: t.mealType,
-            scheduledTime: t.scheduledTime,
-            shiftId: t.shiftId,
-            nutritionPlanId: planByHorse.get(t.horseId),
-            isMedicalLocked: isLocked,
-            medicalLockNotes: lockNotes,
-            itemsSnapshotJson: (t.itemsSnapshotJson as any) || null,
-            assignedGroomUserId: t.assignedGroomUserId,
-          },
-        });
+        const taskCode =
+          t.taskCode ??
+          `TSK-${dateStr.replace(/-/g, '')}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+        const data = {
+          taskCode,
+          date: dayDate,
+          horseId: t.horseId,
+          stallZoneId: t.zoneId,
+          stallId: t.stallId,
+          taskType: t.taskType,
+          title: t.title,
+          description: t.description,
+          mealType: t.mealType,
+          scheduledTime: t.scheduledTime,
+          shiftId: t.shiftId,
+          nutritionPlanId: planByHorse.get(t.horseId),
+          isMedicalLocked: isLocked,
+          medicalLockNotes: lockNotes,
+          itemsSnapshotJson: (t.itemsSnapshotJson as any) || null,
+          assignedGroomUserId: t.assignedGroomUserId,
+        };
+        if (t.taskCode) {
+          await this.prisma.dailyCareTask.upsert({ where: { taskCode }, create: data, update: {} });
+        } else {
+          await this.prisma.dailyCareTask.create({ data });
+        }
         totalGenerated++;
       } else {
         const nextZoneId = t.zoneId ?? null;
@@ -338,7 +390,8 @@ export class DailyTasksService {
         const nextItemsJson = (t.itemsSnapshotJson as any) || null;
         if (
           !existing.isCompleted &&
-          ((existing.stallZoneId ?? null) !== nextZoneId ||
+          ((existing.date != null && +existing.date !== +dayDate) ||
+            (existing.stallZoneId ?? null) !== nextZoneId ||
             (existing.stallId ?? null) !== nextStallId ||
             existing.scheduledTime !== t.scheduledTime ||
             existing.description !== t.description ||
@@ -349,8 +402,9 @@ export class DailyTasksService {
             JSON.stringify(existing.itemsSnapshotJson ?? null) !== JSON.stringify(nextItemsJson))
         ) {
           await this.prisma.dailyCareTask.update({
-            where: { id: existing.id },
+            where: { id: existing.id, isCompleted: false },
             data: {
+              date: dayDate,
               stallZoneId: nextZoneId,
               stallId: nextStallId,
               scheduledTime: t.scheduledTime,
@@ -391,6 +445,49 @@ export class DailyTasksService {
         if (this.prisma.dailyCareTask.delete) {
           await this.prisma.dailyCareTask.delete({ where: { id: emt.id } });
         }
+      }
+    }
+
+    const handovers = await this.prisma.dailyCareTask.findMany({
+      where: {
+        date: dayDate,
+        isCompleted: false,
+        taskCode: { startsWith: STALL_HANDOVER_PREFIX },
+        ...(zoneIdFilter && { stallZoneId: zoneIdFilter }),
+        ...(horseIdFilter && { horseId: horseIdFilter }),
+      },
+      select: {
+        id: true,
+        scheduledTime: true,
+        stallZoneId: true,
+        assignedGroomUserId: true,
+        shiftId: true,
+        taskCode: true,
+      },
+    });
+    for (const handover of handovers ?? []) {
+      if (!handover.taskCode?.startsWith(STALL_HANDOVER_PREFIX)) continue;
+      const time = handover.scheduledTime ? toMinutes(handover.scheduledTime) : undefined;
+      const eligible = shiftRosters.filter(
+        (roster) =>
+          roster.zoneId === handover.stallZoneId &&
+          roster.shift?.isActive &&
+          time !== undefined &&
+          shiftCovers(roster.shift, time),
+      );
+      const roster =
+        eligible.find((row) => row.groomUserId === handover.assignedGroomUserId) ?? eligible[0];
+      if (
+        (roster?.groomUserId ?? null) !== handover.assignedGroomUserId ||
+        (roster?.shiftId ?? null) !== handover.shiftId
+      ) {
+        await this.prisma.dailyCareTask.updateMany({
+          where: { id: handover.id, isCompleted: false },
+          data: {
+            assignedGroomUserId: roster?.groomUserId ?? null,
+            shiftId: roster?.shiftId ?? null,
+          },
+        });
       }
     }
 
@@ -603,6 +700,49 @@ export class DailyTasksService {
           'Bạn chỉ hoàn thành được công việc chăm sóc ở khu mình trực trong ngày đó.',
         );
       }
+    }
+
+    if (
+      task.taskCode?.startsWith(STALL_HANDOVER_PREFIX) &&
+      currentUser.role === Role.GROOM &&
+      task.assignedGroomUserId !== currentUser.userId
+    ) {
+      throw apiError(
+        HttpStatus.FORBIDDEN,
+        'TASK_NOT_ASSIGNED_TO_YOU',
+        'Chỉ nhân viên được phân công mới xác nhận bàn giao.',
+      );
+    }
+
+    const workoutId = task.taskCode?.startsWith(WORKOUT_PREP_PREFIX)
+      ? task.taskCode.slice(WORKOUT_PREP_PREFIX.length)
+      : null;
+    if (workoutId) {
+      const workout = await this.prisma.workoutSession.findUnique({
+        where: { id: workoutId },
+        select: { status: true, scheduledDate: true },
+      });
+      if (
+        !workout ||
+        workout.status !== WorkoutStatus.SCHEDULED ||
+        clubDateStr(workout.scheduledDate) !== clubDateStr(task.date)
+      ) {
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'WORKOUT_PREP_OUTDATED',
+          'Buổi tập đã đổi lịch hoặc không còn hoạt động.',
+        );
+      }
+    }
+    if (
+      (task.taskType === DailyTaskType.WALKING || workoutId) &&
+      (task.horse?.isMedicalLocked || task.horse?.status === HorseStatus.ISOLATED)
+    ) {
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'MEDICAL_LOCK_ACTIVE',
+        'Công việc vận động đã bị chặn theo tình trạng y tế.',
+      );
     }
 
     if (task.horse?.status === HorseStatus.RETIRED) {

@@ -135,7 +135,10 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
         groupBy: jest.fn().mockResolvedValue([]),
       },
       medicalLock: { findMany: jest.fn().mockResolvedValue([]) },
-      stallAllocation: { findMany: jest.fn().mockResolvedValue([]) },
+      stallAllocation: {
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
     };
     audit = { record: jest.fn().mockResolvedValue(undefined) };
 
@@ -257,17 +260,20 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
       expect(prisma.trainingPlan.create).not.toHaveBeenCalled();
     });
 
-    it('#5: a trainer looks after at most 3 horses at a time', async () => {
+    it('accepts the eighth distinct horse and refuses the ninth', async () => {
       prisma.horse.findUnique.mockResolvedValue(healthyHorse);
-      prisma.trainingPlan.findMany.mockResolvedValue([
-        { horseId: 'h-a', horse: { name: 'A' } },
-        { horseId: 'h-b', horse: { name: 'B' } },
-        { horseId: 'h-b', horse: { name: 'B' } },
-        { horseId: 'h-c', horse: { name: 'C' } },
-      ]);
+      prisma.trainingPlan.create.mockResolvedValue({ ...draftPlan, horse: healthyHorse });
+      const others = Array.from({ length: 8 }, (_, index) => ({
+        horseId: `h-${index}`,
+        horse: { name: `Horse ${index}` },
+      }));
+      prisma.trainingPlan.findMany.mockResolvedValue([...others.slice(0, 7), others[0]]);
+      await expect(plans.createPlan(dto, trainer)).resolves.toBeDefined();
+      prisma.trainingPlan.create.mockClear();
+      prisma.trainingPlan.findMany.mockResolvedValue(others);
       const error = await plans.createPlan(dto, trainer).catch((e) => e);
       expect(error.getResponse().code).toBe('TRAINER_HORSE_LIMIT');
-      expect(error.getResponse().data).toMatchObject({ max: 3, horses: 'A, B, C' });
+      expect(error.getResponse().data).toMatchObject({ max: 8 });
       expect(prisma.trainingPlan.create).not.toHaveBeenCalled();
     });
 
@@ -530,6 +536,20 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
   });
 
   describe('createWorkout (DL-2.01, RULE-MED-01)', () => {
+    it('blocks scheduling for a horse moved outside the trainer’s zone', async () => {
+      prisma.trainingPlan.findUnique.mockResolvedValue(draftPlan);
+      prisma.horse.findUnique.mockResolvedValue({
+        ...healthyHorse,
+        stallAllocations: [{ stall: { zoneId: 'B' } }],
+      });
+      prisma.stallAllocation.findFirst.mockResolvedValue({ id: 'other-horse-allocation' });
+
+      expect(await codeOf(workouts.createWorkout('plan-1', workoutDto, trainer))).toBe(
+        'TRAINER_ZONE_MISMATCH',
+      );
+      expect(prisma.workoutSession.create).not.toHaveBeenCalled();
+    });
+
     beforeEach(() => {
       prisma.trainingPlan.findUnique.mockResolvedValue(draftPlan);
       prisma.horse.findUnique.mockResolvedValue(healthyHorse);

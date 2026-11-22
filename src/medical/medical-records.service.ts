@@ -62,9 +62,37 @@ export class MedicalRecordsService {
     horseId: string,
     fromDateStr?: string,
     toDateStr?: string,
-  ): Promise<void> {
-    if (!this.dailyTasks?.syncMedicalTasksForHorse) return;
-    await this.dailyTasks.syncMedicalTasksForHorse(horseId, fromDateStr, toDateStr).catch(() => {});
+  ): Promise<boolean> {
+    if (!this.dailyTasks?.syncMedicalTasksForHorse) return false;
+    return this.dailyTasks.syncMedicalTasksForHorse(horseId, fromDateStr, toDateStr).then(
+      () => false,
+      () => true,
+    );
+  }
+
+  private async publishDiagnosis(
+    horseId: string,
+    recordId: string,
+    diagnosis: string | undefined,
+    actor: CurrentUserPayload,
+  ) {
+    if (!diagnosis?.trim() || diagnosis === 'Chờ chẩn đoán') return false;
+    const sent = await this.notifications.notifyHorse(
+      horseId,
+      { roles: [Role.CLUB_MANAGER], trainer: true, owner: true, groom: true },
+      {
+        type: 'MEDICAL_DIAGNOSIS_CONFIRMED',
+        category: 'MEDICAL',
+        title: 'Veterinary diagnosis confirmed',
+        message:
+          'The veterinarian has confirmed a diagnosis. View the horse’s health record for care instructions.',
+        link: `/medical/horses/${horseId}`,
+        dedupeKey: `medical-diagnosis:${recordId}`,
+        senderName: actor.fullName,
+      },
+      actor.userId,
+    );
+    return sent === false;
   }
 
   /** Trạng thái đề xuất hợp lệ của ngựa; giá trị lạ hoặc rỗng → null. */
@@ -230,7 +258,12 @@ export class MedicalRecordsService {
       });
     }
 
-    return record;
+    const careSyncFailed = isDraft ? false : await this.syncHorseMedicalTasks(dto.horseId);
+    const notificationFailed =
+      isDraft || !dto.diagnosis
+        ? false
+        : await this.publishDiagnosis(dto.horseId, record.id, dto.diagnosis, actor);
+    return { ...record, notificationFailed, careSyncFailed };
   }
 
   async getMedicalRecords(currentUser: CurrentUserPayload, query: MedicalRecordQueryDto) {
@@ -717,9 +750,11 @@ export class MedicalRecordsService {
     }
 
     // 1. Đặt Khóa huấn luyện (nếu có) TRƯỚC khi chốt: khóa lỗi thì bệnh án vẫn là nháp.
+    let lockImpact:
+      Awaited<ReturnType<MedicalLocksService['createMedicalLock']>>['impactAssessment'] | undefined;
     if (dto.proposeMedicalLock) {
       try {
-        await this.locks.createMedicalLock(actor, {
+        const placed = await this.locks.createMedicalLock(actor, {
           horseId: record.horseId,
           medicalRecordId: record.id,
           appliedMedicalStatus: targetStatus || HorseStatus.INJURED,
@@ -727,6 +762,7 @@ export class MedicalRecordsService {
           unlockConditions: dto.lockUnlockConditions,
           expectedRestDays: dto.lockExpectedRestDays || 7,
         } as any);
+        lockImpact = placed?.impactAssessment;
       } catch (err: any) {
         throw apiError(
           HttpStatus.BAD_REQUEST,
@@ -773,7 +809,22 @@ export class MedicalRecordsService {
       { entityName: 'MedicalRecord' },
     );
 
-    return { record: updated };
+    const careSyncFailed = await this.syncHorseMedicalTasks(record.horseId);
+    let notificationFailed = lockImpact?.notificationFailed ?? false;
+    if (!dto.proposeMedicalLock) {
+      notificationFailed = await this.publishDiagnosis(
+        record.horseId,
+        record.id,
+        record.clinicalDiagnosis,
+        actor,
+      );
+    }
+    return {
+      record: updated,
+      notificationFailed,
+      careSyncFailed,
+      raceWithdrawal: lockImpact?.raceWithdrawal,
+    };
   }
 
   async closeMedicalRecord(id: string, actor: CurrentUserPayload, dto: CloseMedicalRecordDto) {

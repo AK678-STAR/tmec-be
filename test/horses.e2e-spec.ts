@@ -89,6 +89,23 @@ describe('Flow 1 horse soft delete / stalls HTTP contract (mock database, real J
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
+  it('does not expose ownership requests or stall creation, including to Club Managers', async () => {
+    const bearer = token();
+    const http = request(app.getHttpServer());
+    await http.get('/api/horses/transfer-requests').auth(bearer, { type: 'bearer' }).expect(404);
+    await http.patch('/api/horses/h-1/transfer-owner').auth(bearer, { type: 'bearer' }).expect(404);
+    await http
+      .post('/api/horses/transfer-requests/r-1/respond')
+      .auth(bearer, { type: 'bearer' })
+      .expect(404);
+    await http
+      .post('/api/horses/transfer-requests/r-1/cancel')
+      .auth(bearer, { type: 'bearer' })
+      .expect(404);
+    await http.post('/api/stalls/zones').auth(bearer, { type: 'bearer' }).expect(404);
+    await http.post('/api/stalls').auth(bearer, { type: 'bearer' }).expect(404);
+  });
+
   it('a Horse Owner cannot list stalls (Q10)', async () => {
     user.role = Role.HORSE_OWNER;
     await request(app.getHttpServer())
@@ -123,11 +140,11 @@ describe('Flow 1 horse soft delete / stalls HTTP contract (mock database, real J
     expect(JSON.stringify(response.body)).toContain('Mã chỉ gồm');
   });
 
-  it('a zone grid is limited to 30 x 30 (DL-1.14)', async () => {
+  it('a zone edit rejects dimensions above 4 rows or columns (DL-1.14)', async () => {
     await request(app.getHttpServer())
-      .post('/api/stalls/zones')
+      .put('/api/stalls/zones/z-1')
       .auth(token(), { type: 'bearer' })
-      .send({ code: 'A', name: 'Khu A', rows: 31, cols: 2 })
+      .send({ rows: 5, cols: 2 })
       .expect(400);
   });
 });

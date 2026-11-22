@@ -4,7 +4,6 @@ import { HorseStatus, Role, UserStatus } from '@prisma/client';
 import { HorsesService } from './horses.service';
 import { HorseHistoryService } from './horse-history.service';
 import { HorseLifecycleService } from './horse-lifecycle.service';
-import { HorseTransferService } from './horse-transfer.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CounterService } from '../audit/counter.service';
@@ -12,7 +11,6 @@ import { HorseCatalogsService } from '../horse-catalogs/horse-catalogs.service';
 import { UserRole } from '../common/enums/role.enum';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { notificationsMock } from '../notifications/notifications.testing';
-import { NotificationsService } from '../notifications/notifications.service';
 
 describe('HorsesService', () => {
   let service: HorsesService;
@@ -22,7 +20,6 @@ describe('HorsesService', () => {
   let audit: any;
   let counter: { next: jest.Mock };
   let catalogs: { resolveName: jest.Mock };
-  let notifications: any;
 
   const mockManager: CurrentUserPayload = {
     userId: 'manager-1',
@@ -112,7 +109,6 @@ describe('HorsesService', () => {
     }).compile();
 
     service = module.get<HorsesService>(HorsesService);
-    notifications = module.get(NotificationsService);
     history = module.get(HorseHistoryService);
     lifecycle = module.get(HorseLifecycleService);
   });
@@ -438,129 +434,6 @@ describe('HorsesService', () => {
         status: HttpStatus.NOT_FOUND,
         response: expect.objectContaining({ code: 'HORSE_NOT_FOUND' }),
       });
-    });
-  });
-
-  describe('transfer requests (both owners confirm)', () => {
-    let transfers: HorseTransferService;
-    const horse = {
-      id: 'h-1',
-      name: 'Thunderbolt',
-      horseCode: 'HR-000001',
-      status: HorseStatus.ACTIVE,
-      ownerId: 'owner-old',
-      isDebtImpounded: false,
-    };
-    const newOwner = {
-      id: 'owner-new',
-      fullName: 'New Owner',
-      role: Role.HORSE_OWNER,
-      status: UserStatus.ACTIVE,
-      isBadDebtFlagged: false,
-    };
-    const pending = {
-      id: 'tr-1',
-      horseId: 'h-1',
-      fromOwnerId: 'owner-old',
-      toOwnerId: 'owner-new',
-      requestedById: 'manager-1',
-      reason: null,
-      status: 'PENDING',
-      fromConfirmedAt: null,
-      toConfirmedAt: null,
-      horse: { id: 'h-1', name: 'Thunderbolt', horseCode: 'HR-000001' },
-      fromOwner: { id: 'owner-old', fullName: 'Old Owner' },
-      toOwner: { id: 'owner-new', fullName: 'New Owner' },
-    };
-    const as = (userId: string): CurrentUserPayload => ({ ...mockOwner, userId });
-
-    beforeEach(() => {
-      prisma.horseTransferRequest = {
-        findFirst: jest.fn().mockResolvedValue(null),
-        findUnique: jest.fn().mockResolvedValue(pending),
-        create: jest.fn((args: any) => Promise.resolve({ id: 'tr-1', ...args.data })),
-        update: jest.fn((args: any) => Promise.resolve({ ...pending, ...args.data })),
-      };
-      prisma.horse.findUnique.mockResolvedValue(horse);
-      prisma.user.findUnique.mockResolvedValue(newOwner);
-      transfers = new HorseTransferService(prisma, audit, notifications);
-    });
-
-    it('creates a pending request and does not change the owner yet', async () => {
-      await transfers.requestTransfer('h-1', { newOwnerId: 'owner-new' }, mockManager);
-      expect(prisma.horseTransferRequest.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ fromOwnerId: 'owner-old', toOwnerId: 'owner-new' }),
-        }),
-      );
-      expect(prisma.horse.update).not.toHaveBeenCalled();
-      expect(notifications.notifyUsers).toHaveBeenCalledWith(
-        ['owner-old', 'owner-new'],
-        expect.objectContaining({ type: 'HORSE_TRANSFER_REQUESTED' }),
-      );
-    });
-
-    it('rejects a second request while one is pending', async () => {
-      prisma.horseTransferRequest.findFirst.mockResolvedValue(pending);
-      await expect(
-        transfers.requestTransfer('h-1', { newOwnerId: 'owner-new' }, mockManager),
-      ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'TRANSFER_PENDING' }) });
-    });
-
-    it('keeps the old owner when only one side confirmed', async () => {
-      await transfers.respond('tr-1', true, undefined, as('owner-new'));
-      expect(prisma.horse.update).not.toHaveBeenCalled();
-      expect(prisma.horseTransferRequest.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ toConfirmedAt: expect.any(Date) }),
-        }),
-      );
-    });
-
-    it('transfers the horse once both owners confirmed', async () => {
-      prisma.horseTransferRequest.findUnique.mockResolvedValue({
-        ...pending,
-        toConfirmedAt: new Date(),
-      });
-      const res = await transfers.respond('tr-1', true, undefined, as('owner-old'));
-      expect(prisma.horse.update).toHaveBeenCalledWith({
-        where: { id: 'h-1' },
-        data: { ownerId: 'owner-new' },
-      });
-      expect(res.status).toBe('APPROVED');
-      expect(audit.record).toHaveBeenCalledWith(
-        expect.anything(),
-        'HORSE_OWNERSHIP_TRANSFERRED',
-        expect.any(String),
-        'h-1',
-        expect.anything(),
-      );
-    });
-
-    it('closes the request when one owner declines', async () => {
-      const res = await transfers.respond('tr-1', false, 'Not sold', as('owner-old'));
-      expect(res.status).toBe('REJECTED');
-      expect(prisma.horse.update).not.toHaveBeenCalled();
-    });
-
-    it('only the two owners can respond', async () => {
-      await expect(
-        transfers.respond('tr-1', true, undefined, as('someone-else')),
-      ).rejects.toMatchObject({ status: HttpStatus.FORBIDDEN });
-    });
-
-    it.each([
-      ['HORSE_RETIRED', { ...horse, status: HorseStatus.RETIRED }, newOwner],
-      ['DEBT_IMPOUNDED', { ...horse, isDebtImpounded: true }, newOwner],
-      ['ALREADY_OWNED', { ...horse, ownerId: 'owner-new' }, newOwner],
-      ['OWNER_BAD_DEBT', horse, { ...newOwner, isBadDebtFlagged: true }],
-      ['INVALID_NEW_OWNER', horse, { ...newOwner, role: Role.HEAD_TRAINER }],
-    ])('refuses to request when %s', async (code, h, owner) => {
-      prisma.horse.findUnique.mockResolvedValue(h);
-      prisma.user.findUnique.mockResolvedValue(owner);
-      await expect(
-        transfers.requestTransfer('h-1', { newOwnerId: 'owner-new' }, mockManager),
-      ).rejects.toMatchObject({ response: expect.objectContaining({ code }) });
     });
   });
 

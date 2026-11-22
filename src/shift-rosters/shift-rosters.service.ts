@@ -481,22 +481,19 @@ export class ShiftRostersService {
         const newDate = new Date(s.date);
         newDate.setUTCDate(s.date.getUTCDate() + diffDays);
 
-        if (!dto.overwrite) {
-          const exists = await tx.shiftRoster.findUnique({
-            where: {
-              date_shiftId_zoneId_groomUserId: {
-                date: newDate,
-                shiftId: s.shiftId,
-                zoneId: s.zoneId,
-                groomUserId: s.groomUserId,
-              },
-            },
-          });
-          if (exists) {
-            continue;
-          }
-          syncTargets.push({ date: newDate, zoneId: s.zoneId });
+        const existing = await tx.shiftRoster.findFirst({
+          where: { date: newDate, shiftId: s.shiftId, groomUserId: s.groomUserId },
+          select: { zoneId: true },
+        });
+        if (existing?.zoneId === s.zoneId) continue;
+        if (existing) {
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'GROOM_ALREADY_ASSIGNED_IN_SHIFT',
+            'Không thể sao chép ca trực vì nhân viên đã được phân công ở khu chuồng khác trong cùng ca.',
+          );
         }
+        if (!dto.overwrite) syncTargets.push({ date: newDate, zoneId: s.zoneId });
 
         await tx.shiftRoster.create({
           data: {

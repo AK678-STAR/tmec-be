@@ -1,20 +1,7 @@
-import {
-  Body,
-  Controller,
-  Get,
-  HttpCode,
-  HttpStatus,
-  Param,
-  Patch,
-  Post,
-  Put,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { StallsService } from './stalls.service';
 import {
-  CreateStallDto,
-  CreateZoneDto,
   SetStallStatusDto,
   SetZoneStatusDto,
   UpdateStallDto,
@@ -71,14 +58,6 @@ export class StallsController {
     return this.stallsService.listGrooms();
   }
 
-  @Post('zones')
-  @Roles(UserRole.CLUB_MANAGER)
-  @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'DL-1.14 Thêm khu chuồng (CM)' })
-  createZone(@Body() dto: CreateZoneDto, @CurrentUser() user: CurrentUserPayload) {
-    return this.stallsService.createZone(dto, user);
-  }
-
   @Put('zones/:id')
   @Roles(UserRole.CLUB_MANAGER)
   @ApiOperation({ summary: 'DL-1.14 Sửa khu chuồng (CM)' })
@@ -99,14 +78,6 @@ export class StallsController {
     @CurrentUser() user: CurrentUserPayload,
   ) {
     return this.stallsService.setZoneStatus(id, dto, user);
-  }
-
-  @Post()
-  @Roles(UserRole.CLUB_MANAGER)
-  @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'DL-1.15 Thêm ô chuồng (CM)' })
-  create(@Body() dto: CreateStallDto, @CurrentUser() user: CurrentUserPayload) {
-    return this.stallsService.create(dto, user);
   }
 
   @Put(':id')
