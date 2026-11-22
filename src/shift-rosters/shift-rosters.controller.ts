@@ -19,6 +19,7 @@ import {
   AssignShiftRosterDto,
   CopyWeekRosterDto,
   QueryShiftRosterDto,
+  QueryCareTeamDto,
   RequestShiftSwapDto,
   SwapCandidatesQueryDto,
 } from './dto/shift-roster.dto';
@@ -30,6 +31,12 @@ const STAFF = [UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.VETERINARI
 @Controller('shift-rosters')
 export class ShiftRostersController {
   constructor(private readonly service: ShiftRostersService) {}
+
+  @Get('care-team')
+  @Roles(UserRole.HEAD_TRAINER)
+  careTeam(@Query() query: QueryCareTeamDto, @CurrentUser() user: CurrentUserPayload) {
+    return this.service.careTeam(query, user);
+  }
 
   @Get()
   @Roles(...STAFF)

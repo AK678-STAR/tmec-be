@@ -6,11 +6,12 @@ import { apiError } from '../common/exceptions/api-error';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { DailyTasksService } from '../daily-tasks/daily-tasks.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { rosterDay } from './groom-zones';
+import { rosterDay, shiftInterval } from './groom-zones';
 import {
   AssignShiftRosterDto,
   CopyWeekRosterDto,
   QueryShiftRosterDto,
+  QueryCareTeamDto,
   RequestShiftSwapDto,
 } from './dto/shift-roster.dto';
 
@@ -29,21 +30,6 @@ function getMondayOfDate(d: Date): Date {
   return date;
 }
 
-// Half-open intervals let a worker finish one shift exactly as another starts.
-function shiftInterval(
-  date: Date,
-  shift: { startTime: string; endTime: string; isOvernight: boolean },
-) {
-  const minutes = (time: string) => {
-    const [h, m] = time.split(':').map(Number);
-    return h * 60 + m;
-  };
-  const start = date.getTime() - 7 * 3600000 + minutes(shift.startTime) * 60000;
-  let end = date.getTime() - 7 * 3600000 + minutes(shift.endTime) * 60000;
-  if (shift.isOvernight || end <= start) end += 86400000;
-  return { start, end };
-}
-
 @Injectable()
 export class ShiftRostersService {
   constructor(
@@ -53,14 +39,114 @@ export class ShiftRostersService {
     @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
-  private async swappableRoster(id: string, actor: CurrentUserPayload) {
+  async careTeam(query: QueryCareTeamDto, actor: CurrentUserPayload) {
+    if (actor.role !== Role.HEAD_TRAINER)
+      throw apiError(HttpStatus.FORBIDDEN, 'TRAINER_REQUIRED', 'Trainer scope required.');
+    const start = query.startDate ? parseDateOnly(query.startDate) : getMondayOfDate(rosterDay());
+    const end = query.endDate
+      ? parseDateOnly(query.endDate)
+      : new Date(start.getTime() + 6 * 86400000);
+    if (
+      !Number.isFinite(+start) ||
+      !Number.isFinite(+end) ||
+      end < start ||
+      +end - +start > 30 * 86400000
+    )
+      throw apiError(HttpStatus.BAD_REQUEST, 'INVALID_ROSTER_RANGE', 'Select at most 31 days.');
+    const plans = await this.prisma.trainingPlan.findMany({
+      where: {
+        trainerUserId: actor.userId,
+        status: 'ACTIVE',
+        horse: { deletedAt: null, status: { not: 'RETIRED' } },
+      },
+      select: {
+        horseId: true,
+        horse: {
+          select: {
+            id: true,
+            name: true,
+            stallAllocations: {
+              where: { isActive: true },
+              select: { stall: { select: { zoneId: true } } },
+            },
+          },
+        },
+      },
+    });
+    const horseIds = [...new Set(plans.map((plan) => plan.horseId))];
+    const zoneIds = [
+      ...new Set(
+        plans.flatMap((plan) =>
+          plan.horse.stallAllocations.map((a) => a.stall.zoneId).filter((id): id is string => !!id),
+        ),
+      ),
+    ];
+    const groomRosters =
+      query.scope === 'club' || zoneIds.length
+        ? await this.prisma.shiftRoster.findMany({
+            where: {
+              date: { gte: start, lte: end },
+              ...(query.scope === 'club' ? {} : { zoneId: { in: zoneIds } }),
+            },
+            include: {
+              shift: true,
+              zone: true,
+              groom: {
+                select: {
+                  id: true,
+                  fullName: true,
+                  email: true,
+                  phoneNumber: true,
+                  role: true,
+                  status: true,
+                },
+              },
+            },
+            orderBy: [{ date: 'asc' }, { shiftId: 'asc' }, { id: 'asc' }],
+          })
+        : [];
+    const records = horseIds.length
+      ? await this.prisma.medicalRecord.findMany({
+          where: {
+            horseId: { in: horseIds },
+            status: 'OPEN',
+            veterinarian: { role: 'VETERINARIAN', status: 'ACTIVE' },
+          },
+          select: {
+            horse: { select: { id: true, name: true } },
+            veterinarian: { select: { id: true, fullName: true } },
+          },
+        })
+      : [];
+    const vets = new Map<
+      string,
+      { id: string; fullName: string; horses: Array<{ id: string; name: string }> }
+    >();
+    for (const record of records) {
+      const current = vets.get(record.veterinarian.id) ?? { ...record.veterinarian, horses: [] };
+      if (!current.horses.some((h) => h.id === record.horse.id)) current.horses.push(record.horse);
+      vets.set(current.id, current);
+    }
+    return {
+      groomRosters,
+      responsibleVeterinarians: [...vets.values()].sort((a, b) =>
+        a.fullName.localeCompare(b.fullName),
+      ),
+    };
+  }
+
+  private async swappableRoster(
+    id: string,
+    actor: CurrentUserPayload,
+    db: Prisma.TransactionClient = this.prisma,
+  ) {
     if (actor.role !== Role.GROOM)
       throw apiError(
         HttpStatus.FORBIDDEN,
         'GROOM_REQUIRED',
         'Chỉ nhân viên chăm sóc được xin đổi ca.',
       );
-    const roster = await this.prisma.shiftRoster.findUnique({
+    const roster = await db.shiftRoster.findUnique({
       where: { id },
       include: { shift: true, zone: true },
     });
@@ -71,12 +157,12 @@ export class ShiftRostersService {
     if (
       !roster.shift.isActive ||
       !roster.zone.isActive ||
-      shiftInterval(roster.date, roster.shift).end <= Date.now()
+      shiftInterval(roster.date, roster.shift).start <= Date.now()
     ) {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'SHIFT_NOT_AVAILABLE',
-        'Ca đã kết thúc hoặc ngừng hoạt động.',
+        'Ca đã bắt đầu hoặc ngừng hoạt động.',
       );
     }
     return roster;
@@ -84,14 +170,15 @@ export class ShiftRostersService {
 
   private async availableGrooms(
     roster: Awaited<ReturnType<ShiftRostersService['swappableRoster']>>,
+    db: Prisma.TransactionClient = this.prisma,
   ) {
     const [grooms, assignments] = await Promise.all([
-      this.prisma.user.findMany({
+      db.user.findMany({
         where: { role: Role.GROOM, status: UserStatus.ACTIVE, id: { not: roster.groomUserId } },
         select: { id: true, fullName: true },
         orderBy: { fullName: 'asc' },
       }),
-      this.prisma.shiftRoster.findMany({
+      db.shiftRoster.findMany({
         where: {
           date: {
             gte: new Date(roster.date.getTime() - 86400000),
@@ -122,25 +209,82 @@ export class ShiftRostersService {
 
   async requestSwap(id: string, dto: RequestShiftSwapDto, actor: CurrentUserPayload) {
     const reason = typeof dto.reason === 'string' ? dto.reason.trim() : '';
-    if (!reason || reason.length > 1000)
+    if (!reason || reason.length > 1000 || !!dto.targetRosterId === !!dto.targetGroomUserId)
       throw apiError(
         HttpStatus.BAD_REQUEST,
-        'INVALID_SWAP_REASON',
-        'Lý do xin đổi ca phải từ 1 đến 1000 ký tự.',
+        'INVALID_SWAP_REQUEST',
+        'Select exactly one target and enter a reason.',
       );
-    const roster = await this.swappableRoster(id, actor);
-    const candidates = await this.availableGrooms(roster);
-    const target = candidates.find((groom) => groom.id === dto.targetGroomUserId);
-    if (!target)
-      throw apiError(
-        HttpStatus.CONFLICT,
-        'SWAP_TARGET_UNAVAILABLE',
-        'Đồng nghiệp không hoạt động hoặc đã có ca trùng giờ.',
-      );
-    const date = roster.date.toISOString().slice(0, 10);
-    // Passing the transaction makes AuditService propagate storage errors. This audit IS the request.
-    await this.prisma.$transaction((tx) =>
-      this.auditService.record(
+    if (actor.role !== Role.GROOM)
+      throw apiError(HttpStatus.FORBIDDEN, 'GROOM_REQUIRED', 'Only Groom can request a swap.');
+    const proposal = await this.prisma.$transaction(async (tx) => {
+      const ids = [id, ...(dto.targetRosterId ? [dto.targetRosterId] : [])].sort();
+      await tx.$queryRaw`SELECT "id" FROM "ShiftRoster" WHERE "id" IN (${Prisma.join(ids)}) ORDER BY "id" FOR UPDATE`;
+      const roster = await this.swappableRoster(id, actor, tx);
+      let target: { id: string; fullName: string };
+      if (dto.targetRosterId) {
+        const other = await tx.shiftRoster.findUnique({
+          where: { id: dto.targetRosterId },
+          include: { shift: true, zone: true, groom: true },
+        });
+        if (
+          !other ||
+          other.id === id ||
+          other.groomUserId === actor.userId ||
+          !other.shift.isActive ||
+          !other.zone.isActive ||
+          other.groom.role !== Role.GROOM ||
+          other.groom.status !== UserStatus.ACTIVE ||
+          shiftInterval(other.date, other.shift).start <= Date.now()
+        )
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'SWAP_TARGET_UNAVAILABLE',
+            'The colleague shift is no longer available.',
+          );
+        for (const [groomUserId, slot] of [
+          [actor.userId, other],
+          [other.groomUserId, roster],
+        ] as const) {
+          const assignments = await tx.shiftRoster.findMany({
+            where: {
+              groomUserId,
+              id: { notIn: ids },
+              date: {
+                gte: new Date(slot.date.getTime() - 86400000),
+                lte: new Date(slot.date.getTime() + 86400000),
+              },
+              shift: { isActive: true },
+            },
+            include: { shift: true },
+          });
+          const range = shiftInterval(slot.date, slot.shift);
+          if (
+            assignments.some((row) => {
+              const busy = shiftInterval(row.date, row.shift);
+              return busy.start < range.end && range.start < busy.end;
+            })
+          )
+            throw apiError(
+              HttpStatus.CONFLICT,
+              'SWAP_TARGET_UNAVAILABLE',
+              'Proposed exchange overlaps another shift.',
+            );
+        }
+        target = { id: other.groomUserId, fullName: other.groom.fullName };
+      } else {
+        const candidates = await this.availableGrooms(roster, tx);
+        const candidate = candidates.find((person) => person.id === dto.targetGroomUserId);
+        if (!candidate)
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'SWAP_TARGET_UNAVAILABLE',
+            'Colleague is not active or is busy.',
+          );
+        target = candidate;
+      }
+      const date = roster.date.toISOString().slice(0, 10);
+      await this.auditService.record(
         { id: actor.userId, name: actor.fullName },
         'SHIFT_SWAP_REQUESTED',
         `Xin đổi ca ${roster.shift.name} ngày ${date} với ${target.fullName}: ${reason}`,
@@ -150,6 +294,7 @@ export class ShiftRostersService {
           newValues: {
             sourceGroomUserId: actor.userId,
             targetGroomUserId: target.id,
+            targetRosterId: dto.targetRosterId ?? null,
             date,
             shiftId: roster.shiftId,
             zoneId: roster.zoneId,
@@ -157,20 +302,22 @@ export class ShiftRostersService {
           },
         },
         tx,
-      ),
-    );
+      );
+      return { roster, target, date };
+    });
+    const { roster, target, date } = proposal;
     await this.notifications?.notifyRoles([Role.CLUB_MANAGER], {
       type: 'SHIFT_SWAP_REQUESTED',
       category: 'SYSTEM',
       title: 'Yêu cầu đổi ca cần xem xét',
-      message: `${actor.fullName} xin đổi ca ${roster.shift.name} ngày ${date}, khu ${roster.zone.name}, với ${target.fullName}. Lý do: ${reason}. Chưa thay đổi phân công.`,
+      message: `${actor.fullName} đề nghị đổi ca ${roster.shift.name} ngày ${date} với ${target.fullName}. ${reason}. Chưa thay đổi phân công.`,
       link: '/stable/shifts',
       senderName: actor.fullName,
-      dedupeKey: `shift-swap:${id}:${actor.userId}:${target.id}:${date}`,
+      dedupeKey: `shift-swap:${id}:${actor.userId}:${dto.targetRosterId ?? target.id}:${date}`,
       params: {
         rosterId: id,
-        sourceGroomUserId: actor.userId,
         targetGroomUserId: target.id,
+        targetRosterId: dto.targetRosterId ?? '',
         date,
         reason,
       },

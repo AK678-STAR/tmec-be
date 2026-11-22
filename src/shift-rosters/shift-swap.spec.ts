@@ -41,6 +41,7 @@ describe('Shift swap requests', () => {
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(new Date('2026-11-23T00:00:00Z'));
     prisma = {
+      $queryRaw: jest.fn(),
       shiftRoster: {
         findUnique: jest.fn().mockResolvedValue(source),
         findMany: jest.fn().mockResolvedValue([]),
@@ -53,6 +54,45 @@ describe('Shift swap requests', () => {
     service = new ShiftRostersService(prisma, audit, undefined, notifications);
   });
   afterEach(() => jest.useRealTimers());
+
+  it('rejects swaps from the instant a shift has started', async () => {
+    jest.setSystemTime(new Date('2026-11-24T00:30:00Z'));
+    await expect(service.getSwapCandidates('roster', actor)).rejects.toMatchObject({
+      response: { code: 'SHIFT_NOT_AVAILABLE' },
+    });
+  });
+
+  it('records a proposed exchange with a selected colleague roster, without changing either roster', async () => {
+    prisma.$queryRaw = jest.fn();
+    const other = {
+      ...source,
+      id: 'target-roster',
+      groomUserId: target.id,
+      groom: target,
+      date: new Date('2026-11-25T00:00:00Z'),
+    };
+    prisma.shiftRoster.findUnique.mockImplementation(async ({ where }) =>
+      where.id === 'target-roster' ? other : source,
+    );
+    await expect(
+      service.requestSwap(
+        'roster',
+        { targetRosterId: 'target-roster', reason: 'Exchange for personal appointment' } as any,
+        actor,
+      ),
+    ).resolves.toEqual({ requested: true });
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.anything(),
+      'SHIFT_SWAP_REQUESTED',
+      expect.any(String),
+      'roster',
+      expect.objectContaining({
+        newValues: expect.objectContaining({ targetRosterId: 'target-roster' }),
+      }),
+      prisma,
+    );
+    expect(prisma.shiftRoster.update).toBeUndefined();
+  });
 
   it('offers active available colleagues and records a request without exchanging assignments', async () => {
     expect(await service.getSwapCandidates('roster', actor)).toEqual([

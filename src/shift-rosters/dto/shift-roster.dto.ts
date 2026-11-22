@@ -11,6 +11,7 @@ import {
   IsString,
   IsUUID,
   MaxLength,
+  ValidateBy,
 } from 'class-validator';
 
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
@@ -24,10 +25,25 @@ export class SwapCandidatesQueryDto {
 }
 
 export class RequestShiftSwapDto {
-  @ApiProperty({ description: 'Nhân viên chăm sóc đề nghị thay ca' })
+  @ApiPropertyOptional({ description: 'Nhân viên chăm sóc đề nghị thay ca' })
+  @IsOptional()
   @IsUUID('4')
-  targetGroomUserId: string;
+  targetGroomUserId?: string;
 
+  @IsOptional()
+  @IsUUID('4')
+  targetRosterId?: string;
+
+  @ValidateBy({
+    name: 'exactlyOneSwapTarget',
+    validator: {
+      validate: (_, args) => {
+        const target = args?.object as RequestShiftSwapDto;
+        return !!target.targetGroomUserId !== !!target.targetRosterId;
+      },
+      defaultMessage: () => 'Choose exactly one target Groom or target roster.',
+    },
+  })
   @ApiProperty({ description: 'Lý do xin đổi ca (quản lý sẽ xem xét)' })
   @Transform(trim)
   @IsString()
@@ -117,4 +133,18 @@ export class QueryShiftRosterDto {
   @IsOptional()
   @IsUUID('4')
   groomUserId?: string;
+}
+
+export class QueryCareTeamDto {
+  @IsOptional()
+  @IsDateString({ strict: true })
+  startDate?: string;
+
+  @IsOptional()
+  @IsDateString({ strict: true })
+  endDate?: string;
+
+  @IsOptional()
+  @IsIn(['mine', 'club'])
+  scope: 'mine' | 'club' = 'mine';
 }
