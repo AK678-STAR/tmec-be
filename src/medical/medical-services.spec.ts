@@ -478,6 +478,25 @@ describe('Medical services', () => {
         }),
       );
     });
+    it('rejects a draft edit that lost the race to official finalization', async () => {
+      mockPrismaService.medicalRecord.findUnique
+        .mockResolvedValueOnce({
+          id: 'rec-1',
+          horseId: 'horse-1',
+          status: 'DRAFT',
+          severity: 'MILD',
+        })
+        .mockResolvedValueOnce({
+          id: 'rec-1',
+          horseId: 'horse-1',
+          status: 'OPEN',
+          severity: 'MILD',
+        });
+      await expect(
+        records.updateMedicalRecord('rec-1', mockVetUser, { severity: 'SEVERE' as any }),
+      ).rejects.toMatchObject({ response: { code: 'RECORD_CHANGED' } });
+      expect(mockPrismaService.medicalRecord.update).not.toHaveBeenCalled();
+    });
 
     it('updates horse status when editing an OPEN record with valid medical status', async () => {
       mockPrismaService.medicalRecord.findUnique.mockResolvedValue({

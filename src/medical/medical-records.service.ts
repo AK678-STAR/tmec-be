@@ -687,10 +687,21 @@ export class MedicalRecordsService {
       const currentRecord = await tx.medicalRecord.findUnique({ where: { id } });
       if (!currentRecord || currentRecord.status === 'CLOSED')
         throw apiError(HttpStatus.CONFLICT, 'RECORD_CLOSED', 'Record was closed while editing.');
+      if (
+        currentRecord.status !== record.status ||
+        (currentRecord.updatedAt &&
+          record.updatedAt &&
+          +currentRecord.updatedAt !== +record.updatedAt)
+      )
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'RECORD_CHANGED',
+          'Record changed while editing. Refresh before saving clinical changes.',
+        );
       let horseUpdateNeeded = false;
       let targetHorse: any = null;
 
-      if (record.status === 'OPEN' && dataToUpdate.recommendedHorseStatus) {
+      if (currentRecord.status === 'OPEN' && dataToUpdate.recommendedHorseStatus) {
         targetHorse = await tx.horse.findUnique({
           where: { id: record.horseId },
           select: { id: true, name: true, status: true, isMedicalLocked: true },
@@ -734,7 +745,7 @@ export class MedicalRecordsService {
         });
       }
 
-      if (record.status === 'OPEN' && ['SEVERE', 'CRITICAL'].includes(dto.severity ?? '')) {
+      if (currentRecord.status === 'OPEN' && ['SEVERE', 'CRITICAL'].includes(dto.severity ?? '')) {
         await new MedicalLifecycleService(this.audit).placeVeterinaryLock(
           tx,
           {
