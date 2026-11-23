@@ -1,7 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
+import { normalizeSeverity } from '../incident-lifecycle';
 import {
   IsArray,
+  ArrayUnique,
+  ArrayMaxSize,
+  Equals,
   IsDateString,
   IsEnum,
   IsInt,
@@ -41,6 +45,7 @@ export class CreateIncidentDto {
     description: 'Mức độ nghiêm trọng của sự cố',
     default: SeverityLevel.MODERATE,
   })
+  @Transform(({ value }) => normalizeSeverity(value))
   @IsEnum(SeverityLevel)
   severity: SeverityLevel = SeverityLevel.MODERATE;
 
@@ -73,6 +78,20 @@ export class ReviewIncidentDto {
   @IsOptional()
   @IsString()
   vetNotes?: string;
+}
+
+export class ResolveIncidentDto {
+  @IsUUID()
+  medicalRecordId: string;
+
+  @IsArray()
+  @ArrayUnique()
+  @ArrayMaxSize(100)
+  @IsUUID('4', { each: true })
+  duplicateIncidentIds: string[];
+
+  @Equals(true)
+  recoveryConfirmed: boolean;
 }
 
 export class QueryIncidentsDto {

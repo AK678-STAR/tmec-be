@@ -21,6 +21,8 @@ describe('ShiftRostersController', () => {
     assignSlot: jest.fn().mockResolvedValue({ id: 'roster-1' }),
     delete: jest.fn().mockResolvedValue({ success: true }),
     copyWeek: jest.fn().mockResolvedValue({ copiedCount: 14 }),
+    getSwapCandidates: jest.fn().mockResolvedValue([]),
+    requestSwap: jest.fn().mockResolvedValue({ requested: true }),
   };
 
   beforeEach(async () => {
@@ -40,6 +42,19 @@ describe('ShiftRostersController', () => {
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  it('delegates swap candidate lookup with the authenticated worker', async () => {
+    await controller.getSwapCandidates({ rosterId: 'roster-1' }, mockUser);
+    expect(service.getSwapCandidates).toHaveBeenCalledWith('roster-1', mockUser);
+  });
+
+  it('returns request acknowledgement without reporting a completed exchange', async () => {
+    const dto = { targetGroomUserId: 'target', reason: 'Family matter' };
+    await expect(controller.requestSwap('roster-1', dto, mockUser)).resolves.toEqual({
+      requested: true,
+    });
+    expect(service.requestSwap).toHaveBeenCalledWith('roster-1', dto, mockUser);
   });
 
   it('should delegate findAll to service', async () => {

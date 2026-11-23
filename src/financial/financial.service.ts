@@ -1,8 +1,25 @@
+import { CareBillingSettingsService } from './care-billing-settings.service';
+import { CareBillingPolicyDto } from './dto/care-billing-policy.dto';
+import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
+import { InvoiceLineItemsService } from './invoice-line-items.service';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { InvoiceStatus, Prisma, RestockStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { BusinessMailService, BusinessMailEvent } from '../business-mail/business-mail.service';
+import {
+  invoiceIssued,
+  invoicePaid,
+  invoiceCancelled,
+  dueSoon,
+  overdueNow,
+  paymentFailed,
+  refundNotice,
+  BillingInvoiceLike,
+  HorseLike,
+  OwnerLike,
+} from '../business-mail/templates/billing-templates';
 import { apiError } from '../common/exceptions/api-error';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { UpdateInvoiceDto } from './dto/update-invoice.dto';
@@ -62,7 +79,148 @@ export class FinancialService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly notifications: NotificationsService,
+    private readonly businessMail: BusinessMailService,
   ) {}
+
+  getCareBillingPolicy(actor: CurrentUserPayload) {
+    return new CareBillingSettingsService(this.prisma, this.audit).get(actor);
+  }
+  configureCareBilling(dto: CareBillingPolicyDto, actor: CurrentUserPayload) {
+    return new CareBillingSettingsService(this.prisma, this.audit).configure(dto, actor);
+  }
+  chargeExam(recordId: string, actor: CurrentUserPayload) {
+    return new CareBillingSettingsService(this.prisma, this.audit).chargeExam(recordId, actor);
+  }
+  usageReconciliation(actor: CurrentUserPayload) {
+    return new CareBillingSettingsService(this.prisma, this.audit).reconciliation(actor);
+  }
+
+  /**
+   * Gọi BusinessMailService.emit SAU khi ghi DB thành công. Lỗi mail không làm
+   * hỏng giao dịch chính (Global Constraint NOTE.md §6.3).
+   */
+  private async emitMailSafe(event: BusinessMailEvent): Promise<boolean> {
+    try {
+      const mailings = await this.businessMail.emit(event);
+      return mailings.some((mailing) => mailing.accepted);
+    } catch (err) {
+      this.logger.warn(`business-mail emit failed (${event.eventCode}): ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  /** Chuẩn hóa invoice + owner/horse → tham số templates billing. */
+  private invoiceCtx<
+    T extends {
+      id: string;
+      boardingFee?: unknown;
+      medicalFee?: unknown;
+      trainingFee?: unknown;
+      prizeCredit?: unknown;
+      netAmount?: unknown;
+      dueAt?: unknown;
+      status?: unknown;
+      billingPeriod?: string;
+    },
+  >(
+    inv: T,
+    ownerId: string | null | undefined,
+  ): { inv: BillingInvoiceLike; owner: OwnerLike; horse: HorseLike } {
+    return {
+      inv: {
+        id: inv.id,
+        billingPeriod: inv.billingPeriod ?? '',
+        boardingFee: Number(inv.boardingFee ?? 0),
+        medicalFee: inv.medicalFee == null ? undefined : Number(inv.medicalFee),
+        trainingFee: inv.trainingFee == null ? undefined : Number(inv.trainingFee),
+        prizeCredit: inv.prizeCredit == null ? undefined : Number(inv.prizeCredit),
+        netAmount: Number(inv.netAmount ?? 0),
+        dueAt: (inv.dueAt as Date | string | null) ?? null,
+        status: String(inv.status ?? ''),
+      },
+      owner: { id: ownerId ?? '', fullName: '—' },
+      horse: { id: '', name: '—' },
+    };
+  }
+
+  private async emitInvoiceStatusMail(
+    invoice: Prisma.FinancialInvoiceGetPayload<object>,
+    previousStatus: InvoiceStatus | null,
+    ownerId: string,
+    horseName?: string,
+  ): Promise<void> {
+    const status = invoice.status;
+    if (ownerId && previousStatus !== status) {
+      const ctx = this.invoiceCtx(invoice, ownerId);
+      ctx.owner.fullName = await this.ownerFullName(ownerId);
+      ctx.horse.name = horseName ?? ctx.horse.name;
+      if (status === InvoiceStatus.SENT) {
+        await this.emitMailSafe({
+          eventCode: 'INVOICE_ISSUED',
+          recipients: [
+            {
+              userId: ownerId,
+              body: { ...invoiceIssued(ctx.inv, ctx.horse, ctx.owner), refId: invoice.id },
+            },
+          ],
+        });
+      }
+      if (status === InvoiceStatus.PAID) {
+        await this.emitMailSafe({
+          eventCode: 'INVOICE_PAID',
+          recipients: [
+            {
+              userId: ownerId,
+              body: {
+                ...invoicePaid(ctx.inv, ctx.horse, ctx.owner, invoice.paymentRef ?? null),
+                refId: invoice.id,
+              },
+            },
+          ],
+        });
+      }
+      if (status === InvoiceStatus.CANCELLED) {
+        await this.emitMailSafe({
+          eventCode: 'INVOICE_CANCELLED',
+          recipients: [
+            {
+              userId: ownerId,
+              body: { ...invoiceCancelled(ctx.inv, ctx.horse, ctx.owner), refId: invoice.id },
+            },
+          ],
+        });
+      }
+      if (status === InvoiceStatus.OVERDUE) {
+        await this.emitMailSafe({
+          eventCode: 'INVOICE_OVERDUE',
+          recipients: [
+            {
+              userId: ownerId,
+              body: {
+                ...overdueNow(ctx.inv, ctx.owner),
+                milestone: 'overdue-now',
+                refId: invoice.id,
+              },
+            },
+          ],
+        });
+      }
+    }
+  }
+
+  /** Tra tên chủ khi query hóa đơn chưa bao gồm owner. */
+  private async ownerFullName(ownerId: string | null | undefined): Promise<string> {
+    if (!ownerId) return '—';
+    try {
+      const u = await this.prisma.user.findUnique({
+        where: { id: ownerId },
+        select: { fullName: true },
+      });
+      return u?.fullName ?? '—';
+    } catch {
+      return '—';
+    }
+  }
 
   /**
    * Lấy danh sách hóa đơn theo phân quyền
@@ -139,6 +297,7 @@ export class FinancialService {
       where: { id },
       include: {
         horse: true,
+        lineItems: { orderBy: [{ performedAt: 'asc' }, { id: 'asc' }] },
         owner: { select: { id: true, fullName: true, email: true, phoneNumber: true } },
       },
     });
@@ -246,6 +405,39 @@ export class FinancialService {
    * Tạo hóa đơn tài chính mới (Club Manager)
    */
   async create(dto: CreateInvoiceDto, user: FinancialActor) {
+    const invoice = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${dto.horseId} FOR UPDATE`;
+      return this.createInvoice(tx, dto, user);
+    });
+    try {
+      await this.audit.record(
+        { id: user.id, name: user.name },
+        'INVOICE_CREATED',
+        `Created invoice ${invoice.id}`,
+        invoice.id,
+        { entityName: 'FinancialInvoice', newValues: invoice },
+      );
+    } catch (error) {
+      this.logger.warn(`Invoice committed; audit notification failed: ${String(error)}`);
+    }
+    await this.emitInvoiceStatusMail(invoice, null, invoice.ownerId, invoice.horse?.name);
+    return serializeInvoice(invoice);
+  }
+
+  private async createInvoice(
+    tx: Prisma.TransactionClient,
+    dto: CreateInvoiceDto,
+    _user: FinancialActor,
+  ) {
+    if (
+      dto.status &&
+      ![InvoiceStatus.DRAFT, InvoiceStatus.SENT].includes(dto.status as 'DRAFT' | 'SENT')
+    )
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'INVALID_INITIAL_INVOICE_STATUS',
+        'New invoices must be draft or issued for payment.',
+      );
     const { start, end } = boardingMonth(dto.billingPeriod);
     if (end > new Date()) {
       throw apiError(
@@ -255,8 +447,8 @@ export class FinancialService {
       );
     }
     let resolvedOwnerId = dto.ownerId;
-    if (typeof this.prisma?.horse?.findUnique === 'function') {
-      const horse = await this.prisma.horse.findUnique({
+    if (typeof tx?.horse?.findUnique === 'function') {
+      const horse = await tx.horse.findUnique({
         where: { id: dto.horseId },
         select: { id: true, ownerId: true, name: true, status: true },
       });
@@ -287,15 +479,15 @@ export class FinancialService {
       );
     }
 
-    const allocations = await this.prisma.stallAllocation.findMany({
+    const allocations = await tx.stallAllocation.findMany({
       where: {
         horseId: dto.horseId,
         startDate: { lt: end },
         OR: [{ endDate: null }, { endDate: { gte: start } }],
       },
     });
-    if (typeof this.prisma?.financialInvoice?.findFirst === 'function') {
-      const existingActive = await this.prisma.financialInvoice.findFirst({
+    if (typeof tx?.financialInvoice?.findFirst === 'function') {
+      const existingActive = await tx.financialInvoice.findFirst({
         where: {
           horseId: dto.horseId,
           billingPeriod: dto.billingPeriod,
@@ -313,15 +505,29 @@ export class FinancialService {
     }
     const calculated = calculateBoardingFee(dto.billingPeriod, allocations);
     const boardingFee = calculated.boardingFee.toNumber();
-    const { medicalFee, trainingFee, prizeCredit } = await this.calculateAutomaticServiceFees(
+    const fees = await this.calculateAutomaticServiceFees(
       dto.horseId,
       start,
       end,
       calculated.boardingDays,
+      tx,
     );
+    const policy = await tx.careBillingPolicy.findUnique({ where: { id: 'club' } });
+    const actualUsage = Boolean(policy?.cutoverPeriod && dto.billingPeriod >= policy.cutoverPeriod);
+    const usage = actualUsage
+      ? await new InvoiceLineItemsService().available(
+          tx,
+          dto.horseId,
+          start,
+          end,
+          policy!.cutoverPeriod!,
+        )
+      : null;
+    const medicalFee = usage ? usage.medicalFee.toNumber() : fees.medicalFee;
+    const { trainingFee, prizeCredit } = fees;
     const netAmount = boardingFee + medicalFee + trainingFee - prizeCredit;
 
-    const invoice = await this.prisma.financialInvoice.create({
+    const invoice = await tx.financialInvoice.create({
       data: {
         horseId: dto.horseId,
         ownerId: resolvedOwnerId,
@@ -330,6 +536,8 @@ export class FinancialService {
         boardingMonthlyRate: BOARDING_MONTHLY_RATE,
         boardingFee,
         medicalFee,
+        billingMethod: actualUsage ? 'ACTUAL_USAGE' : 'LEGACY_PACKAGE',
+        ...(usage && { lineItems: { create: usage.lines } }),
         trainingFee,
         prizeCredit,
         netAmount,
@@ -338,29 +546,14 @@ export class FinancialService {
         invoiceUrl: dto.invoiceUrl,
       },
       include: {
+        lineItems: true,
         horse: { select: { name: true } },
         owner: { select: { fullName: true } },
       },
     });
 
-    await this.audit.record(
-      { id: user.id, name: user.name },
-      'INVOICE_CREATED',
-      `Created invoice for horse ${invoice.horse.name} (${invoice.billingPeriod}) - Net: ${netAmount.toLocaleString()} VND`,
-      invoice.id,
-      { entityName: 'FinancialInvoice', newValues: invoice },
-    );
-
-    return {
-      ...invoice,
-      boardingFee: Number(invoice.boardingFee),
-      boardingMonthlyRate:
-        invoice.boardingMonthlyRate == null ? null : Number(invoice.boardingMonthlyRate),
-      medicalFee: Number(invoice.medicalFee),
-      trainingFee: Number(invoice.trainingFee),
-      prizeCredit: Number(invoice.prizeCredit),
-      netAmount: Number(invoice.netAmount),
-    };
+    if (actualUsage) await new InvoiceLineItemsService().claim(tx, invoice.id, usage!.entries);
+    return invoice;
   }
 
   /**
@@ -380,6 +573,15 @@ export class FinancialService {
       );
     }
 
+    if (
+      existing.billingMethod === 'ACTUAL_USAGE' &&
+      (dto.medicalFee !== undefined || dto.billingPeriod !== undefined)
+    )
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'USAGE_INVOICE_READ_ONLY',
+        'Usage fees and billing period are immutable snapshots. Cancel and reissue, or create a ledger adjustment.',
+      );
     const isEditingFees =
       dto.boardingFee !== undefined ||
       dto.medicalFee !== undefined ||
@@ -426,26 +628,42 @@ export class FinancialService {
       dto.prizeCredit !== undefined ? dto.prizeCredit : Number(existing.prizeCredit);
     const netAmount = boardingFee + medicalFee + trainingFee - prizeCredit;
 
-    const updated = await this.prisma.financialInvoice.update({
-      where: { id },
-      data: {
-        ...(dto.billingPeriod && { billingPeriod: dto.billingPeriod }),
-        boardingFee,
-        medicalFee,
-        trainingFee,
-        prizeCredit,
-        netAmount,
-        ...(dto.status && { status: dto.status }),
-        ...(dto.status === InvoiceStatus.SENT &&
-          existing.status === InvoiceStatus.DRAFT &&
-          !existing.dueAt && { dueAt: new Date(Date.now() + 7 * 86400000) }),
-        ...(dto.invoiceUrl !== undefined && { invoiceUrl: dto.invoiceUrl }),
-      },
-      include: {
-        horse: { select: { id: true, name: true, horseCode: true } },
-        owner: { select: { id: true, fullName: true, email: true } },
-      },
-    });
+    const updated = await this.prisma
+      .$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${existing.horseId} FOR UPDATE`;
+        const changed = await tx.financialInvoice.update({
+          where: { id, status: existing.status, updatedAt: existing.updatedAt },
+          data: {
+            ...(dto.billingPeriod && { billingPeriod: dto.billingPeriod }),
+            boardingFee,
+            medicalFee,
+            trainingFee,
+            prizeCredit,
+            netAmount,
+            ...(dto.status && { status: dto.status }),
+            ...(dto.status === InvoiceStatus.SENT &&
+              existing.status === InvoiceStatus.DRAFT &&
+              !existing.dueAt && { dueAt: new Date(Date.now() + 7 * 86400000) }),
+            ...(dto.invoiceUrl !== undefined && { invoiceUrl: dto.invoiceUrl }),
+          },
+          include: {
+            horse: { select: { id: true, name: true, horseCode: true } },
+            owner: { select: { id: true, fullName: true, email: true } },
+          },
+        });
+        if (changed.status === InvoiceStatus.CANCELLED)
+          await tx.careCostClaim.deleteMany({ where: { invoiceId: id } });
+        return changed;
+      })
+      .catch((error: unknown) => {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025')
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'INVOICE_CHANGED',
+            'Invoice changed. Refresh before trying again.',
+          );
+        throw error;
+      });
 
     if (dto.status === InvoiceStatus.OVERDUE) {
       await this.applyDebtImpoundToHorses([existing.horseId]);
@@ -454,12 +672,48 @@ export class FinancialService {
       await this.checkAndReleaseDebtSanctions(existing.horseId, existing.ownerId, user);
     }
 
+    // Điều chỉnh / hoàn tiền (NOTE.md §6.2 dòng 347): khi số tiền chủ phải trả GIẢM
+    // (điều chỉnh phí hoặc cấn trừ tiền thưởng tăng) → báo chủ bằng chứng từ thay thế.
+    const oldNet = Number(existing.netAmount);
+    const newNet = Number(updated.netAmount);
+    if (newNet < oldNet) {
+      const ctx = this.invoiceCtx(updated, existing.ownerId);
+      ctx.owner.fullName = updated.owner?.fullName ?? ctx.owner.fullName;
+      ctx.horse.name = updated.horse?.name ?? ctx.horse.name;
+      await this.emitMailSafe({
+        eventCode: 'REFUND_NOTIFIED',
+        recipients: [
+          {
+            userId: existing.ownerId,
+            body: {
+              ...refundNotice(
+                ctx.inv,
+                oldNet,
+                newNet,
+                dto.notes || 'Điều chỉnh hóa đơn theo đối soát của Câu lạc bộ',
+                ctx.owner,
+              ),
+              refId: id,
+              milestone: updated.updatedAt.toISOString(),
+            },
+          },
+        ],
+      });
+    }
+
     await this.audit.record(
       { id: user.id, name: user.name },
       'INVOICE_UPDATED',
       `Updated invoice ${id} (${updated.billingPeriod})`,
       id,
       { entityName: 'FinancialInvoice', oldValues: existing, newValues: updated },
+    );
+
+    await this.emitInvoiceStatusMail(
+      updated,
+      existing.status,
+      existing.ownerId,
+      updated.horse?.name,
     );
 
     return serializeInvoice(updated);
@@ -505,23 +759,39 @@ export class FinancialService {
         );
       }
     }
-    const updated = await this.prisma.financialInvoice.update({
-      where: { id },
-      data: {
-        status,
-        ...(status === InvoiceStatus.PAID &&
-          existing.status !== InvoiceStatus.PAID && {
-            paidAt: new Date(),
-            paidConfirmedById: user.id,
-            paidConfirmedByName: user.name,
-          }),
-        ...(status === InvoiceStatus.SENT &&
-          existing.status === InvoiceStatus.DRAFT &&
-          !existing.dueAt && {
-            dueAt: new Date(Date.now() + 7 * 86400000),
-          }),
-      },
-    });
+    const updated = await this.prisma
+      .$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${existing.horseId} FOR UPDATE`;
+        const changed = await tx.financialInvoice.update({
+          where: { id, status: existing.status, updatedAt: existing.updatedAt },
+          data: {
+            status,
+            ...(status === InvoiceStatus.PAID &&
+              existing.status !== InvoiceStatus.PAID && {
+                paidAt: new Date(),
+                paidConfirmedById: user.id,
+                paidConfirmedByName: user.name,
+              }),
+            ...(status === InvoiceStatus.SENT &&
+              existing.status === InvoiceStatus.DRAFT &&
+              !existing.dueAt && {
+                dueAt: new Date(Date.now() + 7 * 86400000),
+              }),
+          },
+        });
+        if (changed.status === InvoiceStatus.CANCELLED)
+          await tx.careCostClaim.deleteMany({ where: { invoiceId: id } });
+        return changed;
+      })
+      .catch((error: unknown) => {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025')
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'INVOICE_CHANGED',
+            'Invoice changed. Refresh before trying again.',
+          );
+        throw error;
+      });
 
     await this.audit.record(
       { id: user.id, name: user.name },
@@ -557,6 +827,13 @@ export class FinancialService {
         user.id ?? undefined,
       );
     }
+
+    await this.emitInvoiceStatusMail(
+      updated,
+      existing.status,
+      existing.ownerId,
+      existing.horse?.name,
+    );
 
     return {
       ...updated,
@@ -616,7 +893,7 @@ export class FinancialService {
     // Chủ ngựa: chỉ báo đã chuyển khoản => "Chờ đối soát". Gửi lại = cập nhật mã tham chiếu, không đổi trạng thái.
     if (user.role === 'HORSE_OWNER') {
       const reported = await this.prisma.financialInvoice.update({
-        where: { id },
+        where: { id, status: existing.status, updatedAt: existing.updatedAt },
         data: { paymentReportedAt: new Date(), paymentMethod: method, paymentRef: ref },
       });
       await this.audit.record(
@@ -631,7 +908,7 @@ export class FinancialService {
 
     // Club Manager đối soát: tiền đã vào => PAID, rồi đánh giá lại hạn chế do nợ.
     const updated = await this.prisma.financialInvoice.update({
-      where: { id },
+      where: { id, status: existing.status, updatedAt: existing.updatedAt },
       data: {
         status: InvoiceStatus.PAID,
         paidAt: new Date(),
@@ -656,6 +933,25 @@ export class FinancialService {
 
     await this.checkAndReleaseDebtSanctions(existing.horseId, existing.ownerId, user);
 
+    // Mail chứng từ PAID (chứng từ: số tiền, mã giao dịch, thời điểm) — NOTE.md §6.2
+    if (existing.ownerId) {
+      const ctx = this.invoiceCtx(updated, existing.ownerId);
+      ctx.owner.fullName = await this.ownerFullName(existing.ownerId);
+      ctx.horse.name = existing.horse?.name ?? ctx.horse.name;
+      await this.emitMailSafe({
+        eventCode: 'INVOICE_PAID',
+        recipients: [
+          {
+            userId: existing.ownerId,
+            body: {
+              ...invoicePaid(ctx.inv, ctx.horse, ctx.owner, updated.paymentRef ?? ref),
+              refId: id,
+            },
+          },
+        ],
+      });
+    }
+
     return {
       ...updated,
       boardingFee: Number(updated.boardingFee),
@@ -669,6 +965,102 @@ export class FinancialService {
   }
 
   /**
+   * 6.2 dòng 346 — ghi nhận thanh toán THẤT BẠI khi CM đối soát phát hiện giao dịch lỗi.
+   * Gửi mail PAYMENT_FAILED cho người thực hiện giao dịch (chủ ngựa); KHÔNG nói "đã thanh toán".
+   */
+  async recordPaymentFailure(
+    id: string,
+    detail: { txRef?: string; reason?: string },
+    user: FinancialActor,
+  ): Promise<void> {
+    if (user.role !== 'CLUB_MANAGER') {
+      throw apiError(
+        HttpStatus.FORBIDDEN,
+        'FORBIDDEN',
+        'Chỉ Club Manager mới được ghi nhận thanh toán thất bại.',
+      );
+    }
+    const existing = await this.prisma.financialInvoice.findUnique({
+      where: { id },
+      include: { horse: true },
+    });
+    if (!existing) {
+      throw apiError(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', 'Không tìm thấy hóa đơn.');
+    }
+
+    if (
+      ![InvoiceStatus.SENT, InvoiceStatus.OVERDUE].includes(
+        existing.status as 'SENT' | 'OVERDUE',
+      ) ||
+      Number(existing.netAmount) <= 0
+    ) {
+      throw apiError(HttpStatus.BAD_REQUEST, 'INVALID_STATUS', 'Invoice has no payable balance.');
+    }
+
+    const ctx = this.invoiceCtx(existing, existing.ownerId);
+    ctx.owner.fullName = await this.ownerFullName(existing.ownerId);
+    ctx.horse.name = existing.horse?.name ?? ctx.horse.name;
+    await this.emitMailSafe({
+      eventCode: 'PAYMENT_FAILED',
+      recipients: [
+        {
+          userId: existing.ownerId,
+          body: {
+            ...paymentFailed(ctx.inv, detail?.txRef ?? existing.paymentRef ?? null),
+            refId: id,
+          },
+        },
+      ],
+    });
+  }
+
+  /**
+   * Nhắc nợ THỦ CÔNG (nút [🔔 Nhắc nợ] của Club Manager — Task 8). Milestone 'manual'
+   * riêng để không phá mốc tự động của cron (dedupeKey theo refId + milestone).
+   */
+  async remindInvoice(id: string, user: FinancialActor): Promise<{ sent: boolean }> {
+    if (user.role !== 'CLUB_MANAGER') {
+      throw apiError(HttpStatus.FORBIDDEN, 'FORBIDDEN', 'Chỉ Club Manager được nhắc nợ chủ ngựa.');
+    }
+    const existing = await this.prisma.financialInvoice.findUnique({
+      where: { id },
+      include: { horse: true },
+    });
+    if (!existing) {
+      throw apiError(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', 'Không tìm thấy hóa đơn.');
+    }
+
+    if (
+      ![InvoiceStatus.SENT, InvoiceStatus.OVERDUE].includes(
+        existing.status as 'SENT' | 'OVERDUE',
+      ) ||
+      Number(existing.netAmount) <= 0
+    ) {
+      throw apiError(HttpStatus.BAD_REQUEST, 'INVALID_STATUS', 'Invoice has no payable balance.');
+    }
+
+    const ctx = this.invoiceCtx(existing, existing.ownerId);
+    ctx.owner.fullName = await this.ownerFullName(existing.ownerId);
+    ctx.horse.name = existing.horse?.name ?? ctx.horse.name;
+    const sent = await this.emitMailSafe({
+      eventCode: 'MANUAL_REMIND',
+      recipients: [
+        {
+          userId: existing.ownerId,
+          body: {
+            ...(existing.status === InvoiceStatus.OVERDUE
+              ? overdueNow(ctx.inv, ctx.owner)
+              : dueSoon(ctx.inv, ctx.horse, ctx.owner)),
+            milestone: 'manual',
+            refId: id,
+          },
+        },
+      ],
+    });
+    return { sent };
+  }
+
+  /**
    * Tổng hợp báo cáo tài chính của Chủ ngựa (SC-5.06)
    */
   async getOwnerSummary(ownerId?: string) {
@@ -677,6 +1069,7 @@ export class FinancialService {
     const invoices = await this.prisma.financialInvoice.findMany({
       where,
       include: {
+        lineItems: { orderBy: [{ performedAt: 'asc' }, { id: 'asc' }] },
         horse: { select: { id: true, name: true, horseCode: true } },
         owner: { select: { id: true, fullName: true, email: true } },
       },
@@ -690,6 +1083,7 @@ export class FinancialService {
     let totalNet = 0;
 
     for (const inv of invoices) {
+      if (inv.status === InvoiceStatus.CANCELLED) continue;
       totalBoarding += Number(inv.boardingFee);
       totalMedical += Number(inv.medicalFee);
       totalTraining += Number(inv.trainingFee);
@@ -728,7 +1122,20 @@ export class FinancialService {
   async sweepOverdue(): Promise<number> {
     const overdueCandidates = await this.prisma.financialInvoice.findMany({
       where: { status: InvoiceStatus.SENT, dueAt: { lt: new Date() }, netAmount: { gt: 0 } },
-      select: { id: true, horseId: true, ownerId: true },
+      select: {
+        id: true,
+        horseId: true,
+        ownerId: true,
+        billingPeriod: true,
+        boardingFee: true,
+        medicalFee: true,
+        trainingFee: true,
+        prizeCredit: true,
+        netAmount: true,
+        dueAt: true,
+        status: true,
+        horse: { select: { name: true } },
+      },
     });
 
     const { count } = await this.prisma.financialInvoice.updateMany({
@@ -741,6 +1148,23 @@ export class FinancialService {
       const ownerIds = Array.from(new Set(overdueCandidates.map((i) => i.ownerId)));
       await this.applyDebtImpoundToHorses(horseIds);
       await this.applyBadDebtToOwners(ownerIds);
+
+      // Mốc vừa quá hạn tách riêng các mốc nhắc 3/7 ngày.
+      for (const inv of overdueCandidates) {
+        if (!inv.ownerId || Number(inv.netAmount) <= 0) continue;
+        const ctx = this.invoiceCtx(inv, inv.ownerId);
+        ctx.owner.fullName = await this.ownerFullName(inv.ownerId);
+        ctx.horse.name = inv.horse?.name ?? ctx.horse.name;
+        await this.emitMailSafe({
+          eventCode: 'INVOICE_OVERDUE',
+          recipients: [
+            {
+              userId: inv.ownerId,
+              body: { ...overdueNow(ctx.inv, ctx.owner), milestone: 'overdue-now', refId: inv.id },
+            },
+          ],
+        });
+      }
     }
 
     return count;
@@ -837,13 +1261,30 @@ export class FinancialService {
             const horses = await tx.horse.findMany({
               where: {
                 ownerId: { not: null },
-                stallAllocations: {
-                  some: {
-                    startDate: { lt: end },
-                    OR: [{ endDate: null }, { endDate: { gte: start } }],
+                OR: [
+                  {
+                    stallAllocations: {
+                      some: {
+                        startDate: { lt: end },
+                        OR: [{ endDate: null }, { endDate: { gte: start } }],
+                      },
+                    },
                   },
-                },
+                  {
+                    careCostEntries: {
+                      some: {
+                        claim: { is: null },
+                        performedAt: { lt: end },
+                        OR: [
+                          { performedAt: { gte: start } },
+                          { entryType: 'REVERSAL', reversesEntry: { claim: { isNot: null } } },
+                        ],
+                      },
+                    },
+                  },
+                ],
               },
+              orderBy: { id: 'asc' },
               include: {
                 stallAllocations: {
                   where: {
@@ -860,28 +1301,17 @@ export class FinancialService {
                 where: { horseId: horse.id, ownerId: horse.ownerId, billingPeriod },
               });
               if (existing) continue;
-              const { boardingDays, boardingFee } = calculateBoardingFee(
-                billingPeriod,
-                horse.stallAllocations,
-              );
-              if (boardingDays === 0) continue;
-              const { medicalFee, trainingFee, prizeCredit } =
-                await this.calculateAutomaticServiceFees(horse.id, start, end, boardingDays, tx);
-              await tx.financialInvoice.create({
-                data: {
+              await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${horse.id} FOR UPDATE`;
+              await this.createInvoice(
+                tx,
+                {
                   horseId: horse.id,
                   ownerId: horse.ownerId,
                   billingPeriod,
-                  boardingDays,
-                  boardingMonthlyRate: BOARDING_MONTHLY_RATE,
-                  boardingFee: boardingFee.toNumber(),
-                  medicalFee,
-                  trainingFee,
-                  prizeCredit,
-                  netAmount: boardingFee.plus(medicalFee).plus(trainingFee).minus(prizeCredit),
                   status: InvoiceStatus.DRAFT,
                 },
-              });
+                user,
+              );
               count++;
             }
             return count;
@@ -928,6 +1358,7 @@ export class FinancialService {
     const invoices = await this.prisma.financialInvoice.findMany({
       where,
       include: {
+        lineItems: { orderBy: [{ performedAt: 'asc' }, { id: 'asc' }] },
         horse: { select: { id: true, name: true, horseCode: true } },
         owner: { select: { id: true, fullName: true, email: true } },
       },
@@ -941,6 +1372,7 @@ export class FinancialService {
     let totalNet = 0;
 
     for (const inv of invoices) {
+      if (inv.status === InvoiceStatus.CANCELLED) continue;
       totalBoarding += Number(inv.boardingFee);
       totalMedical += Number(inv.medicalFee);
       totalTraining += Number(inv.trainingFee);
@@ -1010,6 +1442,8 @@ export class FinancialService {
           horseName: inv.horse?.name || '-',
           boardingFee: Number(inv.boardingFee),
           boardingDays: inv.boardingDays,
+          billingMethod: inv.billingMethod,
+          medicalLineItems: inv.lineItems,
           medicalFee: Number(inv.medicalFee),
           trainingFee: Number(inv.trainingFee),
           prizeCredit: Number(inv.prizeCredit),

@@ -1,3 +1,4 @@
+import { prizeWon } from '../business-mail/templates/health-templates';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
   HorseStatus,
@@ -118,6 +119,51 @@ export class TournamentsService {
   /**
    * Lấy danh sách giải đua với bộ lọc, tìm kiếm và phân trang
    */
+  private async publishPrizeMails(tournamentId: string): Promise<void> {
+    try {
+      const results = await this.prisma.tournamentResult.findMany({
+        where: {
+          registration: { tournamentId },
+          settledAt: { not: null },
+          prizeMoneyWon: { gt: 0 },
+        },
+        include: { registration: { include: { horse: true, tournament: true } } },
+      });
+      for (const result of results) {
+        await this.notifications.notifyHorse(
+          result.registration.horseId,
+          { roles: [Role.CLUB_MANAGER], owner: true, trainer: true },
+          {
+            type: 'RACE_RESULTS_PUBLISHED',
+            category: 'TRAINING',
+            title: 'Thành tích đã được xác nhận',
+            message: result.registration.horse.name + ' có kết quả giải đã chốt.',
+            link: '/races/results',
+            dedupeKey: 'prize-won:' + result.id,
+            email: {
+              eventCode: 'PRIZE_WON',
+              body: {
+                ...prizeWon(
+                  {
+                    finalRank: result.finalRank,
+                    prizeMoneyWon: Number(result.prizeMoneyWon),
+                    netOwnerPayout: Number(result.netOwnerPayout),
+                    settledAt: result.settledAt,
+                  },
+                  result.registration.tournament,
+                  result.registration.horse,
+                ),
+                refId: result.id,
+              },
+            },
+          },
+        );
+      }
+    } catch (error) {
+      this.logger.warn('Could not publish prize emails: ' + (error as Error).message);
+    }
+  }
+
   async findAll(query: QueryTournamentDto) {
     const { page = 1, limit = 20, status, trackType, search, from, to } = query;
     const skip = (page - 1) * limit;
@@ -1557,6 +1603,7 @@ export class TournamentsService {
         actor.id,
       );
 
+      await this.publishPrizeMails(tournamentId);
       return this.findOne(tournamentId, {
         userId: actor.id,
         email: actor.name,
@@ -1727,6 +1774,7 @@ export class TournamentsService {
       actor.id,
     );
 
+    await this.publishPrizeMails(tournamentId);
     return this.findOne(tournamentId, {
       userId: actor.id,
       email: actor.name,

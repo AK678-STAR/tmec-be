@@ -4,7 +4,12 @@ import { CurrentUser, CurrentUserPayload } from '../common/decorators/current-us
 import { Roles } from '../common/decorators/roles.decorator';
 import { UserRole } from '../common/enums/role.enum';
 import { IncidentsService } from './incidents.service';
-import { CreateIncidentDto, QueryIncidentsDto, ReviewIncidentDto } from './dto/incident.dto';
+import {
+  CreateIncidentDto,
+  QueryIncidentsDto,
+  ReviewIncidentDto,
+  ResolveIncidentDto,
+} from './dto/incident.dto';
 
 const ALL_STAFF_ROLES = [
   UserRole.CLUB_MANAGER,
@@ -18,6 +23,22 @@ const ALL_STAFF_ROLES = [
 @Controller('incidents')
 export class IncidentsController {
   constructor(private readonly service: IncidentsService) {}
+
+  @Get(':id/duplicate-candidates')
+  @Roles(UserRole.VETERINARIAN)
+  duplicateCandidates(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
+    return this.service.duplicateCandidates(id, user);
+  }
+
+  @Post(':id/resolve')
+  @Roles(UserRole.VETERINARIAN)
+  resolve(
+    @Param('id') id: string,
+    @Body() dto: ResolveIncidentDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.service.resolve(id, dto, user);
+  }
 
   @Post()
   @Roles(...ALL_STAFF_ROLES)
@@ -44,7 +65,7 @@ export class IncidentsController {
   }
 
   @Post(':id/review')
-  @Roles(UserRole.VETERINARIAN, UserRole.CLUB_MANAGER)
+  @Roles(UserRole.VETERINARIAN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Bác sĩ thú y hoặc Quản lý đánh giá và cập nhật trạng thái sự cố' })
   review(

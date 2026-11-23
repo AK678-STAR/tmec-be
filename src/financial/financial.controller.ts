@@ -7,14 +7,40 @@ import { UserRole } from '../common/enums/role.enum';
 import { FinancialService } from './financial.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { UpdateInvoiceDto } from './dto/update-invoice.dto';
+import { PaymentFailureDto } from './dto/payment-failure.dto';
 import { QueryInvoiceDto } from './dto/query-invoice.dto';
 import { GenerateMonthlyDto } from './dto/generate-monthly.dto';
+import { CareBillingPolicyDto } from './dto/care-billing-policy.dto';
 
 @ApiTags('Financial Ledger & Invoices (Flow 5: F5-05 & F5-06)')
 @ApiBearerAuth('JWT-auth')
 @Controller('invoices')
 export class FinancialController {
   constructor(private readonly financialService: FinancialService) {}
+
+  @Get('care-billing-policy')
+  @Roles(UserRole.CLUB_MANAGER)
+  getCarePolicy(@CurrentUser() user: CurrentUserPayload) {
+    return this.financialService.getCareBillingPolicy(user);
+  }
+
+  @Patch('care-billing-policy')
+  @Roles(UserRole.CLUB_MANAGER)
+  configureCarePolicy(@Body() dto: CareBillingPolicyDto, @CurrentUser() user: CurrentUserPayload) {
+    return this.financialService.configureCareBilling(dto, user);
+  }
+
+  @Get('usage-reconciliation')
+  @Roles(UserRole.CLUB_MANAGER)
+  usageReconciliation(@CurrentUser() user: CurrentUserPayload) {
+    return this.financialService.usageReconciliation(user);
+  }
+
+  @Post('medical-records/:recordId/exam-charge')
+  @Roles(UserRole.CLUB_MANAGER)
+  chargeExam(@Param('recordId') id: string, @CurrentUser() user: CurrentUserPayload) {
+    return this.financialService.chargeExam(id, user);
+  }
 
   @Get()
   @Roles(UserRole.CLUB_MANAGER, UserRole.HORSE_OWNER)
@@ -129,6 +155,31 @@ export class FinancialController {
       name: user.fullName || user.email,
       role: user.role,
     });
+  }
+
+  @Post(':id/remind')
+  @Roles(UserRole.CLUB_MANAGER)
+  async remind(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
+    return this.financialService.remindInvoice(id, {
+      id: user.userId,
+      name: user.fullName || user.email,
+      role: user.role,
+    });
+  }
+
+  @Post(':id/payment-failure')
+  @Roles(UserRole.CLUB_MANAGER)
+  async paymentFailure(
+    @Param('id') id: string,
+    @Body() dto: PaymentFailureDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    await this.financialService.recordPaymentFailure(id, dto, {
+      id: user.userId,
+      name: user.fullName || user.email,
+      role: user.role,
+    });
+    return { ok: true };
   }
 
   @Post(':id/pay')

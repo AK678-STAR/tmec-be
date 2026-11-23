@@ -11,6 +11,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  IsUUID,
   Length,
   Max,
   MaxLength,
@@ -22,6 +23,9 @@ import { INTENSITIES, WORKOUT_SURFACES, WORKOUT_TYPES } from '../training-rules'
 
 /** DL-2.01 Thêm buổi tập (HT). Luật nghiệp vụ (khóa y tế, 3 buổi/ngày...) kiểm ở service. */
 export class CreateWorkoutSessionDto {
+  @IsOptional()
+  @IsUUID('4')
+  trackId?: string;
   @ApiProperty({
     description: 'Ngày + giờ bắt đầu (ISO 8601, nên kèm múi giờ)',
     example: '2026-10-15T06:30:00+07:00',
@@ -119,4 +123,10 @@ export class RepeatWorkoutDto extends CreateWorkoutSessionDto {
   @ApiProperty({ description: 'Lặp đến ngày (YYYY-MM-DD, ≤ ngày kết thúc giai đoạn)' })
   @IsISO8601({}, { message: 'Ngày không hợp lệ.' })
   until: string;
+}
+
+export class CheckWorkoutDto extends CreateWorkoutSessionDto {
+  @IsOptional()
+  @IsUUID('4')
+  excludeWorkoutId?: string;
 }

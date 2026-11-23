@@ -1,3 +1,4 @@
+import { WorkoutAvailabilityService, lockWorkoutSchedule } from './workout-availability.service';
 import { HttpStatus, Injectable, Logger, Optional } from '@nestjs/common';
 import { HorseStatus, PlanStatus, Prisma, Role, UserStatus, WorkoutStatus } from '@prisma/client';
 import { DailyTasksService } from '../daily-tasks/daily-tasks.service';
@@ -11,6 +12,7 @@ import { RecordWorkoutResultDto } from './dto/record-result.dto';
 import { CancelWorkoutDto, RestoreWorkoutDto } from './dto/workout-actions.dto';
 import {
   addDays,
+  GROOM_BUFFER_MINUTES,
   allowEarlyWorkoutStart,
   clubDate,
   clubTime,
@@ -25,10 +27,8 @@ import {
   PENDING_WORKOUT_STATUSES,
   startOfClubDay,
   startOfClubWeek,
-  TRIAL_SLOT_MINUTES,
   withinTrainingHours,
   workoutDurationMinutes,
-  GROOM_BUFFER_MINUTES,
 } from './training-rules';
 import {
   Tx,
@@ -37,7 +37,6 @@ import {
   RESULT_EDIT_HOURS,
   MAX_REPEAT_WORKOUTS,
   HEAVY_GAP_HOURS,
-  GROOM_OVERLAP_MINUTES,
   WORKOUT_INCLUDE,
   WorkoutDraft,
   PlanForCheck,
@@ -96,6 +95,43 @@ export class WorkoutsService {
     @Optional() private readonly dailyTasks?: DailyTasksService,
   ) {}
 
+  async checkWorkout(
+    planId: string,
+    dto: CreateWorkoutSessionDto & { excludeWorkoutId?: string },
+    user: CurrentUserPayload,
+  ) {
+    if (user.role !== UserRole.HEAD_TRAINER)
+      throw apiError(HttpStatus.FORBIDDEN, 'FORBIDDEN', 'Trainer scheduling permission required.');
+    return this.prisma.$transaction(
+      async (tx) => {
+        const plan = await tx.trainingPlan.findUnique({ where: { id: planId } });
+        if (!plan) throw apiError(HttpStatus.NOT_FOUND, 'PLAN_NOT_FOUND', 'Plan not found.');
+        if (plan.trainerUserId !== user.userId)
+          throw apiError(
+            HttpStatus.FORBIDDEN,
+            'FORBIDDEN',
+            'This plan belongs to another trainer.',
+          );
+        if (dto.excludeWorkoutId) {
+          const existing = await tx.workoutSession.findUnique({
+            where: { id: dto.excludeWorkoutId },
+          });
+          if (!existing || existing.trainingPlanId !== plan.id)
+            throw apiError(
+              HttpStatus.FORBIDDEN,
+              'FORBIDDEN',
+              'The edited workout does not belong to this plan.',
+            );
+        }
+        return {
+          available: true,
+          ...(await this.validateAdmission(tx, plan, this.draftFrom(dto), dto.excludeWorkoutId)),
+        };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+  }
+
   private async syncCareDates(dates: Date[]) {
     if (!this.dailyTasks) return;
     const days = new Set(dates.map(clubDate));
@@ -114,7 +150,7 @@ export class WorkoutsService {
    * - Trả về medicalOverride (HT xếp bài nặng lúc ngựa ở trạng thái y tế, đã xác nhận)
    *   và warnings (6: chỉ cảnh báo, HT bấm Lưu lần 2 để xác nhận).
    */
-  private async assertWorkoutAllowed(
+  async validateAdmission(
     tx: Tx,
     plan: PlanForCheck,
     w: WorkoutDraft,
@@ -130,6 +166,7 @@ export class WorkoutsService {
     const horse = await tx.horse.findUnique({
       where: { id: plan.horseId },
       include: {
+        medicalLocks: { where: { isLocked: true }, select: { id: true }, take: 1 },
         stallAllocations: {
           where: { isActive: true },
           select: { stall: { select: { zoneId: true } } },
@@ -142,11 +179,11 @@ export class WorkoutsService {
     const heavy = isHeavy(w.workoutType, w.intensity);
 
     // 1. Khóa y tế + bài nặng: chặn, không vai trò nào vượt qua (RULE-MED-01).
-    if (horse.isMedicalLocked && heavy) {
+    if (horse.isMedicalLocked || (horse.medicalLocks?.length ?? 0) > 0) {
       throw apiError(
         HttpStatus.CONFLICT,
         'MEDICAL_LOCK_ACTIVE',
-        'Ngựa đang bị Khóa huấn luyện y tế. Không thể xếp bài tập nặng.',
+        'Ngựa đang bị Khóa huấn luyện y tế. Không thể xếp buổi tập mới cho đến khi bác sĩ giải trừ khóa.',
       );
     }
     // 1b. Lưu giữ do nợ phí + bài nặng: chặn, chỉ cho phép đi bộ / vận động nhẹ (WALK)
@@ -275,38 +312,6 @@ export class WorkoutsService {
       );
     }
 
-    // 3. Chạy thử trùng mặt sân trong cùng khung 15 phút.
-    if (w.workoutType === 'TRIAL') {
-      const slot = TRIAL_SLOT_MINUTES * 60 * 1000;
-      const clash = await tx.workoutSession.findFirst({
-        where: {
-          ...live,
-          workoutType: 'TRIAL',
-          trackSurface: w.trackSurface,
-          scheduledDate: {
-            gt: new Date(w.scheduledDate.getTime() - slot),
-            lt: new Date(w.scheduledDate.getTime() + slot),
-          },
-        },
-        select: {
-          id: true,
-          scheduledDate: true,
-          horse: { select: { name: true } },
-          ...TRAINER_OF_WORKOUT,
-        },
-      });
-      if (clash) {
-        const c = conflictInfo(clash.scheduledDate, TRIAL_SLOT_MINUTES, clash);
-        const surface = SURFACE_LABEL[w.trackSurface] ?? w.trackSurface;
-        throw apiError(
-          HttpStatus.CONFLICT,
-          'TRIAL_SLOT_TAKEN',
-          `Mặt sân ${surface} đã có lượt chạy thử của ${clash.horse.name} lúc ${c.time} ngày ${c.date} (HLV ${c.trainer}). Chọn giờ bắt đầu từ ${c.before} trở về trước, hoặc từ ${c.after} trở đi.`,
-          { workoutId: clash.id, horse: clash.horse.name, surface: w.trackSurface, ...c },
-        );
-      }
-    }
-
     // 4. Tối đa 3 buổi mỗi ngày cho 1 ngựa.
     const dayStart = startOfClubDay(w.scheduledDate);
     const sameDay = await tx.workoutSession.count({
@@ -380,83 +385,11 @@ export class WorkoutsService {
         );
       }
     }
-    // 7. HLV kiêm nài không thể cưỡi 2 ngựa cùng lúc (phải cách nhau thời lượng + 15 phút đệm chuyển tiếp theo BR-TRN-24).
-    const newStart = w.scheduledDate.getTime();
-    const newDur = workoutDurationMinutes(w.workoutType);
-    const newEnd = newStart + (newDur + GROOM_BUFFER_MINUTES) * 60 * 1000;
-    const maxPreWindow = 120 * 60 * 1000;
-
-    let busy: {
-      id: string;
-      scheduledDate: Date;
-      workoutType?: string | null;
-      horse: { name: string };
-      trainingPlan: { trainer: { fullName: string } } | null;
-    } | null = null;
-
-    if (tx.workoutSession?.findMany) {
-      const candidates = await tx.workoutSession.findMany({
-        where: {
-          ...live,
-          trainingPlan: { trainerUserId: trainer.id },
-          scheduledDate: {
-            gte: new Date(newStart - maxPreWindow),
-            lte: new Date(newEnd),
-          },
-        },
-        select: {
-          id: true,
-          scheduledDate: true,
-          workoutType: true,
-          horse: { select: { name: true } },
-          ...TRAINER_OF_WORKOUT,
-        },
-        orderBy: { scheduledDate: 'asc' },
-      });
-      if (Array.isArray(candidates) && candidates.length > 0) {
-        busy =
-          candidates.find((other) => {
-            if (!other?.scheduledDate || typeof other.scheduledDate.getTime !== 'function')
-              return false;
-            const otherStart = other.scheduledDate.getTime();
-            const otherDur = workoutDurationMinutes(other.workoutType);
-            const otherEnd = otherStart + (otherDur + GROOM_BUFFER_MINUTES) * 60 * 1000;
-            return newStart < otherEnd && otherStart < newEnd;
-          }) ?? null;
-      }
-    }
-
-    // Fallback cho findFirst (hỗ trợ cả mock trong unit test)
-    if (!busy && tx.workoutSession?.findFirst) {
-      const fallbackOverlap = (newDur + GROOM_BUFFER_MINUTES) * 60 * 1000;
-      busy = await tx.workoutSession.findFirst({
-        where: {
-          ...live,
-          trainingPlan: { trainerUserId: trainer.id },
-          scheduledDate: {
-            gt: new Date(newStart - fallbackOverlap),
-            lt: new Date(newStart + fallbackOverlap),
-          },
-        },
-        select: {
-          id: true,
-          scheduledDate: true,
-          workoutType: true,
-          horse: { select: { name: true } },
-          ...TRAINER_OF_WORKOUT,
-        },
-      });
-    }
-
-    if (busy) {
-      const c = conflictInfo(busy.scheduledDate, GROOM_OVERLAP_MINUTES, busy);
-      throw apiError(
-        HttpStatus.CONFLICT,
-        'TRAINER_TIME_CONFLICT',
-        `HLV ${trainer.fullName} đã có buổi tập của ${busy.horse.name} lúc ${c.time} ngày ${c.date}. Chọn giờ bắt đầu từ ${c.before} trở về trước hoặc từ ${c.after} trở đi.`,
-        { workoutId: busy.id, horse: busy.horse.name, ...c },
-      );
-    }
+    await new WorkoutAvailabilityService().validate(
+      tx,
+      { ...w, horseId: plan.horseId, trainerUserId: plan.trainerUserId },
+      excludeWorkoutId,
+    );
 
     // 8. #6: mỗi ngày một HLV chỉ làm việc trên một mặt sân (Bơi / Máy đi bộ không tính).
     if (w.trackSurface !== 'NONE' && tx.workoutSession?.findFirst) {
@@ -500,6 +433,7 @@ export class WorkoutsService {
   private draftFrom(dto: CreateWorkoutSessionDto, scheduledDate = new Date(dto.scheduledDate)) {
     return {
       scheduledDate,
+      trackId: effectiveSurface(dto.workoutType, dto.trackSurface) === 'NONE' ? null : dto.trackId,
       phaseId: dto.phaseId,
       workoutType: dto.workoutType,
       intensity: effectiveIntensity(dto.workoutType, dto.intensity),
@@ -527,6 +461,7 @@ export class WorkoutsService {
       workoutType: draft.workoutType,
       intensity: draft.intensity,
       trackSurface: draft.trackSurface,
+      trackId: draft.trackSurface === 'NONE' ? null : draft.trackId,
       distanceMeters: draft.distanceMeters,
       repetitions: draft.repetitions,
       targetSpeedKmh: draft.targetSpeedKmh,
@@ -541,6 +476,7 @@ export class WorkoutsService {
   /** DL-2.01 Thêm buổi tập vào giáo án Nháp / Đang áp dụng (HT). */
   async createWorkout(planId: string, dto: CreateWorkoutSessionDto, user: CurrentUserPayload) {
     const session = await this.prisma.$transaction(async (tx) => {
+      await lockWorkoutSchedule(tx);
       const plan = await tx.trainingPlan.findUnique({ where: { id: planId } });
       if (!plan) {
         throw apiError(HttpStatus.NOT_FOUND, 'PLAN_NOT_FOUND', 'Training plan not found.');
@@ -552,7 +488,7 @@ export class WorkoutsService {
       await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${plan.horseId} FOR UPDATE`;
 
       const draft = this.draftFrom(dto);
-      const { medicalOverride, warnings } = await this.assertWorkoutAllowed(tx, plan, draft);
+      const { medicalOverride, warnings } = await this.validateAdmission(tx, plan, draft);
       this.assertWarningsAcknowledged(warnings, dto.acknowledgeWarnings);
 
       const session = await tx.workoutSession.create({
@@ -581,6 +517,7 @@ export class WorkoutsService {
   async createRepeatWorkouts(planId: string, dto: RepeatWorkoutDto, user: CurrentUserPayload) {
     const careDates: Date[] = [];
     const result = await this.prisma.$transaction(async (tx) => {
+      await lockWorkoutSchedule(tx);
       const plan = await tx.trainingPlan.findUnique({ where: { id: planId } });
       if (!plan) {
         throw apiError(HttpStatus.NOT_FOUND, 'PLAN_NOT_FOUND', 'Training plan not found.');
@@ -627,6 +564,9 @@ export class WorkoutsService {
         'MEDICAL_LOCK_ACTIVE',
         'HORSE_RETIRED',
         'TRIAL_SLOT_TAKEN',
+        'TRACK_CAPACITY_EXCEEDED',
+        'TRAINER_BUSY_SLOT',
+        'WORKOUT_REST_REQUIRED',
         'MAX_WORKOUTS_PER_DAY',
         'HORSE_WORKOUT_TIME_CONFLICT',
         'TRAINER_TIME_CONFLICT',
@@ -642,7 +582,7 @@ export class WorkoutsService {
       for (const date of dates) {
         const draft = this.draftFrom(dto, date);
         try {
-          const { medicalOverride, warnings } = await this.assertWorkoutAllowed(tx, plan, draft);
+          const { medicalOverride, warnings } = await this.validateAdmission(tx, plan, draft);
           if (warnings && warnings.length > 0) {
             allWarnings.push({ date: clubDate(date), warnings });
           }
@@ -684,6 +624,7 @@ export class WorkoutsService {
   async updateWorkout(workoutId: string, dto: UpdateWorkoutSessionDto, user: CurrentUserPayload) {
     let previousDate: Date | undefined;
     const updated = await this.prisma.$transaction(async (tx) => {
+      await lockWorkoutSchedule(tx);
       const existing = await tx.workoutSession.findUnique({
         where: { id: workoutId },
         include: { trainingPlan: true },
@@ -716,6 +657,7 @@ export class WorkoutsService {
         scheduledDate: dto.scheduledDate ? new Date(dto.scheduledDate) : existing.scheduledDate,
         phaseId: dto.phaseId ?? existing.phaseId,
         workoutType,
+        trackId: dto.trackId ?? existing.trackId,
         intensity: effectiveIntensity(workoutType, dto.intensity ?? existing.intensity ?? 'MEDIUM'),
         trackSurface: effectiveSurface(
           workoutType,
@@ -728,7 +670,7 @@ export class WorkoutsService {
         assignedStaffUserId: dto.assignedStaffUserId ?? existing.assignedStaffUserId ?? '',
         vetConsulted: dto.vetConsulted ?? existing.medicalOverride,
       };
-      const { medicalOverride, warnings } = await this.assertWorkoutAllowed(
+      const { medicalOverride, warnings } = await this.validateAdmission(
         tx,
         existing.trainingPlan,
         draft,
@@ -744,6 +686,7 @@ export class WorkoutsService {
           workoutType: draft.workoutType,
           intensity: draft.intensity,
           trackSurface: draft.trackSurface,
+          trackId: draft.trackSurface === 'NONE' ? null : draft.trackId,
           distanceMeters: draft.distanceMeters,
           repetitions: draft.repetitions,
           targetSpeedKmh: draft.targetSpeedKmh,
@@ -987,6 +930,7 @@ export class WorkoutsService {
   /** DL-2.07 Khôi phục buổi bị chặn sau khi gỡ Khóa y tế (HT), áp lại toàn bộ kiểm tra DL-2.01. */
   async restoreWorkout(workoutId: string, dto: RestoreWorkoutDto, user: CurrentUserPayload) {
     const restored = await this.prisma.$transaction(async (tx) => {
+      await lockWorkoutSchedule(tx);
       const existing = await tx.workoutSession.findUnique({
         where: { id: workoutId },
         include: { trainingPlan: true },
@@ -1033,6 +977,7 @@ export class WorkoutsService {
         scheduledDate: dto.scheduledDate ? new Date(dto.scheduledDate) : existing.scheduledDate,
         phaseId: existing.phaseId,
         workoutType,
+        trackId: existing.trackId,
         intensity: existing.intensity ?? 'MEDIUM',
         trackSurface: existing.trackSurface ?? 'TURF',
         distanceMeters: existing.distanceMeters,
@@ -1042,7 +987,7 @@ export class WorkoutsService {
         assignedStaffUserId: existing.assignedStaffUserId ?? '',
         vetConsulted: existing.medicalOverride,
       };
-      await this.assertWorkoutAllowed(tx, existing.trainingPlan, draft, workoutId);
+      await this.validateAdmission(tx, existing.trainingPlan, draft, workoutId);
 
       const restored = await tx.workoutSession.update({
         where: { id: workoutId },

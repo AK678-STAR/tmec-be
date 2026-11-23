@@ -1,3 +1,4 @@
+import { BusinessMailService } from '../business-mail/business-mail.service';
 import { NotificationCategory, Role, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from './notifications.service';
@@ -93,6 +94,33 @@ describe('NotificationsService', () => {
     it('should never throw when the database fails', async () => {
       prisma.user.findMany.mockRejectedValue(new Error('db down'));
       await expect(service.notifyUsers(['u1'], input)).resolves.toBe(false);
+    });
+  });
+
+  describe('business email bridge', () => {
+    it('uses the scoped audience and preserves the notification when SMTP fails', async () => {
+      prisma.user.findMany.mockResolvedValue([{ id: 'groom-a', role: Role.GROOM, notify: null }]);
+      const emit = jest.fn().mockRejectedValue(new Error('SMTP unavailable'));
+      const notifier = new NotificationsService(
+        prisma as unknown as PrismaService,
+        { emit } as unknown as BusinessMailService,
+      );
+      await expect(
+        notifier.notifyUsers(['groom-a'], {
+          ...input,
+          type: 'TASK_ASSIGNED',
+          email: {
+            eventCode: 'TASK_ASSIGNED',
+            body: { subject: 'Work', text: 'Task', refId: 'task-a' },
+          },
+        }),
+      ).resolves.toBe(true);
+      expect(emit).toHaveBeenCalledWith({
+        eventCode: 'TASK_ASSIGNED',
+        recipients: [
+          { userId: 'groom-a', body: { subject: 'Work', text: 'Task', refId: 'task-a' } },
+        ],
+      });
     });
   });
 

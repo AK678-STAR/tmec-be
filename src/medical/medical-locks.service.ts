@@ -1,3 +1,4 @@
+import { lockChanged } from '../business-mail/templates/health-templates';
 import { HttpStatus, Injectable, Logger, Optional } from '@nestjs/common';
 import { NotificationsService } from '../notifications/notifications.service';
 import { apiError } from '../common/exceptions/api-error';
@@ -305,6 +306,23 @@ export class MedicalLocksService {
     const notificationSent = await this.notifyLockAudience(
       horse.id,
       {
+        email: {
+          eventCode: 'LOCK_CHANGED',
+          body: {
+            ...lockChanged(
+              horse,
+              {
+                type: lock.lockCode ?? lock.id,
+                reason: dto.lockReason,
+                expiresAt: lock.recheckDate,
+              },
+              'planned',
+              { name: actor.fullName },
+            ),
+            refId: lock.id,
+            milestone: 'placed',
+          },
+        },
         type: 'LOCK_PLACED',
         dedupeKey: `lock-placed:${lock.id}`,
         category: 'LOCK',
@@ -341,112 +359,168 @@ export class MedicalLocksService {
   async releaseMedicalLock(lockId: string, actor: CurrentUserPayload, dto: ReleaseMedicalLockDto) {
     this.access.assertVet(actor, 'lift a training lock');
 
-    const { lock, unlocked, stillLocked } = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT "id" FROM "MedicalLock" WHERE "id" = ${lockId} FOR UPDATE`;
-      const lock = await tx.medicalLock.findUnique({
-        where: { id: lockId },
-        include: { horse: { include: { injuryLogs: { where: { stage: 'ACUTE' } } } } },
-      });
-      if (!lock || !lock.isLocked) {
-        throw apiError(
-          HttpStatus.BAD_REQUEST,
-          'LOCK_NOT_ACTIVE',
-          'The Training Lock was not found or is already lifted.',
-        );
-      }
-
-      if (
-        dto.newHorseStatus &&
-        (dto.newHorseStatus === HorseStatus.RETIRED || dto.newHorseStatus === HorseStatus.INJURED)
-      ) {
-        throw apiError(
-          HttpStatus.BAD_REQUEST,
-          'INVALID_RELEASE_STATUS',
-          'Trạng thái sau khi gỡ khóa y tế không thể là RETIRED hoặc INJURED.',
-        );
-      }
-
-      const newHorseStatus = dto.newHorseStatus || lock.horse?.status;
-      const currentStatus = lock.horse?.status || lock.appliedMedicalStatus || HorseStatus.INJURED;
-      if (newHorseStatus && newHorseStatus !== currentStatus) {
-        assertStatusTransition({
-          role: actor.role,
-          from: currentStatus,
-          to: newHorseStatus,
-          isMedicalLocked: false,
-          reason: dto.unlockReason,
+    const { lock, unlocked, stillLocked, activeLockCodes } = await this.prisma.$transaction(
+      async (tx) => {
+        const target = await tx.medicalLock.findUnique({
+          where: { id: lockId },
+          select: { horseId: true },
         });
-      }
+        if (target)
+          await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${target.horseId} FOR UPDATE`;
+        await tx.$queryRaw`SELECT "id" FROM "MedicalLock" WHERE "id" = ${lockId} FOR UPDATE`;
+        const lock = await tx.medicalLock.findUnique({
+          where: { id: lockId },
+          include: { horse: { include: { injuryLogs: { where: { stage: 'ACUTE' } } } } },
+        });
+        if (!lock || !lock.isLocked) {
+          throw apiError(
+            HttpStatus.BAD_REQUEST,
+            'LOCK_NOT_ACTIVE',
+            'The Training Lock was not found or is already lifted.',
+          );
+        }
 
-      // Đếm số lệnh khóa đang còn active của ngựa (tránh tắt nhầm cờ nếu còn khóa khác - H-08)
-      const remainingActiveLocks = await tx.medicalLock.count({
-        where: {
-          horseId: lock.horseId,
-          isLocked: true,
-          id: { not: lockId },
-        },
-      });
-      const stillLocked = remainingActiveLocks > 0;
+        if (lock.source === 'INCIDENT_AUTO') {
+          const record = lock.medicalRecordId
+            ? await tx.medicalRecord.findUnique({ where: { id: lock.medicalRecordId } })
+            : null;
+          if (
+            !record ||
+            record.horseId !== lock.horseId ||
+            record.status !== 'CLOSED' ||
+            record.treatmentResult !== 'RECOVERED'
+          ) {
+            throw apiError(
+              HttpStatus.CONFLICT,
+              'RECOVERED_RECORD_REQUIRED',
+              'Incident protection requires recovery confirmed in its linked medical record.',
+            );
+          }
+        }
 
-      const unlocked = await tx.medicalLock.update({
-        where: { id: lockId },
-        data: {
-          isLocked: false,
-          unlockedAt: new Date(),
-          unlockVetUserId: actor.userId,
-          unlockReason: dto.unlockReason,
-          recheckNotes: dto.recheckNotes || dto.unlockReason,
-        },
-        include: {
-          horse: {
-            select: { id: true, name: true, horseCode: true, microchip: true, microchipRfid: true },
-          },
-          veterinarian: { select: { id: true, fullName: true } },
-          unlockVet: { select: { id: true, fullName: true } },
-        },
-      });
+        if (
+          dto.newHorseStatus &&
+          (dto.newHorseStatus === HorseStatus.RETIRED || dto.newHorseStatus === HorseStatus.INJURED)
+        ) {
+          throw apiError(
+            HttpStatus.BAD_REQUEST,
+            'INVALID_RELEASE_STATUS',
+            'Trạng thái sau khi gỡ khóa y tế không thể là RETIRED hoặc INJURED.',
+          );
+        }
 
-      await tx.horse.update({
-        where: { id: lock.horseId },
-        data: {
-          isMedicalLocked: stillLocked,
-          status: stillLocked ? lock.horse?.status || HorseStatus.INJURED : newHorseStatus,
-        },
-      });
-
-      await this.audit.record(
-        { id: actor.userId, name: actor.fullName },
-        'RELEASE_MEDICAL_LOCK',
-        `Medical lock ${lock.lockCode || lockId} released for horse ${lock.horseId}`,
-        lockId,
-        { entityName: 'MedicalLock' },
-        tx,
-      );
-      await this.audit.record(
-        { id: actor.userId, name: actor.fullName },
-        'HORSE_STATUS_CHANGED',
-        `Changed status of horse ${lock.horse.name} from ${lock.horse.status} to ${newHorseStatus} (training lock lifted)`,
-        lock.horseId,
-        {
-          entityName: 'Horse',
-          newValues: {
-            oldStatus: lock.horse.status,
-            newStatus: newHorseStatus,
+        const newHorseStatus = dto.newHorseStatus || lock.horse?.status;
+        const currentStatus =
+          lock.horse?.status || lock.appliedMedicalStatus || HorseStatus.INJURED;
+        if (newHorseStatus && newHorseStatus !== currentStatus) {
+          assertStatusTransition({
+            role: actor.role,
+            from: currentStatus,
+            to: newHorseStatus,
+            isMedicalLocked: false,
             reason: dto.unlockReason,
-            source: 'MEDICAL_LOCK',
-            lockCode: lock.lockCode,
-          },
-        },
-        tx,
-      );
+          });
+        }
 
-      return { lock, unlocked, stillLocked };
-    });
+        // Đếm số lệnh khóa đang còn active của ngựa (tránh tắt nhầm cờ nếu còn khóa khác - H-08)
+        const remainingActiveLocks = await tx.medicalLock.count({
+          where: {
+            horseId: lock.horseId,
+            isLocked: true,
+            id: { not: lockId },
+          },
+        });
+        const stillLocked = remainingActiveLocks > 0;
+
+        const unlocked = await tx.medicalLock.update({
+          where: { id: lockId },
+          data: {
+            isLocked: false,
+            unlockedAt: new Date(),
+            unlockVetUserId: actor.userId,
+            unlockReason: dto.unlockReason,
+            recheckNotes: dto.recheckNotes || dto.unlockReason,
+          },
+          include: {
+            horse: {
+              select: {
+                id: true,
+                name: true,
+                horseCode: true,
+                microchip: true,
+                microchipRfid: true,
+              },
+            },
+            veterinarian: { select: { id: true, fullName: true } },
+            unlockVet: { select: { id: true, fullName: true } },
+          },
+        });
+
+        await tx.horse.update({
+          where: { id: lock.horseId },
+          data: {
+            isMedicalLocked: stillLocked,
+            status: stillLocked ? lock.horse?.status || HorseStatus.INJURED : newHorseStatus,
+          },
+        });
+
+        await this.audit.record(
+          { id: actor.userId, name: actor.fullName },
+          'RELEASE_MEDICAL_LOCK',
+          `Medical lock ${lock.lockCode || lockId} released for horse ${lock.horseId}`,
+          lockId,
+          { entityName: 'MedicalLock' },
+          tx,
+        );
+        await this.audit.record(
+          { id: actor.userId, name: actor.fullName },
+          'HORSE_STATUS_CHANGED',
+          `Changed status of horse ${lock.horse.name} from ${lock.horse.status} to ${newHorseStatus} (training lock lifted)`,
+          lock.horseId,
+          {
+            entityName: 'Horse',
+            newValues: {
+              oldStatus: lock.horse.status,
+              newStatus: newHorseStatus,
+              reason: dto.unlockReason,
+              source: 'MEDICAL_LOCK',
+              lockCode: lock.lockCode,
+            },
+          },
+          tx,
+        );
+
+        const activeLocks = await tx.medicalLock.findMany({
+          where: { horseId: lock.horseId, isLocked: true },
+          select: { id: true, lockCode: true },
+        });
+        return {
+          lock,
+          unlocked,
+          stillLocked,
+          activeLockCodes: activeLocks.map((item) => item.lockCode ?? item.id),
+        };
+      },
+    );
 
     const careSyncFailed = await this.syncCare(lock.horseId);
     const notificationSent = await this.notifyLockAudience(
       lock.horseId,
       {
+        email: {
+          eventCode: 'LOCK_CHANGED',
+          body: {
+            ...lockChanged(
+              lock.horse,
+              { type: lock.lockCode ?? lockId, reason: dto.unlockReason },
+              'released',
+              { name: actor.fullName },
+              activeLockCodes,
+            ),
+            refId: lockId,
+            milestone: 'released',
+          },
+        },
         type: 'LOCK_LIFTED',
         dedupeKey: `lock-lifted:${lockId}`,
         category: 'LOCK',
@@ -605,6 +679,23 @@ export class MedicalLocksService {
     const notificationSent = await this.notifyLockAudience(
       extended.horseId,
       {
+        email: {
+          eventCode: 'LOCK_CHANGED',
+          body: {
+            ...lockChanged(
+              extended.horse,
+              {
+                type: extended.lockCode ?? lockId,
+                reason: extended.recheckNotes ?? undefined,
+                expiresAt: extended.recheckDate,
+              },
+              'extended',
+              { name: actor.fullName },
+            ),
+            refId: lockId,
+            milestone: 'extended:' + until,
+          },
+        },
         type: 'LOCK_EXTENDED',
         dedupeKey: `lock-extended:${lockId}:${until}`,
         category: 'LOCK',

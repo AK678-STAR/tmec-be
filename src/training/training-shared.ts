@@ -80,6 +80,7 @@ export const WORKOUT_INCLUDE = {
 
 /** Dữ liệu buổi tập sau khi gộp bản cũ + thay đổi, dùng chung cho kiểm tra DL-2.01. */
 export interface WorkoutDraft {
+  trackId?: string | null;
   scheduledDate: Date;
   phaseId?: string | null;
   workoutType: string;

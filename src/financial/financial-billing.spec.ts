@@ -3,6 +3,7 @@ import { FinancialService } from './financial.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { BusinessMailService } from '../business-mail/business-mail.service';
 
 describe('Financial billing lifecycle', () => {
   const manager = { id: 'manager', name: 'Manager', role: 'CLUB_MANAGER' };
@@ -29,6 +30,9 @@ describe('Financial billing lifecycle', () => {
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(now);
     db = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      careBillingPolicy: { findUnique: jest.fn().mockResolvedValue(null) },
+      careCostClaim: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
       horse: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -60,11 +64,15 @@ describe('Financial billing lifecycle', () => {
       db as PrismaService,
       { record: jest.fn() } as unknown as AuditService,
       { notifyUsers: jest.fn() } as unknown as NotificationsService,
+      { emit: jest.fn().mockResolvedValue([]) } as unknown as BusinessMailService,
     );
   });
   afterEach(() => jest.useRealTimers());
 
   it('creates independent monthly snapshots and does not duplicate a paid period', async () => {
+    db.stallAllocation.findMany.mockResolvedValue([
+      { startDate: new Date('2026-10-01'), endDate: null },
+    ]);
     db.financialInvoice.findFirst.mockImplementation(({ where }) =>
       where.billingPeriod === '2026-10' ? { ...base, status: 'PAID' } : null,
     );
