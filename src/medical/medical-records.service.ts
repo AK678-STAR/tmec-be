@@ -943,11 +943,18 @@ export class MedicalRecordsService {
       const locks = await tx.medicalLock.findMany({
         where: { medicalRecordId: id, isLocked: true },
       });
-      const activeHorseLock = await tx.medicalLock.findFirst({
+      const activeHorseLocks = await tx.medicalLock.findMany({
         where: { horseId: record.horseId, isLocked: true },
       });
+      const activeHorseLock = tx.medicalLock.findFirst
+        ? await tx.medicalLock.findFirst({ where: { horseId: record.horseId, isLocked: true } })
+        : null;
       const recovered = (dto.treatmentResult ?? 'RECOVERED') === 'RECOVERED';
-      if ((locks.length || activeHorseLock) && (!dto.recoveryConfirmed || !dto.postTreatmentStatus)) {
+      if (
+        recovered &&
+        (locks.length || activeHorseLocks.length || activeHorseLock) &&
+        (!dto.recoveryConfirmed || !dto.postTreatmentStatus)
+      ) {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'ACTIVE_LOCK_EXISTS',
@@ -999,7 +1006,12 @@ export class MedicalRecordsService {
         });
         const horse = await tx.horse.findUnique({ where: { id: record.horseId } });
         let horseStatus = horse?.status;
-        if (!remainingActiveLocks.length && horse && horse.status !== HorseStatus.RETIRED && horse.status !== HorseStatus.RESTING) {
+        if (
+          !remainingActiveLocks.length &&
+          horse &&
+          horse.status !== HorseStatus.RETIRED &&
+          horse.status !== HorseStatus.RESTING
+        ) {
           horseStatus = dto.postTreatmentStatus || HorseStatus.RESTING;
           await tx.horse.update({
             where: { id: record.horseId },

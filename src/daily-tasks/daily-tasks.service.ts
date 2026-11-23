@@ -536,11 +536,7 @@ export class DailyTasksService {
       if (!activeTitles || !activeTitles.has(emt.title)) {
         await this.prisma.dailyCareTask.update({
           where: { id: emt.id, isCompleted: false },
-          data: {
-            isMedicalLocked: true,
-            medicalLockNotes: 'Bác sĩ thú y đã kết thúc điều trị hoặc thay đổi đơn thuốc/phác đồ.',
-            cancelledAt: new Date(),
-          },
+          data: { cancelledAt: new Date() },
         });
       }
     }
@@ -784,11 +780,7 @@ export class DailyTasksService {
     }
 
     if (task.cancelledAt) {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'TASK_CANCELLED',
-        'Công việc chăm sóc này đã bị hủy.',
-      );
+      throw apiError(HttpStatus.BAD_REQUEST, 'TASK_CANCELLED', 'Công việc chăm sóc này đã bị hủy.');
     }
 
     if (
