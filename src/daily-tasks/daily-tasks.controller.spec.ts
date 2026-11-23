@@ -70,7 +70,7 @@ describe('DailyTasksController', () => {
 
   it('should delegate uncompleteTask to service', async () => {
     const res = await controller.uncompleteTask('task-1', mockUser);
-    expect(service.uncompleteTask).toHaveBeenCalledWith('task-1', mockUser);
+    expect(service.uncompleteTask).toHaveBeenCalledWith('task-1', mockUser, undefined, {});
     expect(res).toBeDefined();
   });
 });

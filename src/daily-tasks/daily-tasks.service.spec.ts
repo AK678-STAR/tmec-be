@@ -16,6 +16,7 @@ describe('DailyTasksService', () => {
 
   beforeEach(async () => {
     prisma = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       $transaction: jest.fn((fn: any) => fn(prisma)),
       horse: { findMany: jest.fn().mockResolvedValue([]), findUnique: jest.fn() },
       shiftRoster: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn() },
@@ -57,6 +58,52 @@ describe('DailyTasksService', () => {
   });
 
   describe('generateDailyTasksForDate', () => {
+    it('preserves a completed legacy medication dose when RX source keys are introduced', async () => {
+      prisma.horse.findMany.mockResolvedValue([
+        {
+          id: 'horse-1',
+          name: 'QA',
+          stallAllocations: [],
+          medicalLocks: [],
+          nutritionPlans: [],
+          medicalRecords: [
+            {
+              id: 'record',
+              prescriptions: JSON.stringify([
+                {
+                  id: 'rx',
+                  status: 'ACTIVE',
+                  supplyId: 'supply',
+                  medicationName: 'QA medicine',
+                  dosage: '1',
+                  unit: 'tablets',
+                  frequencyPerDay: 1,
+                },
+              ]),
+            },
+          ],
+        },
+      ]);
+      prisma.dailyCareTask.findFirst.mockImplementation(async (args: any) =>
+        typeof args.where?.taskCode === 'string' && args.where.taskCode.startsWith('RX-')
+          ? null
+          : { id: 'legacy', isCompleted: true, title: 'Cho uống thuốc: QA medicine' },
+      );
+      prisma.dailyCareTask.upsert = jest.fn().mockResolvedValue({ id: 'new-dose' });
+      await service.generateDailyTasksForDate(new Date('2026-10-18'));
+      expect(prisma.dailyCareTask.upsert).not.toHaveBeenCalled();
+    });
+    it('cancels discontinued medication tasks without deleting ledger source history', async () => {
+      prisma.dailyCareTask.findMany
+        .mockResolvedValueOnce([{ id: 'stopped', horseId: 'horse-1', title: 'Stopped medicine' }])
+        .mockResolvedValue([]);
+      await service.generateDailyTasksForDate(new Date('2026-10-18'));
+      expect(prisma.dailyCareTask.delete).not.toHaveBeenCalled();
+      expect(prisma.dailyCareTask.update).toHaveBeenCalledWith({
+        where: { id: 'stopped', isCompleted: false },
+        data: { cancelledAt: expect.any(Date) },
+      });
+    });
     it('generates standard cleaning, feeding, grooming and walking tasks for healthy horses', async () => {
       const mockHorse = {
         id: 'horse-1',
@@ -222,7 +269,7 @@ describe('DailyTasksService', () => {
       );
     });
 
-    it('deducts inventory when completing a MEDICATION task', async () => {
+    it('rejects legacy medication with no record/prescription provenance', async () => {
       const mockTask = {
         id: 'task-med-1',
         taskCode: 'TSK-MED-001',
@@ -246,21 +293,13 @@ describe('DailyTasksService', () => {
       prisma.dailyCareTask.update.mockResolvedValue({ ...mockTask, isCompleted: true });
 
       const user = { userId: 'groom-1', role: Role.GROOM, fullName: 'Groom Nam' } as any;
-      await service.completeTask('task-med-1', {}, user);
-
-      expect(inventoryService.deductStockForFeeding).toHaveBeenCalledWith(
-        'zone-c',
-        expect.arrayContaining([
-          expect.objectContaining({
-            supplyId: 'sup-anti-inflam',
-            amount: 2,
-          }),
-        ]),
-        expect.anything(),
-      );
+      await expect(service.completeTask('task-med-1', {}, user)).rejects.toMatchObject({
+        status: 409,
+      });
+      expect(inventoryService.deductStockForFeeding).not.toHaveBeenCalled();
     });
 
-    it('restores inventory when uncompleting a MEDICATION task', async () => {
+    it('rejects legacy medication undo without an immutable consumption snapshot', async () => {
       const mockTask = {
         id: 'task-med-1',
         taskCode: 'TSK-MED-001',
@@ -287,18 +326,11 @@ describe('DailyTasksService', () => {
       prisma.dailyCareTask.update.mockResolvedValue({ ...mockTask, isCompleted: false });
 
       const user = { userId: 'groom-1', role: Role.GROOM, fullName: 'Groom Nam' } as any;
-      await service.uncompleteTask('task-med-1', user);
-
-      expect(inventoryService.restoreStockForFeeding).toHaveBeenCalledWith(
-        'zone-c',
-        expect.arrayContaining([
-          expect.objectContaining({
-            supplyId: 'sup-anti-inflam',
-            amount: 2,
-          }),
-        ]),
-        prisma,
-      );
+      prisma.careCostEntry = { findMany: jest.fn().mockResolvedValue([]) };
+      await expect(
+        service.uncompleteTask('task-med-1', user, undefined, { administrationNotPerformed: true }),
+      ).rejects.toMatchObject({ status: 409 });
+      expect(inventoryService.restoreStockForFeeding).not.toHaveBeenCalled();
     });
 
     it('rejects undo after the 15-minute window expires for groom', async () => {

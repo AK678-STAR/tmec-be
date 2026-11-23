@@ -30,6 +30,9 @@ describe('Financial billing lifecycle', () => {
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(now);
     db = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      careBillingPolicy: { findUnique: jest.fn().mockResolvedValue(null) },
+      careCostClaim: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
       horse: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -67,6 +70,9 @@ describe('Financial billing lifecycle', () => {
   afterEach(() => jest.useRealTimers());
 
   it('creates independent monthly snapshots and does not duplicate a paid period', async () => {
+    db.stallAllocation.findMany.mockResolvedValue([
+      { startDate: new Date('2026-10-01'), endDate: null },
+    ]);
     db.financialInvoice.findFirst.mockImplementation(({ where }) =>
       where.billingPeriod === '2026-10' ? { ...base, status: 'PAID' } : null,
     );

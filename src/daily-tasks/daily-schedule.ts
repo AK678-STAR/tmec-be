@@ -28,6 +28,8 @@ export interface ScheduleHorse {
     route?: string;
     notes?: string;
     supplyId?: string;
+    medicalRecordId?: string;
+    prescriptionId?: string;
     frequencyPerDay?: number;
   }>;
   careInstructions?: ScheduleCareInstruction[];
@@ -315,6 +317,9 @@ function templatesFor(horse: ScheduleHorse): Template[] {
           itemsSnapshotJson: [
             {
               supplyId: med.supplyId,
+              medicalRecordId: med.medicalRecordId,
+              prescriptionId: med.prescriptionId,
+              doseNumber: idx + 1,
               supplyName: med.name,
               amount: parsedDosage,
               unit: med.unit,

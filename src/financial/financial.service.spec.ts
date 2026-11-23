@@ -15,6 +15,9 @@ describe('FinancialService', () => {
 
   beforeEach(async () => {
     prisma = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      careBillingPolicy: { findUnique: jest.fn().mockResolvedValue(null) },
+      careCostClaim: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
       financialInvoice: {
         findMany: jest.fn().mockResolvedValue([]),
         count: jest.fn().mockResolvedValue(0),
