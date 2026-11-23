@@ -89,6 +89,7 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
     trainerUserId: 'trainer-1',
   };
   const workoutDto: CreateWorkoutSessionDto = {
+    trackId: 'track-1',
     scheduledDate: tomorrow0630.toISOString(),
     phaseId: 'ph-1',
     workoutType: 'CANTER',
@@ -99,6 +100,11 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
 
   beforeEach(async () => {
     prisma = {
+      trainingTrack: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ id: 'track-1', surface: 'TURF', capacity: 6, isActive: true }),
+      },
       $transaction: jest.fn((arg: any) =>
         typeof arg === 'function' ? arg(prisma) : Promise.all(arg),
       ),
@@ -379,6 +385,73 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
   });
 
   describe('clonePlan trainer overlap', () => {
+    it('applies the same admission hours when validating copies', async () => {
+      const at = new Date(+addDays(today, 2) + 3 * 3600000);
+      prisma.trainingPlan.findUnique.mockResolvedValue({
+        ...draftPlan,
+        workoutSessions: [
+          { scheduledDate: at, workoutType: 'CANTER', trackId: 'track-1', trackSurface: 'TURF' },
+        ],
+      });
+      prisma.horse.findUnique.mockResolvedValue({ ...healthyHorse, id: 'horse-2' });
+      prisma.trainingPlan.create.mockResolvedValue({
+        ...draftPlan,
+        id: 'plan-2',
+        horseId: 'horse-2',
+        phases: [],
+      });
+      prisma.workoutSession.findMany.mockImplementation(async (args: any) =>
+        args.where?.trainingPlanId === 'plan-2'
+          ? [
+              {
+                id: 'copy',
+                horseId: 'horse-2',
+                scheduledDate: at,
+                workoutType: 'CANTER',
+                trackId: 'track-1',
+                trackSurface: 'TURF',
+                distanceMeters: 1200,
+                repetitions: 1,
+              },
+            ]
+          : [],
+      );
+      expect(
+        await codeOf(plans.clonePlan('plan-1', { targetHorseId: 'horse-2' } as any, trainer)),
+      ).toBe('OUTSIDE_TRAINING_HOURS');
+    });
+    it('rejects a copied physical workout with no verified track instead of bypassing admission', async () => {
+      prisma.trainingPlan.findUnique.mockResolvedValue({
+        ...draftPlan,
+        workoutSessions: [{ scheduledDate: tomorrow0630, workoutType: 'CANTER' }],
+      });
+      prisma.horse.findUnique.mockResolvedValue({ ...healthyHorse, id: 'horse-2' });
+      prisma.trainingPlan.create.mockResolvedValue({
+        ...draftPlan,
+        id: 'plan-2',
+        horseId: 'horse-2',
+        phases: [],
+      });
+      prisma.workoutSession.findMany.mockImplementation(async (args: any) =>
+        args.where?.trainingPlanId === 'plan-2'
+          ? [
+              {
+                id: 'copy',
+                horseId: 'horse-2',
+                scheduledDate: tomorrow0630,
+                workoutType: 'CANTER',
+                trackSurface: 'TURF',
+                trackId: null,
+                distanceMeters: 1200,
+                repetitions: 1,
+              },
+            ]
+          : [],
+      );
+      expect(
+        await codeOf(plans.clonePlan('plan-1', { targetHorseId: 'horse-2' } as any, trainer)),
+      ).toBe('TRAINING_TRACK_REQUIRED');
+    });
     it('skips copied workouts that would double-book the trainer, who runs and rides the copies', async () => {
       const at = (h: number) => new Date(addDays(today, 2).getTime() + h * 60 * 60 * 1000);
       prisma.trainingPlan.findUnique.mockResolvedValue({
@@ -392,14 +465,18 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
       });
       prisma.horse.findUnique.mockResolvedValue({ id: 'horse-2', name: 'B', status: 'ACTIVE' });
       // Groom đã có buổi lúc 6:30 cùng ngày -> bản sao 6:00 (60 + 15 phút) bị bỏ, 9:00 giữ.
-      prisma.workoutSession.findMany.mockResolvedValue([
-        {
-          horseId: 'horse-1',
-          trainingPlan: { trainerUserId: trainer.userId },
-          scheduledDate: at(6.5),
-          workoutType: 'TROT',
-        },
-      ]);
+      prisma.workoutSession.findMany.mockImplementation(async (args: any) =>
+        args.where?.trainingPlanId === 'plan-2'
+          ? []
+          : [
+              {
+                horseId: 'horse-1',
+                trainingPlan: { trainerUserId: trainer.userId },
+                scheduledDate: at(6.5),
+                workoutType: 'TROT',
+              },
+            ],
+      );
       prisma.trainingPlan.create.mockImplementation(({ data }: any) => ({ id: 'plan-2', data }));
 
       const res: any = await plans.clonePlan(
@@ -643,35 +720,34 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
       );
     });
 
-    it('rejects a trial on the same surface within 15 minutes', async () => {
-      prisma.workoutSession.findFirst.mockImplementation(async (args: any) => {
-        if (args?.where?.workoutType === 'TRIAL') {
-          return {
-            id: 'w-x',
-            scheduledDate: new Date('2026-11-07T03:00:00.000Z'), // 10:00 giờ CLB
-            horse: { name: 'Bolt' },
-            trainingPlan: { trainer: { fullName: 'Lê Hoàng Nam' } },
-          };
-        }
-        return null;
-      });
-      const error = await workouts
-        .createWorkout(
+    it('allows another horse and trainer to share the physical trial track below capacity', async () => {
+      prisma.workoutSession.findMany.mockImplementation(async (args: any) =>
+        args.select?.trackId
+          ? [
+              {
+                id: 'other',
+                horseId: 'other-horse',
+                trackId: 'track-1',
+                trackSurface: 'TURF',
+                scheduledDate: tomorrow0630,
+                workoutType: 'TRIAL',
+                intensity: 'HEAVY',
+                status: 'SCHEDULED',
+                trainingPlan: { trainerUserId: 'other-trainer' },
+                horse: { name: 'Bolt' },
+                distanceMeters: 1000,
+                repetitions: 1,
+              },
+            ]
+          : [],
+      );
+      await expect(
+        workouts.createWorkout(
           'plan-1',
-          { ...workoutDto, workoutType: 'TRIAL', targetSpeedKmh: 60, jockeyName: 'An' },
+          { ...workoutDto, workoutType: 'TRIAL', targetSpeedKmh: 60 },
           trainer,
-        )
-        .catch((e) => e);
-      expect(error.getResponse().code).toBe('TRIAL_SLOT_TAKEN');
-      // Nói rõ buổi kia lúc mấy giờ, của HLV nào và khung giờ còn chọn được (cách ≥ 15 phút).
-      expect(error.getResponse().data).toMatchObject({
-        horse: 'Bolt',
-        time: '10:00',
-        trainer: 'Lê Hoàng Nam',
-        before: '09:45',
-        after: '10:15',
-      });
-      expect(error.getResponse().message).toContain('Mặt sân Cỏ');
+        ),
+      ).resolves.toMatchObject({ status: 'SCHEDULED', trackId: 'track-1' });
     });
 
     it('needs VET confirmation for a heavy workout when the horse is in a medical status', async () => {
@@ -746,32 +822,28 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
       expect(prisma.workoutSession.create).toHaveBeenCalled();
     });
 
-    it('#6/#7: blocks when the trainer (who rides) already has a workout within 30 minutes', async () => {
-      prisma.workoutSession.findFirst.mockImplementation(async (args: any) => {
-        if (args?.where?.trainingPlan?.trainerUserId && args?.where?.scheduledDate?.gt) {
-          return {
-            id: 'w-other',
-            scheduledDate: new Date('2026-11-07T08:30:00.000Z'),
-            horse: { name: 'Red Velvet' },
-            trainingPlan: { trainer: { fullName: 'Lê Hoàng Nam' } },
-          };
-        }
-        return null;
-      });
+    it('#6/#7: blocks a trainer already riding another horse in the requested interval', async () => {
+      prisma.workoutSession.findMany.mockResolvedValue([
+        {
+          id: 'other',
+          horseId: 'other-horse',
+          trackId: 'track-1',
+          trackSurface: 'TURF',
+          scheduledDate: tomorrow0630,
+          workoutType: 'CANTER',
+          intensity: 'MEDIUM',
+          status: 'SCHEDULED',
+          trainingPlan: { trainerUserId: 'trainer-1' },
+          horse: { name: 'Red Velvet' },
+          distanceMeters: 1200,
+          repetitions: 1,
+        },
+      ]);
       const error = await workouts
         .createWorkout('plan-1', { ...workoutDto, acknowledgeWarnings: true }, trainer)
         .catch((e) => e);
-      expect(error.getResponse().code).toBe('TRAINER_TIME_CONFLICT');
-      // 08:30 UTC = 15:30 giờ CLB; 2 buổi của 1 HLV phải cách nhau ≥ 30 phút.
-      expect(error.getResponse().data).toMatchObject({
-        horse: 'Red Velvet',
-        time: '15:30',
-        date: '07/11/2026',
-        trainer: 'Lê Hoàng Nam',
-        before: '15:00',
-        after: '16:00',
-      });
-      expect(error.getResponse().message).toContain('HLV Trainer One');
+      expect(error.getResponse().code).toBe('TRAINER_BUSY_SLOT');
+      expect(error.getResponse().message).toContain('Red Velvet');
       expect(prisma.workoutSession.create).not.toHaveBeenCalled();
     });
 
@@ -940,6 +1012,7 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
         workoutType: 'BREEZE',
         intensity: 'HEAVY',
         trackSurface: 'TURF',
+        trackId: 'track-1',
         targetSpeedKmh: 55,
         jockeyName: 'An',
         assignedStaffUserId: 'groom-1',

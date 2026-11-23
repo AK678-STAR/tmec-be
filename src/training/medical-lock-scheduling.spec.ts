@@ -10,7 +10,7 @@ it('blocks even a light new workout while a medical safety lock is active', asyn
   };
   const service = new WorkoutsService(db, {} as any, {} as any, {} as any);
   await expect(
-    (service as any).assertWorkoutAllowed(
+    (service as any).validateAdmission(
       db,
       { status: 'ACTIVE', horseId: 'h' },
       { workoutType: 'WALK', intensity: 'LIGHT' },
