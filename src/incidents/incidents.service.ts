@@ -585,6 +585,14 @@ export class IncidentsService {
 
     assertIncidentTransition(incident.status, dto.status);
     if (
+      incident.status === IncidentStatus.RESOLVED ||
+      incident.status === IncidentStatus.DISMISSED
+    ) {
+      throw new BadRequestException(
+        'Báo cáo sự cố đã hoàn thành xử lý hoặc bị bác bỏ, không thể thay đổi trạng thái nữa.',
+      );
+    }
+    if (
       dto.status === IncidentStatus.RESOLVED ||
       dto.status === IncidentStatus.MERGED_INTO_TREATMENT
     ) {

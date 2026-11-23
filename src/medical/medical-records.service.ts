@@ -32,6 +32,7 @@ import { MedicalLocksService } from './medical-locks.service';
 import { Optional } from '@nestjs/common';
 import { DailyTasksService } from '../daily-tasks/daily-tasks.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { MailService } from '../mail/mail.service';
 import { clubDate } from '../training/training-rules';
 
 /** Đơn vị trên đơn thuốc lấy theo đơn vị của thuốc trong kho, bác sĩ không chọn đơn vị khác. */
@@ -58,6 +59,7 @@ export class MedicalRecordsService {
     private readonly locks: MedicalLocksService,
     private readonly notifications: NotificationsService,
     @Optional() private readonly dailyTasks?: DailyTasksService,
+    @Optional() private readonly mailService?: MailService,
   ) {}
 
   private async syncHorseMedicalTasks(
@@ -913,6 +915,22 @@ export class MedicalRecordsService {
     const initial = await this.prisma.medicalRecord.findUnique({ where: { id } });
     if (!initial)
       throw apiError(HttpStatus.NOT_FOUND, 'RECORD_NOT_FOUND', 'Medical record not found.');
+    if (initial.status === 'CLOSED') {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'RECORD_ALREADY_CLOSED',
+        'This medical record is already closed.',
+      );
+    }
+    // Nháp phải chốt (OPEN) trước rồi mới kết thúc điều trị.
+    if (initial.status === 'DRAFT') {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'RECORD_NOT_OPEN',
+        'Finalize the draft before concluding treatment.',
+      );
+    }
+
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${initial.horseId} FOR UPDATE`;
       const record = await tx.medicalRecord.findUnique({ where: { id } });
@@ -925,13 +943,24 @@ export class MedicalRecordsService {
       const locks = await tx.medicalLock.findMany({
         where: { medicalRecordId: id, isLocked: true },
       });
+      const activeHorseLocks = await tx.medicalLock.findMany({
+        where: { horseId: record.horseId, isLocked: true },
+      });
+      const activeHorseLock = tx.medicalLock.findFirst
+        ? await tx.medicalLock.findFirst({ where: { horseId: record.horseId, isLocked: true } })
+        : null;
       const recovered = (dto.treatmentResult ?? 'RECOVERED') === 'RECOVERED';
-      if (recovered && locks.length && (!dto.recoveryConfirmed || !dto.postTreatmentStatus))
+      if (
+        recovered &&
+        (locks.length || activeHorseLocks.length || activeHorseLock) &&
+        (!dto.recoveryConfirmed || !dto.postTreatmentStatus)
+      ) {
         throw apiError(
           HttpStatus.BAD_REQUEST,
-          'RECOVERY_CONFIRMATION_REQUIRED',
-          'Confirm recovery and select the discharge status before lifting protection.',
+          'ACTIVE_LOCK_EXISTS',
+          'Chiến mã vẫn còn Khóa huấn luyện y tế đang hiệu lực. Vui lòng xác nhận hồi phục trước khi đóng bệnh án. / Cannot close medical record while Training Lock is active. Please confirm recovery first.',
         );
+      }
       let rx: any[] = [];
       try {
         const parsed = JSON.parse(record.prescriptions || record.prescriptionDetails || '[]');
@@ -976,10 +1005,23 @@ export class MedicalRecordsService {
           where: { horseId: record.horseId, isLocked: true },
         });
         const horse = await tx.horse.findUnique({ where: { id: record.horseId } });
+        let horseStatus = horse?.status;
+        if (
+          !remainingActiveLocks.length &&
+          horse &&
+          horse.status !== HorseStatus.RETIRED &&
+          horse.status !== HorseStatus.RESTING
+        ) {
+          horseStatus = dto.postTreatmentStatus || HorseStatus.RESTING;
+          await tx.horse.update({
+            where: { id: record.horseId },
+            data: { status: horseStatus, isMedicalLocked: false },
+          });
+        }
         state = {
           remainingActiveLocks,
           isMedicalLocked: remainingActiveLocks.length > 0,
-          horseStatus: horse?.status,
+          horseStatus,
         };
       }
       await this.audit.record(
@@ -992,6 +1034,29 @@ export class MedicalRecordsService {
       );
       return { ...updated, ...state };
     });
+
+    // Khóa các công việc y tế chưa hoàn thành của ngựa và ghi chú thông báo cho Groom
+    if (this.prisma.dailyCareTask?.updateMany) {
+      await this.prisma.dailyCareTask.updateMany({
+        where: {
+          horseId: initial.horseId,
+          isCompleted: false,
+          taskType: {
+            in: [
+              DailyTaskType.MEDICATION,
+              DailyTaskType.ICE_BOOT_REST,
+              DailyTaskType.PHYSICAL_THERAPY,
+            ],
+          },
+        },
+        data: {
+          isMedicalLocked: true,
+          medicalLockNotes: 'Bác sĩ thú y đã kết thúc điều trị / đóng bệnh án.',
+          cancelledAt: new Date(),
+        },
+      });
+    }
+
     const careSyncFailed = await this.syncHorseMedicalTasks(initial.horseId);
     let notificationFailed = false;
     try {
@@ -1137,7 +1202,24 @@ export class MedicalRecordsService {
       }
     }
 
-    const allowedActivity = dto.allowedActivity || '';
+    // Kiểm tra không cho phép các giai đoạn lồng / chồng chéo thời gian lên nhau
+    if (dto.startDate && dto.endDate) {
+      const newStart = new Date(dto.startDate).getTime();
+      const newEnd = new Date(dto.endDate).getTime();
+      for (const ex of phases) {
+        if (ex.startDate && ex.endDate) {
+          const exStart = new Date(ex.startDate).getTime();
+          const exEnd = new Date(ex.endDate).getTime();
+          if (newStart <= exEnd && newEnd >= exStart) {
+            throw apiError(
+              HttpStatus.BAD_REQUEST,
+              'PHASE_OVERLAP',
+              `Giai đoạn "${dto.phaseName}" bị trùng lặp thời gian (${dto.startDate} đến ${dto.endDate}) với giai đoạn "${ex.phaseName}" (${ex.startDate} đến ${ex.endDate}). Các giai đoạn phác đồ không được lồng vào nhau.`,
+            );
+          }
+        }
+      }
+    }
 
     const phase = {
       id: `phase-${Date.now()}`,
@@ -1145,14 +1227,13 @@ export class MedicalRecordsService {
       startDate: dto.startDate,
       endDate: dto.endDate,
       target: dto.target || null,
-      allowedActivity,
       careInstructions: dto.careInstructions || [],
       createdAt: new Date().toISOString(),
     };
 
     phases.push(phase);
 
-    const phaseNote = `[PHÁC ĐỒ - ${dto.phaseName}]: Từ: ${dto.startDate} Đến: ${dto.endDate} | Mục tiêu: ${dto.target || 'N/A'} | Vận động: ${allowedActivity}`;
+    const phaseNote = `[PHÁC ĐỒ - ${dto.phaseName}]: Từ: ${dto.startDate} Đến: ${dto.endDate} | Mục tiêu: ${dto.target || 'N/A'}`;
     const updatedProtocol = record.treatmentProtocol
       ? `${record.treatmentProtocol}\n${phaseNote}`
       : phaseNote;
@@ -1216,7 +1297,6 @@ export class MedicalRecordsService {
     const updatedPhase = {
       ...phases[index],
       ...dto,
-      allowedActivity: dto.allowedActivity || phases[index].allowedActivity || '',
       updatedAt: new Date().toISOString(),
     };
 
@@ -1229,6 +1309,24 @@ export class MedicalRecordsService {
           'INVALID_DATE_RANGE',
           'The phase end date must be on or after its start date.',
         );
+      }
+
+      // Kiểm tra không cho phép các giai đoạn lồng / chồng chéo thời gian lên nhau
+      const newStart = start.getTime();
+      const newEnd = end.getTime();
+      for (const ex of phases) {
+        if (ex.id === phaseId) continue;
+        if (ex.startDate && ex.endDate) {
+          const exStart = new Date(ex.startDate).getTime();
+          const exEnd = new Date(ex.endDate).getTime();
+          if (newStart <= exEnd && newEnd >= exStart) {
+            throw apiError(
+              HttpStatus.BAD_REQUEST,
+              'PHASE_OVERLAP',
+              `Giai đoạn "${updatedPhase.phaseName}" bị trùng lặp thời gian (${updatedPhase.startDate} đến ${updatedPhase.endDate}) với giai đoạn "${ex.phaseName}" (${ex.startDate} đến ${ex.endDate}). Các giai đoạn phác đồ không được lồng vào nhau.`,
+            );
+          }
+        }
       }
     }
 
@@ -1625,7 +1723,7 @@ export class MedicalRecordsService {
     if (followUp.followUpDate >= clubDate(new Date())) {
       const horse = await this.prisma.horse.findUnique({
         where: { id: record.horseId },
-        select: { name: true },
+        select: { name: true, horseCode: true },
       });
       const horseName = horse?.name ?? '';
       const audience = await this.notifications.horseAudience(record.horseId, {
@@ -1645,6 +1743,20 @@ export class MedicalRecordsService {
         },
         actor.userId,
       );
+
+      // Gửi email thông báo trực tiếp đến tài khoản email của Bác sĩ thú y phụ trách
+      const vet = this.prisma.user?.findUnique
+        ? await this.prisma.user.findUnique({
+            where: { id: actor.userId },
+            select: { email: true, fullName: true },
+          })
+        : null;
+      if (vet?.email && this.mailService) {
+        const followUpDateStr = visitDate.toISOString().split('T')[0];
+        const subject = `[Lịch tái khám] Ngựa ${horseName || 'Ngựa'} - Ngày ${followUpDateStr}`;
+        const text = `Xin chào Bác sĩ ${vet.fullName || actor.fullName},\n\nBạn đã ghi nhận/lên lịch tái khám cho ngựa ${horseName || ''} (Mã: ${horse?.horseCode || record.horseId}) vào ngày ${followUpDateStr}.\nGhi chú tái khám: ${dto.progressNotes || 'Không có ghi chú thêm'}.\nMã bệnh án liên kết: ${record.recordNumber || record.id}.\n\nTrân trọng,\nHệ thống Quản lý Huấn luyện Ngựa Đua.`;
+        await this.mailService.send(vet.email, subject, text).catch(() => {});
+      }
     }
 
     return { message: 'Ghi nhận tái khám thành công', followUp, record: updated };
@@ -1737,8 +1849,12 @@ export class MedicalRecordsService {
 
   private assertDose(raw: unknown): number {
     const dose = Number(raw);
-    if (!Number.isFinite(dose) || dose <= 0) {
-      throw apiError(HttpStatus.BAD_REQUEST, 'INVALID_DOSAGE', 'Liều dùng phải là số lớn hơn 0.');
+    if (!Number.isFinite(dose) || !Number.isInteger(dose) || dose < 1) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'INVALID_DOSAGE',
+        'Liều dùng thuốc phải là số tự nhiên lớn hơn hoặc bằng 1.',
+      );
     }
     return dose;
   }

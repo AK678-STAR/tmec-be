@@ -11,9 +11,10 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { AuditModule } from '../audit/audit.module';
 import { SimulatorModule } from '../simulator/simulator.module';
 import { DailyTasksModule } from '../daily-tasks/daily-tasks.module';
+import { MailModule } from '../mail/mail.module';
 
 @Module({
-  imports: [PrismaModule, AuditModule, SimulatorModule, DailyTasksModule],
+  imports: [PrismaModule, AuditModule, SimulatorModule, DailyTasksModule, MailModule],
   controllers: [MedicalController],
   providers: [
     MedicalAccessService,

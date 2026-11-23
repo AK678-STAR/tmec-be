@@ -175,6 +175,12 @@ describe('End-to-End Operational Loop (Groom -> Vet -> Trainer -> Owner -> Manag
         return Promise.resolve(lock);
       }),
     },
+    medicalRecord: {
+      findFirst: jest.fn().mockResolvedValue({ id: 'rec-1', horseId: HORSE_ID, status: 'OPEN' }),
+      findUnique: jest.fn().mockResolvedValue({ id: 'rec-1', horseId: HORSE_ID, status: 'OPEN' }),
+      create: jest.fn(),
+      update: jest.fn(),
+    },
     workoutSession: {
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },

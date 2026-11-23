@@ -59,6 +59,7 @@ describe('Flow 3 medical HTTP contract (mock database, real JWT/guards)', () => 
     },
     medicalRecord: {
       findUnique: jest.fn(),
+      findFirst: jest.fn().mockResolvedValue({ id: 'rec-1', horseId: HORSE_ID, status: 'OPEN' }),
       create: jest.fn(),
       delete: jest.fn(),
     },
@@ -98,6 +99,11 @@ describe('Flow 3 medical HTTP contract (mock database, real JWT/guards)', () => 
     jest.clearAllMocks();
     user.role = Role.VETERINARIAN;
     user.permissions = null;
+    prisma.medicalRecord.findFirst.mockResolvedValue({
+      id: 'rec-1',
+      horseId: HORSE_ID,
+      status: 'OPEN',
+    });
     prisma.medicalLock.findFirst.mockResolvedValue(null);
     prisma.medicalLock.findUnique.mockImplementation(({ where }: any) =>
       Promise.resolve(where.id === 'lock-1' ? activeLock : null),

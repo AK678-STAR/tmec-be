@@ -83,6 +83,9 @@ describe('horse-rules', () => {
         check({ role, from: HorseStatus.INJURED, to: HorseStatus.RESTING, reason: REASON }),
       ).toBe('OK');
       expect(
+        check({ role, from: HorseStatus.IN_TRAINING, to: HorseStatus.RESTING, reason: REASON }),
+      ).toBe('OK');
+      expect(
         check({
           role,
           from: HorseStatus.INJURED,

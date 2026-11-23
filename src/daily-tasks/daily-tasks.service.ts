@@ -604,9 +604,14 @@ export class DailyTasksService {
     fromDateStr?: string,
     toDateStr?: string,
   ): Promise<void> {
-    const todayStr = clubDateStr();
+    // Thay đổi từ phía Bác sĩ thú y áp dụng từ ngày hôm sau để không làm xáo trộn ca hôm nay của Groom
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = tomorrow.toISOString().slice(0, 10);
     const startStr =
-      fromDateStr && fromDateStr.slice(0, 10) > todayStr ? fromDateStr.slice(0, 10) : todayStr;
+      fromDateStr && fromDateStr.slice(0, 10) > tomorrowStr
+        ? fromDateStr.slice(0, 10)
+        : tomorrowStr;
     const startDate = new Date(`${startStr}T00:00:00.000Z`);
 
     const maxDays = 14;
@@ -639,7 +644,7 @@ export class DailyTasksService {
       const existingCount = await this.prisma.dailyCareTask.count({
         where: { date: curDate },
       });
-      if (curStr === todayStr || existingCount > 0) {
+      if (curStr === startStr || existingCount > 0) {
         await this.generateDailyTasksForDate(curDate, zoneId, zoneId ? undefined : horseId);
       }
       cur.setUTCDate(cur.getUTCDate() + 1);
@@ -770,6 +775,27 @@ export class DailyTasksService {
       throw new NotFoundException('Không tìm thấy công việc chăm sóc.');
     }
 
+    if (task.isCompleted) {
+      return task; // Đã xong rồi, trả về idempotent
+    }
+
+    if (task.cancelledAt) {
+      throw apiError(HttpStatus.BAD_REQUEST, 'TASK_CANCELLED', 'Công việc chăm sóc này đã bị hủy.');
+    }
+
+    if (
+      task.isMedicalLocked &&
+      (task.taskType === DailyTaskType.MEDICATION ||
+        task.taskType === DailyTaskType.ICE_BOOT_REST ||
+        task.taskType === DailyTaskType.PHYSICAL_THERAPY)
+    ) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'TASK_MEDICAL_LOCKED',
+        task.medicalLockNotes ||
+          'Công việc y tế này đã bị dừng do Bác sĩ thú y đã kết thúc điều trị hoặc thay đổi đơn thuốc.',
+      );
+    }
     // #1: Groom chỉ làm việc ở khu mình trực trong ngày của việc đó.
     // shortcut: việc chưa gắn khu / ngày (dữ liệu cũ) thì chưa kiểm được khu nên cho qua.
     if (currentUser.role === Role.GROOM && task.date && task.stallZoneId) {

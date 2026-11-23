@@ -121,9 +121,13 @@ export function assertStatusTransition(input: StatusChangeInput): void {
 
   if (role === UserRole.VETERINARIAN) {
     const toMedical = MEDICAL_STATUSES.includes(to);
-    const backToWork =
-      MEDICAL_STATUSES.includes(from) &&
-      (to === HorseStatus.RESTING || to === HorseStatus.IN_TRAINING);
+    // VET có thể đưa ngựa về RESTING từ nhóm y tế hoặc nhóm vận hành (khi điều trị/kết thúc bệnh án).
+    // VET cũng có thể trả ngựa về IN_TRAINING nếu ngựa đang ở nhóm y tế.
+    const canRest = to === HorseStatus.RESTING;
+    const returnFromMedicalToTraining =
+      MEDICAL_STATUSES.includes(from) && to === HorseStatus.IN_TRAINING;
+    const backToWork = canRest || returnFromMedicalToTraining;
+
     if (!toMedical && !backToWork) {
       deny(
         'ROLE_RESTRICTION',
