@@ -367,11 +367,15 @@ export class InjuriesService {
           history = [];
         }
       }
-      if (injury.stage !== 'ACUTE' || (Array.isArray(history) && history.length > 1)) {
+      if (
+        injury.stage === 'HEALED' ||
+        injury.status === InjuryStatus.RESOLVED ||
+        (Array.isArray(history) && history.length > 1)
+      ) {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'INJURY_LOCKED_FOR_RELOCATION',
-          'Không thể thay đổi vị trí chấn thương khi vết thương đang trong quá trình điều trị / hồi phục.',
+          'Không thể thay đổi vị trí chấn thương khi vết thương đã lành hoặc đang trong quá trình điều trị / hồi phục.',
         );
       }
     }
