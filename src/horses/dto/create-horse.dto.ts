@@ -78,4 +78,9 @@ export class CreateHorseDto {
   @IsNumber({}, { message: 'Weight must be a number.' })
   @Min(0.01, { message: 'Weight must be greater than 0 kg.' })
   weightKg: number;
+
+  @ApiPropertyOptional({ description: 'Link scan giấy tờ phả hệ, chuyển nhượng (tùy chọn)' })
+  @IsOptional()
+  @IsString()
+  documentsUrl?: string;
 }

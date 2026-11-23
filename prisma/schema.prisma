@@ -1480,7 +1480,7 @@ model HorseAdmissionRecord {
   horseId      String
   horse        Horse    @relation(fields: [horseId], references: [id], onDelete: Cascade)
   ownerId      String
-  owner        User     @relation("OwnerAdmissions", fields: [ownerId], references: [id], onDelete: SetNull)
+  owner        User     @relation("OwnerAdmissions", fields: [ownerId], references: [id], onDelete: Restrict)
   status       AdmissionStatus @default(PENDING_VERIFICATION)
 
   // §1 Lịch hẹn thẩm định (CM)

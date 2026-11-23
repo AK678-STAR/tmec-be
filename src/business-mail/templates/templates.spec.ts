@@ -18,6 +18,12 @@ import {
   complaintFiled,
   violationConfirmed,
 } from './violation-templates';
+import {
+  admissionRequestReceived,
+  admissionAppointmentScheduled,
+  admissionApproved,
+  admissionRejected,
+} from './admission-templates';
 
 const inv = {
   id: 'INV-1',
@@ -227,5 +233,71 @@ describe('safe mail markup', () => {
     expect(output.html).toContain('&lt;img');
     expect(output.html).toContain('&amp; text');
     expect(output.text).toContain(unsafe);
+  });
+});
+
+describe('admission templates (ADM-03)', () => {
+  const admMock = {
+    id: 'adm-101',
+    admissionCode: 'ADM-2026-001',
+    declaredMicrochip: '985123456789012',
+    scannedMicrochip: '985123456789012',
+    appointmentDate: new Date('2026-11-25T09:00:00Z'),
+    appointmentNotes: 'Vui lòng đến đúng giờ tại cổng A',
+    rejectionReason: 'Chưa đủ giấy tờ phả hệ gốc và sổ tiêm chủng',
+    admittedAt: new Date('2026-11-25T11:00:00Z'),
+    createdAt: new Date('2026-11-23T08:00:00Z'),
+  };
+  const horseMock = { id: 'h1', name: 'Đại Bàng Lửa', microchip: '985123456789012' };
+  const ownerMock = { id: 'o1', fullName: 'Nguyễn Văn Chủ' };
+
+  it('admissionRequestReceived generates proper subject and escaped html', () => {
+    const m = admissionRequestReceived(admMock, horseMock, ownerMock);
+    expect(m.subject).toContain('Đại Bàng Lửa');
+    expect(m.subject).toContain('[EquiFlow]');
+    expect(m.text).toContain('ADM-2026-001');
+    expect(m.text).toContain('Nguyễn Văn Chủ');
+    expect(m.html).toContain('ADM-2026-001');
+    expect(m.html).toContain('Đại Bàng Lửa');
+  });
+
+  it('admissionAppointmentScheduled includes Gate A and appointment instructions', () => {
+    const m = admissionAppointmentScheduled(admMock, horseMock, ownerMock);
+    expect(m.subject).toContain('Lịch hẹn thẩm định tiếp nhận ngựa');
+    expect(m.text).toContain('Trạm kiểm định Cổng A — CLB Đua Ngựa EquiFlow');
+    expect(m.text).toContain('Giấy chứng nhận phả hệ');
+    expect(m.html).toContain('Cổng A');
+    expect(m.html).toContain('Vui lòng đến đúng giờ tại cổng A');
+  });
+
+  it('admissionApproved indicates RESTING status and microchip confirmation', () => {
+    const m = admissionApproved(admMock, horseMock, ownerMock, 'BS Nguyễn Thú Y');
+    expect(m.subject).toContain('Chúc mừng: Chiến mã Đại Bàng Lửa đã chính thức gia nhập CLB');
+    expect(m.text).toContain('RESTING');
+    expect(m.text).toContain('985123456789012');
+    expect(m.text).toContain('BS Nguyễn Thú Y');
+    expect(m.html).toContain('RESTING');
+  });
+
+  it('admissionRejected includes rejection reason and remedy guidance', () => {
+    const m = admissionRejected(admMock, horseMock, ownerMock);
+    expect(m.subject).toContain('Thông báo kết quả thẩm định tiếp nhận ngựa');
+    expect(m.text).toContain('Chưa đủ giấy tờ phả hệ gốc và sổ tiêm chủng');
+    expect(m.text).toContain('nộp lại đơn đăng ký tiếp nhận sau');
+    expect(m.html).toContain('Chưa đủ giấy tờ phả hệ gốc');
+  });
+
+  it('properly escapes XSS payloads in admission templates', () => {
+    const xssHorse = { id: 'h2', name: '<script>alert("hacked")</script>' };
+    const xssReason = {
+      ...admMock,
+      rejectionReason: '<b onmouseover=alert(1)>Lỗi</b> & nguy hiểm',
+    };
+    const m = admissionRejected(xssReason, xssHorse, ownerMock);
+    expect(m.html).not.toContain('<script>');
+    expect(m.html).toContain('&lt;script&gt;');
+    expect(m.html).not.toContain('<b onmouseover');
+    expect(m.html).toContain('&lt;b');
+    expect(m.html).toContain('&amp; nguy hiểm');
   });
 });

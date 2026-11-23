@@ -27,6 +27,20 @@ import { ChangeHorseStatusDto } from './dto/change-status.dto';
 import { DeleteHorseDto } from './dto/delete-horse.dto';
 import { RestoreHorseDto } from './dto/restore-horse.dto';
 import { QueryDeletedHorseDto } from './dto/query-deleted-horse.dto';
+import {
+  CancelAdmissionDto,
+  InspectAdmissionDto,
+  QueryAdmissionDto,
+  RejectAdmissionDto,
+  ScheduleAdmissionDto,
+} from './dto/admission.dto';
+
+const ALL_STAFF_ROLES = [
+  UserRole.CLUB_MANAGER,
+  UserRole.HEAD_TRAINER,
+  UserRole.VETERINARIAN,
+  UserRole.GROOM,
+];
 
 @ApiTags('Horses')
 @ApiBearerAuth('JWT-auth')
@@ -52,6 +66,83 @@ export class HorsesController {
   async findDeleted(@Query() query: QueryDeletedHorseDto) {
     return this.lifecycle.findDeleted(query);
   }
+
+  // =========================================================================
+  // ADM-02 (SPEC §5): 7 ROUTE TIẾP NHẬN & THẨM ĐỊNH (PHẢI TRƯỚC ':id')
+  // =========================================================================
+
+  @Get('admissions')
+  @Roles(...ALL_STAFF_ROLES)
+  @ApiOperation({ summary: 'Danh sách hồ sơ tiếp nhận ngựa (ADM-02, ADM-04) - Chỉ Staff' })
+  async listAdmissions(@Query() query: QueryAdmissionDto) {
+    return this.horsesService.listAdmissions(query);
+  }
+
+  @Get('admissions/:id/history')
+  @Roles(...ALL_STAFF_ROLES)
+  @ApiOperation({ summary: 'Lịch sử các bước của hồ sơ tiếp nhận (ADM-02) - Chỉ Staff' })
+  async getAdmissionHistory(@Param('id') id: string) {
+    return this.horsesService.getAdmissionHistory(id);
+  }
+
+  @Post('admissions/:id/schedule')
+  @Roles(UserRole.CLUB_MANAGER)
+  @ApiOperation({
+    summary: 'Xếp ngày hẹn tiếp nhận ngựa tại trung tâm (ADM-02) - Chỉ Club Manager',
+  })
+  async scheduleAdmission(
+    @Param('id') id: string,
+    @Body() dto: ScheduleAdmissionDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.horsesService.scheduleAdmission(id, dto, user);
+  }
+
+  @Patch('admissions/:id/inspect')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.VETERINARIAN)
+  @ApiOperation({
+    summary: 'Cập nhật kết quả quét chip, giấy tờ hoặc khám y tế (ADM-02) - CM hoặc Vet',
+  })
+  async inspectAdmission(
+    @Param('id') id: string,
+    @Body() dto: InspectAdmissionDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.horsesService.inspectAdmission(id, dto, user);
+  }
+
+  @Post('admissions/:id/approve')
+  @Roles(UserRole.CLUB_MANAGER)
+  @ApiOperation({ summary: 'Phê duyệt tiếp nhận ngựa vào CLB (ADM-02) - Chỉ Club Manager' })
+  async approveAdmission(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
+    return this.horsesService.approveAdmission(id, user);
+  }
+
+  @Post('admissions/:id/reject')
+  @Roles(UserRole.CLUB_MANAGER)
+  @ApiOperation({ summary: 'Từ chối tiếp nhận ngựa vào CLB (ADM-02) - Chỉ Club Manager' })
+  async rejectAdmission(
+    @Param('id') id: string,
+    @Body() dto: RejectAdmissionDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.horsesService.rejectAdmission(id, dto, user);
+  }
+
+  @Post('admissions/:id/cancel')
+  @Roles(UserRole.HORSE_OWNER, UserRole.CLUB_MANAGER)
+  @ApiOperation({ summary: 'Hủy hồ sơ tiếp nhận ngựa (ADM-02) - Chủ ngựa hoặc Club Manager' })
+  async cancelAdmission(
+    @Param('id') id: string,
+    @Body() dto: CancelAdmissionDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.horsesService.cancelAdmission(id, dto, user);
+  }
+
+  // =========================================================================
+  // CÁC ROUTE ĐỊNH DANH NGỰA DÙNG ':id'
+  // =========================================================================
 
   @Get(':id')
   @ApiOperation({ summary: 'Lấy chi tiết hồ sơ định danh ngựa (FR-1.04)' })
