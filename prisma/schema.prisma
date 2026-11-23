@@ -56,6 +56,18 @@ enum HorseStatus {
   ISOLATED
   RESTING
   RETIRED
+  PENDING_ADMISSION // ADM-01: ngựa mới đăng ký, chờ thẩm định tiếp nhận vào CLB
+  REJECTED          // ADM-01: ngựa bị từ chối tiếp nhận (được phép đăng ký lại)
+}
+
+// ADM-01 (SPEC-EQUIFLOW-HORSE-ADMISSION-V2 §3.2): vòng đời hồ sơ tiếp nhận ngựa.
+enum AdmissionStatus {
+  PENDING_VERIFICATION
+  APPOINTED
+  INSPECTION_IN_PROGRESS
+  APPROVED
+  REJECTED
+  CANCELLED
 }
 
 enum NutritionPlanStatus {
@@ -318,6 +330,9 @@ model User {
   transfersFrom            HorseTransferRequest[]   @relation("TransferFromOwner")
   transfersTo              HorseTransferRequest[]   @relation("TransferToOwner")
   transfersRequested       HorseTransferRequest[]   @relation("TransferRequestedBy")
+  ownerAdmissions          HorseAdmissionRecord[]   @relation("OwnerAdmissions")
+  vetAdmissions            HorseAdmissionRecord[]   @relation("VetAdmissions")
+  admissionApprovals       HorseAdmissionRecord[]   @relation("ManagerAdmissions")
   businessMailings         BusinessMailing[]
   complaintsFiled          Complaint[]              @relation("ComplaintReporter")
   complaintsRaised         Complaint[]              @relation("ComplaintSubject")
@@ -539,6 +554,7 @@ model Horse {
   tournamentRegistrations TournamentRegistration[]
   financialInvoices       FinancialInvoice[]
   transferRequests        HorseTransferRequest[]
+  admissionRecords        HorseAdmissionRecord[]
 
   @@index([horseCode])
   @@index([microchip])
@@ -1450,4 +1466,69 @@ model HorseTransferRequest {
   @@index([horseId, status])
   @@index([fromOwnerId, status])
   @@index([toOwnerId, status])
+}
+
+// -------------------------------------------------------------
+// ADM-01 (SPEC-EQUIFLOW-HORSE-ADMISSION-V2 §4): TIẾP NHẬN & THẨM ĐỊNH NGỰA
+// -------------------------------------------------------------
+
+/// Hồ sơ tiếp nhận ngựa: chủ ngựa đăng ký -> xếp lịch -> thẩm định (chip/pháp lý/y tế) -> CM quyết định.
+/// horseId KHÔNG unique (nhiều hồ sơ / đăng ký lại sau REJECTED); ADM-code unique mỗi lần tạo.
+model HorseAdmissionRecord {
+  id           String   @id @default(uuid())
+  admissionCode String  @unique // ADM-YYYY-NNN
+  horseId      String
+  horse        Horse    @relation(fields: [horseId], references: [id], onDelete: Cascade)
+  ownerId      String
+  owner        User     @relation("OwnerAdmissions", fields: [ownerId], references: [id], onDelete: SetNull)
+  status       AdmissionStatus @default(PENDING_VERIFICATION)
+
+  // §1 Lịch hẹn thẩm định (CM)
+  appointmentDate    DateTime?
+  appointmentNotes   String?
+
+  // §2 Pháp lý & vi mạch (CM)
+  declaredMicrochip  String?
+  scannedMicrochip   String?
+  microchipVerified  Boolean @default(false)
+  legalDocumentsNote String?
+  legalVerified      Boolean @default(false)
+  // §6 câu 2: link ảnh giấy tờ chủ upload (tùy chọn)
+  documentsUrl       String?
+
+  // §3 Khám sàng lọc (Vet)
+  isHealthEligible   Boolean?
+  healthCheckNotes   String?
+  veterinarianUserId String?
+  veterinarian       User? @relation("VetAdmissions", fields: [veterinarianUserId], references: [id], onDelete: SetNull)
+
+  // §4 Quyết định (CM)
+  approvedByUserId   String?
+  approvedBy         User? @relation("ManagerAdmissions", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  admittedAt         DateTime?
+  rejectionReason    String?
+
+  history      AdmissionHistoryLog[]
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([status, admittedAt])
+  @@index([horseId])
+  @@index([ownerId])
+}
+
+/// Nhật ký lịch sử tiếp nhận (audit trail): ai đổi trạng thái, khi nào, lý do gì (§8 spec).
+model AdmissionHistoryLog {
+  id          String  @id @default(uuid())
+  admissionId String
+  admission   HorseAdmissionRecord @relation(fields: [admissionId], references: [id], onDelete: Cascade)
+  fromStatus  AdmissionStatus?
+  toStatus    AdmissionStatus
+  actorUserId String
+  actorName   String?
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@index([admissionId, createdAt])
 }
