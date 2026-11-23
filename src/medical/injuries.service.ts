@@ -69,7 +69,10 @@ export class InjuriesService {
       },
     });
 
-    const includeHealed = query.includeHealed === 'true';
+    const includeHealed =
+      query.includeHealed === 'true' ||
+      query.includeHealed === '1' ||
+      (query.includeHealed as any) === true;
     const asOfDate = query.asOfDate ? new Date(query.asOfDate) : null;
 
     let result = injuries;
@@ -100,18 +103,40 @@ export class InjuriesService {
           const currentSnapshot = activeAsOf[0];
           const stageAtDate = currentSnapshot ? currentSnapshot.stage : inj.stage;
           const severityAtDate = currentSnapshot ? currentSnapshot.severity : inj.severity;
+          const statusAtDate =
+            stageAtDate === 'HEALED' ? InjuryStatus.RESOLVED : InjuryStatus.ACTIVE;
 
           return {
             ...inj,
             stage: stageAtDate,
             severity: severityAtDate,
+            status: statusAtDate,
+            recoveryHistory: history,
           };
         });
+    } else {
+      result = result.map((inj) => {
+        let history: any[] = [];
+        if (inj.recoveryHistory) {
+          try {
+            history =
+              typeof inj.recoveryHistory === 'string'
+                ? JSON.parse(inj.recoveryHistory)
+                : (inj.recoveryHistory as any[]);
+          } catch {
+            history = [];
+          }
+        }
+        return {
+          ...inj,
+          recoveryHistory: history,
+        };
+      });
     }
 
     if (!includeHealed) {
       result = result.filter(
-        (inj) => inj.stage !== 'HEALED' && inj.status !== InjuryStatus.RESOLVED,
+        (inj) => inj.stage !== 'HEALED' && (inj as any).status !== InjuryStatus.RESOLVED,
       );
     }
 
@@ -262,6 +287,14 @@ export class InjuriesService {
     }
 
     await this.access.checkHorseAccess(injury.horseId, currentUser);
+
+    if (injury && injury.recoveryHistory && typeof injury.recoveryHistory === 'string') {
+      try {
+        (injury as any).recoveryHistory = JSON.parse(injury.recoveryHistory);
+      } catch {
+        (injury as any).recoveryHistory = [];
+      }
+    }
 
     return injury;
   }

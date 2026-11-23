@@ -108,6 +108,44 @@ export class MedicalLocksService {
       const horse = await tx.horse.findUnique({ where: { id: dto.horseId, deletedAt: null } });
       if (!horse) throw apiError(HttpStatus.NOT_FOUND, 'HORSE_NOT_FOUND', 'Horse not found.');
 
+      // Bắt buộc phải gắn với Bệnh án: Bệnh án phải tồn tại và đang mở điều trị (OPEN)
+      let recordIdToLink: string | null = null;
+      const medRecordClient = tx.medicalRecord || this.prisma.medicalRecord;
+      if (dto.medicalRecordId) {
+        const linkedRecord = await medRecordClient?.findUnique?.({
+          where: { id: dto.medicalRecordId },
+          select: { id: true, horseId: true, status: true },
+        });
+        if (!linkedRecord || linkedRecord.horseId !== dto.horseId) {
+          throw apiError(
+            HttpStatus.BAD_REQUEST,
+            'RECORD_NOT_FOR_HORSE',
+            'Bệnh án không tồn tại hoặc không thuộc về chiến mã này. / Medical record not found or does not belong to this horse.',
+          );
+        }
+        if (linkedRecord.status !== 'OPEN' && linkedRecord.status !== 'DRAFT') {
+          throw apiError(
+            HttpStatus.BAD_REQUEST,
+            'RECORD_NOT_OPEN',
+            'Chỉ có thể đặt Khóa huấn luyện khi Bệnh án đang mở điều trị (OPEN). / Training lock requires an open medical record.',
+          );
+        }
+        recordIdToLink = linkedRecord.id;
+      } else if (medRecordClient?.findFirst) {
+        const openRecord = await medRecordClient.findFirst({
+          where: { horseId: dto.horseId, status: 'OPEN' },
+          select: { id: true },
+        });
+        if (!openRecord) {
+          throw apiError(
+            HttpStatus.BAD_REQUEST,
+            'OPEN_RECORD_REQUIRED',
+            'Chỉ có thể đặt Khóa huấn luyện khi chiến mã có Bệnh án đang mở điều trị (OPEN). / Training Lock requires an active OPEN medical record for this horse.',
+          );
+        }
+        recordIdToLink = openRecord.id;
+      }
+
       const existingLock = await tx.medicalLock.findFirst({
         where: { horseId: dto.horseId, isLocked: true },
       });
@@ -134,7 +172,7 @@ export class MedicalLocksService {
         data: {
           lockCode,
           horseId: dto.horseId,
-          medicalRecordId: dto.medicalRecordId || null,
+          medicalRecordId: recordIdToLink,
           veterinarianUserId: actor.userId,
           expectedRestDays: restDaysCalculated,
           recheckDate,

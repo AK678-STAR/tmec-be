@@ -660,13 +660,26 @@ describe('Medical services', () => {
   });
 
   describe('closeMedicalRecord', () => {
-    it('should close medical record with conclusion', async () => {
+    it('should close medical record with conclusion and transition horse to RESTING', async () => {
       const mockRecord = {
         id: 'rec-1',
+        horseId: 'horse-1',
         status: 'OPEN',
         treatmentProtocol: 'Phác đồ ban đầu',
       };
       mockPrismaService.medicalRecord.findUnique.mockResolvedValue(mockRecord);
+      mockPrismaService.medicalRecord.findFirst.mockResolvedValue({
+        id: 'rec-open-1',
+        horseId: 'horse-1',
+        status: 'OPEN',
+      });
+      mockPrismaService.medicalLock.findFirst.mockResolvedValue(null);
+      mockPrismaService.horse.findUnique.mockResolvedValue({
+        id: 'horse-1',
+        name: 'Thunder',
+        status: 'INJURED',
+        isMedicalLocked: false,
+      });
       mockPrismaService.medicalRecord.update.mockResolvedValue({
         ...mockRecord,
         treatmentProtocol: 'Phác đồ ban đầu\n[KẾT LUẬN]: Đã phục hồi hoàn toàn',
@@ -677,7 +690,35 @@ describe('Medical services', () => {
       });
 
       expect(result.treatmentProtocol).toContain('Đã phục hồi hoàn toàn');
+      expect(mockPrismaService.horse.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'horse-1' },
+          data: expect.objectContaining({ status: 'RESTING', isMedicalLocked: false }),
+        }),
+      );
       expect(mockAuditService.record).toHaveBeenCalled();
+    });
+
+    it('rejects closing if horse still has an active medical lock', async () => {
+      const mockRecord = {
+        id: 'rec-1',
+        horseId: 'horse-1',
+        status: 'OPEN',
+        treatmentProtocol: 'Phác đồ ban đầu',
+      };
+      mockPrismaService.medicalRecord.findUnique.mockResolvedValue(mockRecord);
+      mockPrismaService.medicalLock.findFirst.mockResolvedValue({
+        id: 'lock-active',
+        lockCode: 'KH-000001',
+        isLocked: true,
+      });
+
+      const error = await records
+        .closeMedicalRecord('rec-1', mockVetUser, { conclusion: 'Đã bình phục' })
+        .catch((e) => e);
+
+      expect(error.getResponse()).toEqual(expect.objectContaining({ code: 'ACTIVE_LOCK_EXISTS' }));
+      expect(mockPrismaService.medicalRecord.update).not.toHaveBeenCalled();
     });
 
     it('rejects concluding a draft that was never finalized', async () => {
@@ -763,6 +804,26 @@ describe('Medical services', () => {
       ).rejects.toThrow(ForbiddenException);
     });
 
+    it('should throw BadRequestException when horse has no open medical record to bind lock', async () => {
+      mockPrismaService.horse.findUnique.mockResolvedValue({
+        id: 'horse-1',
+        name: 'Thunder',
+        status: 'ACTIVE',
+      });
+      mockPrismaService.medicalRecord.findFirst.mockResolvedValue(null);
+
+      const error = await locks
+        .createMedicalLock(mockVetUser, {
+          horseId: 'horse-1',
+          lockReason: 'No open record',
+        })
+        .catch((e) => e);
+
+      expect(error.getResponse()).toEqual(
+        expect.objectContaining({ code: 'OPEN_RECORD_REQUIRED' }),
+      );
+    });
+
     it('should create medical lock with auto lockCode, impact assessment, and update horse status', async () => {
       mockPrismaService.horse.findUnique.mockResolvedValue({
         id: 'horse-1',
@@ -770,6 +831,16 @@ describe('Medical services', () => {
         status: 'ACTIVE',
         medicalLocks: [],
         isMedicalLocked: false,
+      });
+      mockPrismaService.medicalRecord.findFirst.mockResolvedValue({
+        id: 'rec-open-1',
+        horseId: 'horse-1',
+        status: 'OPEN',
+      });
+      mockPrismaService.medicalRecord.findFirst.mockResolvedValue({
+        id: 'rec-open-1',
+        horseId: 'horse-1',
+        status: 'OPEN',
       });
       mockPrismaService.medicalLock.findFirst.mockResolvedValue(null);
       mockPrismaService.medicalLock.count.mockResolvedValue(0);
@@ -854,6 +925,11 @@ describe('Medical services', () => {
         id: 'horse-1',
         name: 'Thunder',
         isMedicalLocked: true,
+      });
+      mockPrismaService.medicalRecord.findFirst.mockResolvedValue({
+        id: 'rec-open-1',
+        horseId: 'horse-1',
+        status: 'OPEN',
       });
       mockPrismaService.medicalLock.findFirst.mockResolvedValue({ id: 'lock-old', isLocked: true });
 
@@ -1024,6 +1100,11 @@ describe('Medical services', () => {
         status: 'ACTIVE',
         medicalLocks: [],
         isMedicalLocked: false,
+      });
+      mockPrismaService.medicalRecord.findFirst.mockResolvedValue({
+        id: 'rec-open-1',
+        horseId: 'horse-1',
+        status: 'OPEN',
       });
       mockPrismaService.medicalLock.findFirst.mockResolvedValue(null);
       mockPrismaService.medicalLock.count.mockResolvedValue(0);
@@ -1619,6 +1700,11 @@ describe('Medical services', () => {
         status: 'IN_TRAINING',
         medicalLocks: [],
         isMedicalLocked: false,
+      });
+      mockPrismaService.medicalRecord.findFirst.mockResolvedValue({
+        id: 'rec-open-1',
+        horseId: 'horse-1',
+        status: 'OPEN',
       });
       mockPrismaService.medicalLock.findFirst.mockResolvedValue(null);
       mockPrismaService.medicalLock.count.mockResolvedValue(0);

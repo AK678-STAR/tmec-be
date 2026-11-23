@@ -851,6 +851,19 @@ export class MedicalRecordsService {
       );
     }
 
+    // Quy tắc nghiệp vụ: Chiến mã phải không còn Khóa huấn luyện y tế nào đang hiệu lực thì mới được đóng bệnh án
+    const activeLock = await this.prisma.medicalLock.findFirst({
+      where: { horseId: record.horseId, isLocked: true },
+      select: { id: true, lockCode: true },
+    });
+    if (activeLock) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'ACTIVE_LOCK_EXISTS',
+        `Chiến mã vẫn còn Khóa huấn luyện y tế đang hiệu lực (${activeLock.lockCode}). Vui lòng gỡ bỏ (Release) khóa trước khi đóng bệnh án. / Cannot close medical record while Training Lock is active. Please release the lock first.`,
+      );
+    }
+
     // Tự động dừng tất cả đơn thuốc đang ACTIVE của bệnh án
     let currentRx: any[] = [];
     const rxSource = record.prescriptions || record.prescriptionDetails;
@@ -890,6 +903,43 @@ export class MedicalRecordsService {
         prescriptionDetails: JSON.stringify(stoppedRx),
       },
     });
+
+    // Khi đóng bệnh án: Chuyển trạng thái ngựa về RESTING (Nghỉ ngơi).
+    // Đợi HLV Trưởng (Head Trainer) rà soát, xác định lại buổi tập và chuyển sang IN_TRAINING.
+    const horse = await this.prisma.horse.findUnique({
+      where: { id: record.horseId },
+      select: { id: true, name: true, status: true, isMedicalLocked: true },
+    });
+
+    if (horse && horse.status !== HorseStatus.RETIRED && horse.status !== HorseStatus.RESTING) {
+      assertStatusTransition({
+        role: actor.role,
+        from: horse.status,
+        to: HorseStatus.RESTING,
+        isMedicalLocked: false,
+        reason: `Đóng bệnh án #${record.recordNumber || record.id}. Ngựa hoàn thành điều trị và chuyển về trạng thái Nghỉ ngơi (RESTING).`,
+      });
+
+      await this.prisma.horse.update({
+        where: { id: record.horseId },
+        data: {
+          status: HorseStatus.RESTING,
+          isMedicalLocked: false,
+        },
+      });
+
+      await this.audit.record(
+        { id: actor.userId, name: actor.fullName },
+        'HORSE_STATUS_CHANGED',
+        `Changed status of horse ${horse.name} from ${horse.status} to RESTING upon closing medical record #${record.recordNumber || record.id}.`,
+        record.horseId,
+        {
+          entityName: 'Horse',
+          oldValues: { status: horse.status },
+          newValues: { status: HorseStatus.RESTING },
+        },
+      );
+    }
 
     await this.audit.record(
       { id: actor.userId, name: actor.fullName },
@@ -1625,8 +1675,12 @@ export class MedicalRecordsService {
 
   private assertDose(raw: unknown): number {
     const dose = Number(raw);
-    if (!Number.isFinite(dose) || dose <= 0) {
-      throw apiError(HttpStatus.BAD_REQUEST, 'INVALID_DOSAGE', 'Liều dùng phải là số lớn hơn 0.');
+    if (!Number.isFinite(dose) || !Number.isInteger(dose) || dose < 1) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'INVALID_DOSAGE',
+        'Liều dùng thuốc phải là số tự nhiên lớn hơn hoặc bằng 1.',
+      );
     }
     return dose;
   }
