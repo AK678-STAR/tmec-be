@@ -40,6 +40,7 @@ describe('Flow 3 medical HTTP contract (mock database, real JWT/guards)', () => 
       update: jest.fn().mockResolvedValue(horse),
     },
     medicalLock: {
+      findMany: jest.fn().mockResolvedValue([]),
       findFirst: jest.fn().mockResolvedValue(null),
       findUnique: jest.fn(),
       count: jest.fn().mockResolvedValue(0),

@@ -1,4 +1,5 @@
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger, Optional } from '@nestjs/common';
+import { BusinessMailBody, BusinessMailService } from '../business-mail/business-mail.service';
 import { NotificationCategory, Prisma, Role, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { zoneGroomIds } from '../shift-rosters/groom-zones';
@@ -15,6 +16,7 @@ export interface NotifyInput {
   link?: string;
   senderName?: string;
   dedupeKey?: string; // sự kiện chỉ báo 1 lần cho mỗi người nhận
+  email?: { eventCode: string; body: BusinessMailBody };
 }
 
 // Sự kiện gắn với công tắc thông báo của người dùng (trang Notification settings).
@@ -33,7 +35,10 @@ const SETTING_OF: Record<string, NotifyKey> = {
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly businessMail?: BusinessMailService,
+  ) {}
 
   async notifyUsers(
     userIds: (string | null | undefined)[],
@@ -68,6 +73,16 @@ export class NotificationsService {
         })),
         skipDuplicates: true,
       });
+      if (input.email && this.businessMail) {
+        try {
+          await this.businessMail.emit({
+            eventCode: input.email.eventCode,
+            recipients: allowed.map((user) => ({ userId: user.id, body: input.email!.body })),
+          });
+        } catch (err) {
+          this.logger.warn(`Could not queue business email: ${(err as Error).message}`);
+        }
+      }
       return true;
     } catch (err) {
       this.logger.warn(`Could not send notification ${input.type}: ${(err as Error).message}`);

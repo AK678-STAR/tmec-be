@@ -763,6 +763,10 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
     tx?: Prisma.TransactionClient,
   ) {
     if (!zoneId || !items || !Array.isArray(items) || items.length === 0) return;
+    if (!tx)
+      return this.prisma.$transaction((client) =>
+        this.deductStockForFeeding(zoneId, items, client),
+      );
     const db = tx || this.prisma;
 
     // Phase 1: Pre-validation - Kiểm tra toàn bộ vật tư trong danh sách
@@ -876,20 +880,23 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
     }
 
     // Phase 2: Toàn bộ vật tư đủ tồn kho -> Thực hiện trừ kho chính xác
-    for (const item of resolvedItems) {
+    for (const item of resolvedItems.sort((a, b) => a.supplyId.localeCompare(b.supplyId))) {
       const newQty = item.currentQty - item.amount;
 
-      await db.stockBalance.update({
+      const changed = await db.stockBalance.updateMany({
         where: {
-          zoneId_supplyId: {
-            zoneId,
-            supplyId: item.supplyId,
-          },
+          zoneId,
+          supplyId: item.supplyId,
+          quantity: { gte: new Prisma.Decimal(item.amount) },
         },
-        data: {
-          quantity: new Prisma.Decimal(newQty),
-        },
+        data: { quantity: { decrement: new Prisma.Decimal(item.amount) } },
       });
+      if (changed.count !== 1)
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'INSUFFICIENT_STOCK',
+          'Stock changed during completion. No task was recorded.',
+        );
 
       this.logger.log(
         `[InventoryService] Đã trừ kho khu ${zoneId}, vật tư ${item.supplyName} (${item.supplyId}): -${item.amount} ${item.unit}. Tồn kho còn lại: ${newQty} ${item.unit}.`,

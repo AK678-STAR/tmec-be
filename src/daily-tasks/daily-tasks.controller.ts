@@ -4,8 +4,10 @@ import { CurrentUser, CurrentUserPayload } from '../common/decorators/current-us
 import { Roles } from '../common/decorators/roles.decorator';
 import { UserRole } from '../common/enums/role.enum';
 import { DailyTasksService } from './daily-tasks.service';
+import { RejectDailyTaskDto } from './dto/reject-daily-task.dto';
 import {
   CompleteDailyTaskDto,
+  UndoDailyTaskDto,
   GenerateDailyTasksDto,
   QueryDailyTasksDto,
 } from './dto/daily-task.dto';
@@ -59,7 +61,22 @@ export class DailyTasksController {
   @Roles(UserRole.GROOM, UserRole.CLUB_MANAGER)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Hoàn tác trạng thái hoàn thành trong vòng 15 phút an toàn' })
-  uncompleteTask(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
-    return this.service.uncompleteTask(id, user);
+  uncompleteTask(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentUserPayload,
+    @Body() dto: UndoDailyTaskDto = {},
+  ) {
+    return this.service.uncompleteTask(id, user, undefined, dto);
+  }
+
+  @Post(':id/reject')
+  @Roles(UserRole.CLUB_MANAGER)
+  @HttpCode(HttpStatus.OK)
+  rejectTask(
+    @Param('id') id: string,
+    @Body() dto: RejectDailyTaskDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.service.uncompleteTask(id, user, dto);
   }
 }

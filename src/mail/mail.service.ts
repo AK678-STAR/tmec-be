@@ -35,18 +35,36 @@ export class MailService {
         this.resend = new Resend(resendApiKey);
       }
     } else if (provider === 'smtp') {
-      if (!smtpUser) {
-        this.logger.warn(
-          'EMAIL_PROVIDER=smtp nhưng SMTP_USER đang trống. Chuyển sang chế độ MOCK (in log).',
-        );
-        this.provider = 'mock';
-      } else {
+      const mailHost = config.get<string>('MAIL_HOST') || config.get<string>('SMTP_HOST') || '';
+      const mailPort = Number(
+        config.get<string>('MAIL_PORT') || config.get<string>('SMTP_PORT') || 587,
+      );
+      if (smtpUser) {
         this.provider = 'smtp';
         this.transporter = nodemailer.createTransport({
-          host: config.get<string>('SMTP_HOST'),
-          port: Number(config.get<string>('SMTP_PORT') || 587),
+          host: mailHost,
+          port: mailPort,
+          connectionTimeout: 10000,
+          greetingTimeout: 10000,
+          socketTimeout: 20000,
           auth: { user: smtpUser, pass: config.get<string>('SMTP_PASS') || '' },
         });
+      } else if (mailHost) {
+        // Mailpit / SMTP nội bộ không xác thực (NOTE.md §6.1): có host, không user/pass.
+        this.provider = 'smtp';
+        this.transporter = nodemailer.createTransport({
+          host: mailHost,
+          port: mailPort,
+          connectionTimeout: 10000,
+          greetingTimeout: 10000,
+          socketTimeout: 20000,
+          secure: false,
+        });
+      } else {
+        this.logger.warn(
+          'EMAIL_PROVIDER=smtp nhưng SMTP_USER và MAIL_HOST đang trống. Chuyển sang chế độ MOCK (in log).',
+        );
+        this.provider = 'mock';
       }
     } else {
       this.provider = 'mock';
@@ -76,6 +94,57 @@ export class MailService {
   async sendOtp(to: string, options: OtpEmailOptions): Promise<void> {
     const { subject, text, html } = buildOtpEmail(options);
     await this.send(to, subject, text, html);
+  }
+
+  /**
+   * Gửi mail nghiệp vụ (nhắc nợ, cảnh báo, chứng từ). Trả boolean để người gọi
+   * ghi nhận trạng thái "SMTP accept" (không đồng nghĩa thư đã vào inbox):
+   * - true: provider thật (smtp/resend) đã chấp nhận thư.
+   * - false: chế độ mock (chỉ in log) hoặc lỗi gửi.
+   * Không bao giờ throw — lỗi được ghi log, giao dịch chính không bị ảnh hưởng.
+   */
+  async sendBusiness(to: string, subject: string, text: string, html?: string): Promise<boolean> {
+    if (this.provider === 'mock') {
+      this.logger.log(`[mail:console] to=${to} | ${subject}\n${text}`);
+      return false;
+    }
+
+    if (this.provider === 'resend' && this.resend) {
+      const { data, error } = await this.resend.emails.send({
+        from: this.from,
+        to,
+        subject,
+        text,
+        html: html || this.wrapDefaultHtml(subject, text),
+      });
+      if (error) {
+        this.logger.error(`[mail:resend] error sending "${subject}" to ${to}: ${error.message}`);
+        return false;
+      }
+      this.logger.log(
+        `[mail:resend] sent to ${to} (id: ${data?.id}) | ${subject.replace(/\d{6}/, '******')}`,
+      );
+      return true;
+    }
+
+    if (this.provider === 'smtp' && this.transporter) {
+      try {
+        await this.transporter.sendMail({
+          from: this.from,
+          to,
+          subject,
+          text,
+          html: html || this.wrapDefaultHtml(subject, text),
+        });
+        this.logger.log(`[mail:smtp] sent to ${to} | ${subject.replace(/\d{6}/, '******')}`);
+        return true;
+      } catch (err) {
+        this.logger.error(`[mail:smtp] failed to send "${subject}" to ${to}: ${String(err)}`);
+        return false;
+      }
+    }
+
+    return false;
   }
 
   async send(to: string, subject: string, text: string, html?: string): Promise<void> {

@@ -10,6 +10,7 @@ import {
 import { AssignHorseDto } from './dto/assign-horse.dto';
 import { TransferHorseDto } from './dto/transfer-horse.dto';
 import { ReturnStallDto } from './dto/return-stall.dto';
+import { AssignAllocationGroomDto } from './dto/assign-allocation-groom.dto';
 import { CurrentUser, CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { UserRole } from '../common/enums/role.enum';
@@ -22,6 +23,22 @@ const STAFF = [UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.VETERINARI
 @Controller('stalls')
 export class StallsController {
   constructor(private readonly stallsService: StallsService) {}
+
+  @Get('allocations/:id/groom-candidates')
+  @Roles(UserRole.CLUB_MANAGER)
+  groomCandidates(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
+    return this.stallsService.groomCandidates(id, user);
+  }
+
+  @Patch('allocations/:id/groom')
+  @Roles(UserRole.CLUB_MANAGER)
+  assignAllocationGroom(
+    @Param('id') id: string,
+    @Body() dto: AssignAllocationGroomDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.stallsService.assignAllocationGroom(id, dto.groomUserId, user);
+  }
 
   @Get()
   @Roles(...STAFF)

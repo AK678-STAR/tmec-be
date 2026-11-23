@@ -1,3 +1,5 @@
+import { WorkoutsService } from './workouts.service';
+import { lockWorkoutSchedule } from './workout-availability.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { HorseStatus, PlanStatus, Prisma, TrackSurface, WorkoutStatus } from '@prisma/client';
 import { apiError } from '../common/exceptions/api-error';
@@ -590,11 +592,56 @@ export class TrainingPlansService {
     data: Prisma.TrainingPlanUncheckedCreateInput,
   ) {
     return this.prisma.$transaction(async (tx) => {
+      await lockWorkoutSchedule(tx);
       await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${horse.id} FOR UPDATE`;
       await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${trainerId} FOR UPDATE`;
+      const current = await tx.horse.findUnique({
+        where: { id: horse.id },
+        include: { medicalLocks: { where: { isLocked: true }, select: { id: true }, take: 1 } },
+      });
+      if (
+        !current ||
+        current.deletedAt ||
+        current.status === 'RETIRED' ||
+        current.isMedicalLocked ||
+        (current.medicalLocks?.length ?? 0) > 0
+      )
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'HORSE_MEDICAL_LOCKED',
+          'Horse is no longer eligible for a new plan.',
+        );
       await this.assertNoOtherTrainer(horse.id, horse.name, trainerId, tx);
       await this.assertTrainerCapacity(horse.id, horse.name, trainerId, tx);
-      return tx.trainingPlan.create({ data, include: PLAN_INCLUDE });
+      const created = await tx.trainingPlan.create({ data, include: PLAN_INCLUDE });
+      if (data.workoutSessions?.create) {
+        const copies = await tx.workoutSession.findMany({
+          where: { trainingPlanId: created.id, status: 'SCHEDULED' },
+        });
+        for (const row of copies)
+          await new WorkoutsService(
+            this.prisma,
+            this.auditService,
+            this.notifications,
+            this.common,
+          ).validateAdmission(
+            tx,
+            created,
+            {
+              scheduledDate: row.scheduledDate,
+              phaseId: row.phaseId,
+              workoutType: row.workoutType ?? 'TROT',
+              intensity: row.intensity ?? 'MEDIUM',
+              trackId: row.trackId,
+              trackSurface: row.trackSurface ?? 'TURF',
+              distanceMeters: row.distanceMeters,
+              repetitions: row.repetitions,
+              targetSpeedKmh: row.targetSpeedKmh,
+            },
+            row.id,
+          );
+      }
+      return created;
     });
   }
 
@@ -900,6 +947,7 @@ export class TrainingPlansService {
               workoutType: w.workoutType,
               intensity: w.intensity,
               trackSurface: w.trackSurface,
+              trackId: w.trackId,
               jockeyName: user.fullName,
               trainerNotes: w.trainerNotes,
               status: blocked ? WorkoutStatus.BLOCKED : WorkoutStatus.SCHEDULED,

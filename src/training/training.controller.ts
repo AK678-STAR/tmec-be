@@ -20,6 +20,8 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { RequirePermission } from '../common/decorators/require-permission.decorator';
 import { UserRole } from '../common/enums/role.enum';
 import { WorkoutStatus } from '@prisma/client';
+import { WorkoutSlotSuggestionsService } from './workout-slot-suggestions.service';
+import { SuggestWorkoutSlotsDto } from './dto/suggest-workout-slots.dto';
 
 class OptionalEnumPipe<T extends object> implements PipeTransform {
   private readonly pipe: ParseEnumPipe<T>;
@@ -37,11 +39,21 @@ import { TrainingInsightsService } from './training-insights.service';
 import { TrainingPlansService } from './training-plans.service';
 import { WorkoutsService } from './workouts.service';
 import { TrainerReviewsService } from './trainer-reviews.service';
+import { TracksService } from './tracks.service';
+import {
+  CreateTrainingTrackDto,
+  UpdateTrainingTrackDto,
+  MapLegacyTrackDto,
+} from './dto/training-track.dto';
 import { UpsertTrainerReviewDto } from './dto/trainer-review.dto';
 import { CreateTrainingPlanDto } from './dto/create-training-plan.dto';
 import { UpdateTrainingPlanDto } from './dto/update-training-plan.dto';
 import { QueryTrainingPlanDto } from './dto/query-training-plan.dto';
-import { CreateWorkoutSessionDto, RepeatWorkoutDto } from './dto/create-workout-session.dto';
+import {
+  CheckWorkoutDto,
+  CreateWorkoutSessionDto,
+  RepeatWorkoutDto,
+} from './dto/create-workout-session.dto';
 import { UpdateWorkoutSessionDto } from './dto/update-workout-session.dto';
 import { RecordWorkoutResultDto } from './dto/record-result.dto';
 import {
@@ -66,7 +78,69 @@ export class TrainingController {
     private readonly plans: TrainingPlansService,
     private readonly workouts: WorkoutsService,
     private readonly reviews: TrainerReviewsService,
+    private readonly tracks: TracksService,
+    private readonly suggestions: WorkoutSlotSuggestionsService,
   ) {}
+
+  @Get('plans/:id/suggest-slots')
+  @Roles(UserRole.HEAD_TRAINER)
+  @RequirePermission('assignSchedule')
+  suggestSlots(
+    @Param('id') id: string,
+    @Query() dto: SuggestWorkoutSlotsDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.suggestions.suggest(id, dto, user);
+  }
+
+  @Post('plans/:id/check-workout')
+  @Roles(UserRole.HEAD_TRAINER)
+  @RequirePermission('assignSchedule')
+  checkWorkout(
+    @Param('id') id: string,
+    @Body() dto: CheckWorkoutDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.workouts.checkWorkout(id, dto, user);
+  }
+
+  @Get('tracks')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.VETERINARIAN, UserRole.GROOM)
+  listTracks(
+    @Query('includeInactive') includeInactive: string,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.tracks.list(includeInactive === 'true', user);
+  }
+
+  @Post('tracks')
+  @Roles(UserRole.CLUB_MANAGER)
+  @RequirePermission('manageAccounts')
+  createTrack(@Body() dto: CreateTrainingTrackDto, @CurrentUser() user: CurrentUserPayload) {
+    return this.tracks.save(null, dto, user);
+  }
+
+  @Patch('tracks/:id')
+  @Roles(UserRole.CLUB_MANAGER)
+  @RequirePermission('manageAccounts')
+  updateTrack(
+    @Param('id') id: string,
+    @Body() dto: UpdateTrainingTrackDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.tracks.save(id, dto, user);
+  }
+
+  @Post('tracks/:id/map-legacy-workouts')
+  @Roles(UserRole.CLUB_MANAGER)
+  @RequirePermission('manageAccounts')
+  mapLegacyTrack(
+    @Param('id') id: string,
+    @Body() dto: MapLegacyTrackDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.tracks.mapLegacy(id, dto.workoutIds, user);
+  }
 
   // ------------------------------------------------------------ Đánh giá HLV
 

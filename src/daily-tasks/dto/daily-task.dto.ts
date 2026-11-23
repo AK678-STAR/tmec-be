@@ -88,3 +88,9 @@ export class CompleteDailyTaskDto {
   @IsString()
   notes?: string;
 }
+
+export class UndoDailyTaskDto {
+  @IsOptional()
+  @IsBoolean()
+  administrationNotPerformed?: boolean;
+}

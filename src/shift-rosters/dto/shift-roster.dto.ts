@@ -6,15 +6,51 @@ import {
   IsBoolean,
   IsDateString,
   IsIn,
+  IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
   MaxLength,
+  ValidateBy,
 } from 'class-validator';
 
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
 
 export type ApplyScope = 'ONLY_THIS_DAY' | 'REST_OF_WEEK' | 'SAME_DAY_4_WEEKS';
+
+export class SwapCandidatesQueryDto {
+  @ApiProperty({ description: 'Phân công ca trực cần xin đổi' })
+  @IsUUID('4')
+  rosterId: string;
+}
+
+export class RequestShiftSwapDto {
+  @ApiPropertyOptional({ description: 'Nhân viên chăm sóc đề nghị thay ca' })
+  @IsOptional()
+  @IsUUID('4')
+  targetGroomUserId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  targetRosterId?: string;
+
+  @ValidateBy({
+    name: 'exactlyOneSwapTarget',
+    validator: {
+      validate: (_, args) => {
+        const target = args?.object as RequestShiftSwapDto;
+        return !!target.targetGroomUserId !== !!target.targetRosterId;
+      },
+      defaultMessage: () => 'Choose exactly one target Groom or target roster.',
+    },
+  })
+  @ApiProperty({ description: 'Lý do xin đổi ca (quản lý sẽ xem xét)' })
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  reason: string;
+}
 
 /** DL-4.01 Phân ca (một ô: Ngày x Ca x Khu) */
 export class AssignShiftRosterDto {
@@ -97,4 +133,18 @@ export class QueryShiftRosterDto {
   @IsOptional()
   @IsUUID('4')
   groomUserId?: string;
+}
+
+export class QueryCareTeamDto {
+  @IsOptional()
+  @IsDateString({ strict: true })
+  startDate?: string;
+
+  @IsOptional()
+  @IsDateString({ strict: true })
+  endDate?: string;
+
+  @IsOptional()
+  @IsIn(['mine', 'club'])
+  scope: 'mine' | 'club' = 'mine';
 }

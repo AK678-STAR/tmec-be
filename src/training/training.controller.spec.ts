@@ -1,3 +1,5 @@
+import { TracksService } from './tracks.service';
+import { WorkoutSlotSuggestionsService } from './workout-slot-suggestions.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { TrainingController } from './training.controller';
 import { TrainerReviewsService } from './trainer-reviews.service';
@@ -55,6 +57,11 @@ describe('TrainingController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [TrainingController],
       providers: [
+        { provide: WorkoutSlotSuggestionsService, useValue: { suggest: jest.fn() } },
+        {
+          provide: TracksService,
+          useValue: { list: jest.fn(), save: jest.fn(), mapLegacy: jest.fn() },
+        },
         { provide: TrainingInsightsService, useValue: mockInsights },
         { provide: TrainingPlansService, useValue: mockPlans },
         { provide: WorkoutsService, useValue: mockWorkouts },
