@@ -18,18 +18,16 @@ describe('trainer care-team scope', () => {
   it('groups responsible vets by own horses without fabricating duty shifts', async () => {
     const db: any = {
       trainingPlan: {
-        findMany: jest
-          .fn()
-          .mockResolvedValue([
-            {
-              horseId: 'h',
-              horse: {
-                id: 'h',
-                name: 'Horse',
-                stallAllocations: [{ stall: { zoneId: 'own-zone' } }],
-              },
+        findMany: jest.fn().mockResolvedValue([
+          {
+            horseId: 'h',
+            horse: {
+              id: 'h',
+              name: 'Horse',
+              stallAllocations: [{ stall: { zoneId: 'own-zone' } }],
             },
-          ]),
+          },
+        ]),
       },
       shiftRoster: { findMany: jest.fn().mockResolvedValue([{ id: 'groom-roster' }]) },
       medicalRecord: {

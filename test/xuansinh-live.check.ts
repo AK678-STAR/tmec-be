@@ -5,6 +5,7 @@ import { AuditService } from '../src/audit/audit.service';
 import { CounterService } from '../src/audit/counter.service';
 import { MedicalRecordsService } from '../src/medical/medical-records.service';
 import { StallsService } from '../src/stalls/stalls.service';
+import { NotificationsService } from '../src/notifications/notifications.service';
 import { rosterDay } from '../src/shift-rosters/groom-zones';
 
 const target = new URL(process.env.DATABASE_URL ?? '');
@@ -321,6 +322,30 @@ async function main() {
     data: { isActive: false, endDate: new Date() },
   });
   await assert.rejects(stables.assignAllocationGroom(allocation.id, replacement.id, managerActor));
+  const realNotifications = new NotificationsService(db as any);
+  const notificationPath = new StallsService(db as any, audit, undefined, realNotifications);
+  const samples: number[] = [];
+  for (let i = 0; i < 20; i++) {
+    const row = await db.stallAllocation.create({ data: { horseId: horse.id, stallId: stall.id } });
+    const started = performance.now();
+    assert.equal(await (notificationPath as any).alertGroomAssignment(row.id), true);
+    assert.ok(
+      await db.notification.findFirst({
+        where: { userId: manager.id, dedupeKey: `allocation-groom:${row.id}:${manager.id}` },
+      }),
+    );
+    samples.push(performance.now() - started);
+    await db.stallAllocation.update({
+      where: { id: row.id },
+      data: { isActive: false, endDate: new Date() },
+    });
+  }
+  samples.sort((a, b) => a - b);
+  const p95 = samples[Math.ceil(samples.length * 0.95) - 1];
+  assert.ok(p95 < 1000, `Local post-commit notification p95 ${p95}ms exceeded 1000ms`);
+  console.log(
+    `PASS: local real notification persistence path, 20 samples, post-commit p95=${p95.toFixed(1)}ms (no SMTP or browser polling/network latency).`,
+  );
   console.log(
     'PASS: allocation selects actual on-duty Groom, rejects Vet/stale allocation, reassigns pending work and preserves completed care history.',
   );
