@@ -423,12 +423,11 @@ export class IncidentsService {
     }
 
     if (
-      (incident.status === IncidentStatus.RESOLVED ||
-        incident.status === IncidentStatus.DISMISSED) &&
-      dto.status === IncidentStatus.REPORTED
+      incident.status === IncidentStatus.RESOLVED ||
+      incident.status === IncidentStatus.DISMISSED
     ) {
       throw new BadRequestException(
-        'Không thể chuyển trạng thái sự cố đã xử lý/bác bỏ quay lại Mới báo.',
+        'Báo cáo sự cố đã hoàn thành xử lý hoặc bị bác bỏ, không thể thay đổi trạng thái nữa.',
       );
     }
 

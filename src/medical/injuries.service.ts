@@ -73,13 +73,35 @@ export class InjuriesService {
       query.includeHealed === 'true' ||
       query.includeHealed === '1' ||
       (query.includeHealed as any) === true;
-    const asOfDate = query.asOfDate ? new Date(query.asOfDate) : null;
+
+    const toEndOfDay = (dStr: string): Date => {
+      const d = new Date(dStr);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dStr)) {
+        d.setUTCHours(23, 59, 59, 999);
+      }
+      return d;
+    };
+
+    const toStartOfDay = (dStr: string): Date => {
+      const d = new Date(dStr);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dStr)) {
+        d.setUTCHours(0, 0, 0, 0);
+      }
+      return d;
+    };
+
+    const fromDate = query.fromDate ? toStartOfDay(query.fromDate) : null;
+    const toDate = query.toDate
+      ? toEndOfDay(query.toDate)
+      : query.asOfDate
+        ? toEndOfDay(query.asOfDate)
+        : null;
 
     let result = injuries;
 
-    if (asOfDate) {
+    if (toDate) {
       result = result
-        .filter((inj) => new Date(inj.discoveryDate || inj.createdAt) <= asOfDate)
+        .filter((inj) => new Date(inj.discoveryDate || inj.createdAt) <= toDate)
         .map((inj) => {
           let history: any[] = [];
           if (inj.recoveryHistory) {
@@ -93,7 +115,7 @@ export class InjuriesService {
             }
           }
           const activeAsOf = history
-            .filter((h) => new Date(h.evaluationDate || h.createdAt) <= asOfDate)
+            .filter((h) => new Date(h.evaluationDate || h.createdAt) <= toDate)
             .sort(
               (a, b) =>
                 new Date(b.evaluationDate || b.createdAt).getTime() -
@@ -131,6 +153,18 @@ export class InjuriesService {
           ...inj,
           recoveryHistory: history,
         };
+      });
+    }
+
+    if (fromDate) {
+      result = result.filter((inj) => {
+        const disc = new Date(inj.discoveryDate || inj.createdAt);
+        if (disc >= fromDate) return true;
+        const hist = Array.isArray(inj.recoveryHistory) ? (inj.recoveryHistory as any[]) : [];
+        const hasHistoryInRange = hist.some(
+          (h: any) => new Date(h.evaluationDate || h.createdAt) >= fromDate,
+        );
+        return Boolean(hasHistoryInRange);
       });
     }
 
@@ -321,6 +355,26 @@ export class InjuriesService {
     }
 
     const dataToUpdate: any = {};
+    if (dto.coordinateX !== undefined || dto.coordinateY !== undefined) {
+      let history: any[] = [];
+      if (injury.recoveryHistory) {
+        try {
+          history =
+            typeof injury.recoveryHistory === 'string'
+              ? JSON.parse(injury.recoveryHistory)
+              : (injury.recoveryHistory as any[]);
+        } catch {
+          history = [];
+        }
+      }
+      if (injury.stage !== 'ACUTE' || (Array.isArray(history) && history.length > 1)) {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'INJURY_LOCKED_FOR_RELOCATION',
+          'Không thể thay đổi vị trí chấn thương khi vết thương đang trong quá trình điều trị / hồi phục.',
+        );
+      }
+    }
     if (dto.coordinateX !== undefined) dataToUpdate.coordinateX = dto.coordinateX;
     if (dto.coordinateY !== undefined) dataToUpdate.coordinateY = dto.coordinateY;
     if (dto.viewSide) {

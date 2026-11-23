@@ -14,6 +14,20 @@ export class InjuryQueryDto {
   @IsDateString()
   asOfDate?: string;
 
+  @ApiPropertyOptional({
+    description: 'Lọc từ ngày chấn thương / hồi phục (YYYY-MM-DD)',
+  })
+  @IsOptional()
+  @IsDateString()
+  fromDate?: string;
+
+  @ApiPropertyOptional({
+    description: 'Lọc đến ngày chấn thương / hồi phục (YYYY-MM-DD)',
+  })
+  @IsOptional()
+  @IsDateString()
+  toDate?: string;
+
   @ApiPropertyOptional({ description: 'Lọc theo góc nhìn: LEFT | RIGHT' })
   @IsOptional()
   @IsString()
