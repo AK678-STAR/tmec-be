@@ -196,4 +196,48 @@ export class FinancialController {
       role: user.role,
     });
   }
+
+  @Post(':id/payos-link')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.HORSE_OWNER)
+  @ApiOperation({ summary: 'Tạo link thanh toán PayOS và mã VietQR' })
+  async createPayOSLink(
+    @Param('id') id: string,
+    @Body('demoAmount') demoAmount: number,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.financialService.createPayOSLink(id, demoAmount ? Number(demoAmount) : undefined, {
+      id: user.userId,
+      name: user.fullName || user.email,
+      role: user.role,
+    });
+  }
+
+  @Get(':id/payos-status')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.HORSE_OWNER)
+  @ApiOperation({ summary: 'Tra cứu trạng thái thanh toán đơn hàng PayOS' })
+  async verifyPayOSStatus(
+    @Param('id') id: string,
+    @Query('orderCode') orderCode: string,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.financialService.verifyPayOSPayment(id, Number(orderCode), {
+      id: user.userId,
+      name: user.fullName || user.email,
+      role: user.role,
+    });
+  }
+
+  @Post(':id/simulate-paid')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.HORSE_OWNER)
+  @ApiOperation({ summary: 'Giả lập thanh toán thành công 1-click (Demo fallback)' })
+  async simulatePaid(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.financialService.simulateMockPaid(id, {
+      id: user.userId,
+      name: user.fullName || user.email,
+      role: user.role,
+    });
+  }
 }

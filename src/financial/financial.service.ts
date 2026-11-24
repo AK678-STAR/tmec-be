@@ -2,12 +2,13 @@ import { CareBillingSettingsService } from './care-billing-settings.service';
 import { CareBillingPolicyDto } from './dto/care-billing-policy.dto';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { InvoiceLineItemsService } from './invoice-line-items.service';
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger, Optional } from '@nestjs/common';
 import { InvoiceStatus, Prisma, RestockStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { BusinessMailService, BusinessMailEvent } from '../business-mail/business-mail.service';
+import { PayOSService } from './payos.service';
 import {
   invoiceIssued,
   invoicePaid,
@@ -80,7 +81,12 @@ export class FinancialService {
     private readonly audit: AuditService,
     private readonly notifications: NotificationsService,
     private readonly businessMail: BusinessMailService,
-  ) {}
+    @Optional() private payosService?: PayOSService,
+  ) {
+    if (!this.payosService) {
+      this.payosService = new PayOSService();
+    }
+  }
 
   getCareBillingPolicy(actor: CurrentUserPayload) {
     return new CareBillingSettingsService(this.prisma, this.audit).get(actor);
@@ -1606,5 +1612,173 @@ export class FinancialService {
       revenueItems: filteredInvoices.map((inv) => serializeInvoice(inv)),
       supplyExpenses: filteredSupplyExpenses,
     };
+  }
+
+  /**
+   * Tạo link / mã QR thanh toán PayOS (kèm fallback VietQR)
+   */
+  async createPayOSLink(id: string, demoAmount: number | undefined, user: FinancialActor) {
+    const existing = await this.prisma.financialInvoice.findUnique({
+      where: { id },
+      include: { horse: true },
+    });
+
+    if (!existing) {
+      throw apiError(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', 'Không tìm thấy hóa đơn.');
+    }
+
+    if (user.role === 'HORSE_OWNER' && existing.ownerId !== user.id) {
+      throw apiError(HttpStatus.FORBIDDEN, 'FORBIDDEN', 'Bạn chỉ được thanh toán hóa đơn của mình.');
+    }
+
+    return this.payosService!.createPaymentLink({
+      invoiceId: existing.id,
+      billingPeriod: existing.billingPeriod,
+      netAmount: Number(existing.netAmount),
+      demoAmount,
+    });
+  }
+
+  /**
+   * Kiểm tra trạng thái thanh toán từ PayOS và tự động chốt PAID nếu đã thanh toán
+   */
+  async verifyPayOSPayment(id: string, orderCode: number, user: FinancialActor) {
+    const existing = await this.prisma.financialInvoice.findUnique({
+      where: { id },
+      include: { horse: true },
+    });
+
+    if (!existing) {
+      throw apiError(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', 'Không tìm thấy hóa đơn.');
+    }
+
+    if (existing.status === InvoiceStatus.PAID) {
+      return { paid: true, status: 'PAID', invoice: serializeInvoice(existing) };
+    }
+
+    const statusCheck = await this.payosService!.getPaymentStatus(orderCode);
+    if (statusCheck.status === 'PAID') {
+      const updated = await this.prisma.financialInvoice.update({
+        where: { id, status: existing.status, updatedAt: existing.updatedAt },
+        data: {
+          status: InvoiceStatus.PAID,
+          paidAt: new Date(),
+          paidConfirmedById: user.id,
+          paidConfirmedByName: user.name,
+          paymentMethod: 'PAYOS',
+          paymentRef: `PAYOS_${orderCode}`,
+        },
+      });
+
+      await this.audit.record(
+        { id: user.id, name: user.name },
+        'INVOICE_PAID',
+        `Invoice ${id} (${existing.billingPeriod}) confirmed paid via PayOS order ${orderCode}`,
+        id,
+        {
+          entityName: 'FinancialInvoice',
+          oldValues: { status: existing.status },
+          newValues: { status: InvoiceStatus.PAID, paymentMethod: 'PAYOS', paymentRef: `PAYOS_${orderCode}` },
+        },
+      );
+
+      await this.checkAndReleaseDebtSanctions(existing.horseId, existing.ownerId, user);
+
+      // Mail chứng từ PAID
+      if (existing.ownerId) {
+        try {
+          const ctx = this.invoiceCtx(updated, existing.ownerId);
+          ctx.owner.fullName = await this.ownerFullName(existing.ownerId);
+          ctx.horse.name = existing.horse?.name ?? ctx.horse.name;
+          await this.emitMailSafe({
+            eventCode: 'INVOICE_PAID',
+            recipients: [
+              {
+                userId: existing.ownerId,
+                body: {
+                  ...invoicePaid(ctx.inv, ctx.horse, ctx.owner, `PAYOS_${orderCode}`),
+                  refId: id,
+                },
+              },
+            ],
+          });
+        } catch (e) {
+          this.logger.warn(`Failed to send paid mail: ${(e as Error).message}`);
+        }
+      }
+
+      return { paid: true, status: 'PAID', invoice: serializeInvoice(updated) };
+    }
+
+    return { paid: false, status: statusCheck.status };
+  }
+
+  /**
+   * Giả lập thanh toán thành công 1-click (Demo fallback)
+   */
+  async simulateMockPaid(id: string, user: FinancialActor) {
+    const existing = await this.prisma.financialInvoice.findUnique({
+      where: { id },
+      include: { horse: true },
+    });
+
+    if (!existing) {
+      throw apiError(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', 'Không tìm thấy hóa đơn.');
+    }
+
+    if (existing.status === InvoiceStatus.PAID) {
+      return serializeInvoice(existing);
+    }
+
+    const mockRef = `SIM_PAYOS_${Date.now().toString().slice(-6)}`;
+    const updated = await this.prisma.financialInvoice.update({
+      where: { id },
+      data: {
+        status: InvoiceStatus.PAID,
+        paidAt: new Date(),
+        paidConfirmedById: user.id,
+        paidConfirmedByName: user.name,
+        paymentMethod: 'PAYOS_DEMO',
+        paymentRef: mockRef,
+      },
+    });
+
+    await this.audit.record(
+      { id: user.id, name: user.name },
+      'INVOICE_PAID',
+      `Invoice ${id} (${existing.billingPeriod}) demo simulated paid by ${user.name}`,
+      id,
+      {
+        entityName: 'FinancialInvoice',
+        oldValues: { status: existing.status },
+        newValues: { status: InvoiceStatus.PAID, paymentMethod: 'PAYOS_DEMO', paymentRef: mockRef },
+      },
+    );
+
+    await this.checkAndReleaseDebtSanctions(existing.horseId, existing.ownerId, user);
+
+    if (existing.ownerId) {
+      try {
+        const ctx = this.invoiceCtx(updated, existing.ownerId);
+        ctx.owner.fullName = await this.ownerFullName(existing.ownerId);
+        ctx.horse.name = existing.horse?.name ?? ctx.horse.name;
+        await this.emitMailSafe({
+          eventCode: 'INVOICE_PAID',
+          recipients: [
+            {
+              userId: existing.ownerId,
+              body: {
+                ...invoicePaid(ctx.inv, ctx.horse, ctx.owner, mockRef),
+                refId: id,
+              },
+            },
+          ],
+        });
+      } catch (e) {
+        this.logger.warn(`Failed to send mock paid mail: ${(e as Error).message}`);
+      }
+    }
+
+    return serializeInvoice(updated);
   }
 }
