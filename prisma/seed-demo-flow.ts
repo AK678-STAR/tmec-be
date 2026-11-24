@@ -400,13 +400,13 @@ async function main() {
     return plan;
   }
 
-  // --- HLV B (trainer2@gmail.com): Đúng 6 con ở Barn A -> ĐẦY TẢI 6/6 ---
-  console.log('  -> Tạo 6 ngựa cho HLV B để đạt 6/6 đầy tải...');
+  // --- HLV B (trainer2@gmail.com): Đúng 8 con -> ĐẦY TẢI 8/8 ---
+  console.log('  -> Tạo 8 ngựa cho HLV B để đạt 8/8 đầy tải...');
   const horseNamesB = [
     'Tuyết Phong', 'Kim Long', 'Thần Phong', 'Hắc Báo',
-    'Hồng Kỳ', 'Phi Vũ',
+    'Hồng Kỳ', 'Phi Vũ', 'Tử Điện', 'Thanh Loan',
   ];
-  for (let i = 1; i <= 6; i++) {
+  for (let i = 1; i <= 8; i++) {
     const avatarUrl = `/images/horses/horse-${String(i).padStart(2, '0')}.jpg`;
     const h = await prisma.horse.create({
       data: {
@@ -432,9 +432,14 @@ async function main() {
       assignedStall = stallsA[5 + i];
       assignedGroomId = groom2.id;
       groom2Horses.push({ horse: h, stall: assignedStall });
-    } else {
+    } else if (i <= 6) {
       // Con thứ 5 và 6: Gán vào A-11 và A-12 của Barn A
       assignedStall = stallsA[5 + i];
+      assignedGroomId = groom2.id;
+      groom2Horses.push({ horse: h, stall: assignedStall });
+    } else {
+      // Con thứ 7 và 8: Gán vào A-05 và A-06 của Barn A để đủ 8 con trong cùng Barn A
+      assignedStall = stallsA[i - 3];
       assignedGroomId = groom2.id;
       groom2Horses.push({ horse: h, stall: assignedStall });
     }

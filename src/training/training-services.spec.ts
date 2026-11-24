@@ -299,20 +299,20 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
       expect(prisma.trainingPlan.create).not.toHaveBeenCalled();
     });
 
-    it('accepts the sixth distinct horse and refuses the seventh', async () => {
+    it('accepts the eighth distinct horse and refuses the ninth', async () => {
       prisma.horse.findUnique.mockResolvedValue(healthyHorse);
       prisma.trainingPlan.create.mockResolvedValue({ ...draftPlan, horse: healthyHorse });
-      const others = Array.from({ length: 6 }, (_, index) => ({
+      const others = Array.from({ length: 8 }, (_, index) => ({
         horseId: `h-${index}`,
         horse: { name: `Horse ${index}` },
       }));
-      prisma.trainingPlan.findMany.mockResolvedValue([...others.slice(0, 5), others[0]]);
+      prisma.trainingPlan.findMany.mockResolvedValue([...others.slice(0, 7), others[0]]);
       await expect(plans.createPlan(dto, trainer)).resolves.toBeDefined();
       prisma.trainingPlan.create.mockClear();
       prisma.trainingPlan.findMany.mockResolvedValue(others);
       const error = await plans.createPlan(dto, trainer).catch((e) => e);
       expect(error.getResponse().code).toBe('TRAINER_HORSE_LIMIT');
-      expect(error.getResponse().data).toMatchObject({ max: 6 });
+      expect(error.getResponse().data).toMatchObject({ max: 8 });
       expect(prisma.trainingPlan.create).not.toHaveBeenCalled();
     });
 

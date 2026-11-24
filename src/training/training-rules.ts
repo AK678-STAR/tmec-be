@@ -65,8 +65,8 @@ export const MAX_WORKOUTS_PER_DAY = 3; // Q-2.13
 export const MAX_DAILY_WORKOUTS_PER_GROOM = 4;
 export const MAX_DAILY_HEAVY_WORKOUTS_PER_GROOM = 2;
 
-/** BR-TRN-CAPACITY: Mỗi HLV chỉ được quản lý tối đa 6 chiến mã đồng thời. */
-export const MAX_HORSES_PER_TRAINER = 6;
+/** BR-TRN-CAPACITY: Mỗi HLV chỉ được quản lý tối đa 8 chiến mã đồng thời. */
+export const MAX_HORSES_PER_TRAINER = 8;
 
 /** BR-TRN-SLOT-HT: Đệm thời gian tối thiểu giữa các buổi tập của 1 HLV (phút). */
 export const TRAINER_BUFFER_MINUTES = 15;

@@ -225,7 +225,7 @@ export class TrainingPlansService {
     }
     await this.assertNoOtherTrainer(horse.id, horse.name, user.userId);
 
-    // BR-TRN-CAPACITY: Mỗi HLV chỉ được phụ trách tối đa 6 chiến mã đồng thời
+    // BR-TRN-CAPACITY: Mỗi HLV chỉ được phụ trách tối đa 8 chiến mã đồng thời
     const activePlanCount = await this.prisma.trainingPlan.count({
       where: {
         trainerUserId: user.userId,
@@ -1168,7 +1168,7 @@ export class TrainingPlansService {
     }
     await this.assertNoOtherTrainer(horse.id, horse.name, user.userId);
 
-    // BR-TRN-CAPACITY: Mỗi HLV chỉ được phụ trách tối đa 6 chiến mã đồng thời
+    // BR-TRN-CAPACITY: Mỗi HLV chỉ được phụ trách tối đa 8 chiến mã đồng thời
     const activePlanCount = await this.prisma.trainingPlan.count({
       where: {
         trainerUserId: user.userId,
