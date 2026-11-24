@@ -11,6 +11,7 @@ import {
   GenerateDailyTasksDto,
   QueryDailyTasksDto,
 } from './dto/daily-task.dto';
+import { CreateAdHocTaskDto } from './dto/create-ad-hoc-task.dto';
 
 const ALL_STAFF_ROLES = [
   UserRole.CLUB_MANAGER,
@@ -41,6 +42,16 @@ export class DailyTasksController {
   generateTasks(@Body() dto: GenerateDailyTasksDto) {
     const targetDate = dto.date ? new Date(`${dto.date}T00:00:00.000Z`) : new Date();
     return this.service.generateDailyTasksForDate(targetDate, dto.zoneId);
+  }
+
+  @Post('ad-hoc')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER)
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Quản lý CLB tạo công việc chăm sóc phát sinh (Ad-hoc Care Task) cho chiến mã',
+  })
+  createAdHocTask(@Body() dto: CreateAdHocTaskDto, @CurrentUser() user: CurrentUserPayload) {
+    return this.service.createAdHocTask(dto, user);
   }
 
   @Post(':id/complete')

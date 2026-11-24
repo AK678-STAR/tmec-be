@@ -98,7 +98,7 @@ describe('StallsService (SC-1.04, SC-1.07, DL-1.02, DL-1.03)', () => {
       prisma.stallZone.findUnique.mockResolvedValue(null);
       await service.ensureZones();
       expect(prisma.stallZone.create).toHaveBeenCalledWith({
-        data: { code: 'ZONE-A-BARN-1', name: 'Zone A - Barn 1', cols: 2, rows: 1 },
+        data: { code: 'ZONE-A-BARN-1', name: 'Zone A - Barn 1', cols: 3, rows: 4 },
       });
       expect(prisma.stall.update).toHaveBeenCalledWith({
         where: { id: 'o-2' },

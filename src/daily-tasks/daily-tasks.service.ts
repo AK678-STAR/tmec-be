@@ -13,6 +13,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CompleteDailyTaskDto, QueryDailyTasksDto } from './dto/daily-task.dto';
+import { CreateAdHocTaskDto } from './dto/create-ad-hoc-task.dto';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { InventoryService } from '../inventory/inventory.service';
 import {
@@ -1217,6 +1218,78 @@ export class DailyTasksService {
       });
     }
     return updated;
+  }
+
+  /** Quản lý tạo công việc phát sinh đột xuất cho chiến mã (Ad-hoc Care Task) */
+  async createAdHocTask(dto: CreateAdHocTaskDto, user: CurrentUserPayload) {
+    const horse = await this.prisma.horse.findUnique({
+      where: { id: dto.horseId, deletedAt: null },
+      include: {
+        stallAllocations: {
+          where: { isActive: true },
+          include: { stall: true },
+        },
+      },
+    });
+    if (!horse) {
+      throw apiError(HttpStatus.NOT_FOUND, 'HORSE_NOT_FOUND', 'Không tìm thấy chiến mã.');
+    }
+    const allocation = horse.stallAllocations[0];
+    const stallZoneId = allocation?.stall?.zoneId || null;
+    const stallId = allocation?.stall?.id || null;
+
+    let targetGroomId = dto.assignedGroomUserId;
+    if (!targetGroomId) {
+      targetGroomId = allocation?.assignedGroomUserId || undefined;
+    }
+
+    if (targetGroomId) {
+      const groom = await this.prisma.user.findUnique({ where: { id: targetGroomId } });
+      if (!groom || groom.role !== Role.GROOM || groom.status !== 'ACTIVE') {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'INVALID_GROOM',
+          'Groom được chọn không hợp lệ hoặc đang không hoạt động.',
+        );
+      }
+    }
+
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const todayDate = new Date(`${todayStr}T00:00:00.000Z`);
+
+    const taskCode = `ADHOC-${todayStr.replace(/-/g, '')}-${Date.now().toString().slice(-6)}`;
+
+    const task = await this.prisma.dailyCareTask.create({
+      data: {
+        taskCode,
+        date: todayDate,
+        horseId: dto.horseId,
+        stallZoneId,
+        stallId,
+        taskType: dto.taskType,
+        title: dto.title,
+        scheduledTime: dto.scheduledTime || '14:00',
+        assignedGroomUserId: targetGroomId || null,
+        description: dto.description || null,
+        isCompleted: false,
+      },
+      include: TASK_DETAIL_INCLUDE,
+    });
+
+    if (targetGroomId) {
+      await this.publishAssignment(task);
+    }
+
+    await this.auditService.record(
+      { id: user.userId, name: user.fullName || user.email } as any,
+      'CREATE_ADHOC_CARE_TASK',
+      `Tạo việc phát sinh: ${dto.title} cho chiến mã ${horse.name}`,
+      task.id,
+      { entityName: 'DailyCareTask', newValues: { ...dto, taskCode } },
+    );
+
+    return task;
   }
 }
 
