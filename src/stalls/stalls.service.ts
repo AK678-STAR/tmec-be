@@ -798,6 +798,13 @@ export class StallsService {
           { stallCode: current.stall.code },
         );
       }
+      if (!dto.assignedGroomUserId) {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'GROOM_REQUIRED_FOR_STALL_ALLOCATION',
+          'Bắt buộc phải phân công Groom phụ trách khi xếp ngựa vào ô chuồng.',
+        );
+      }
       await this.assertGroom(tx, stall.zoneId, dto.assignedGroomUserId);
       await assertTrainerZone(
         tx,
