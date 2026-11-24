@@ -52,6 +52,7 @@
     "@nestjs/terminus": "^11.0.0",
     "@nestjs/throttler": "^6.7.1",
     "@nestjs/websockets": "^11.2.7",
+    "@payos/node": "^2.0.6",
     "@prisma/client": "^6.4.1",
     "bcryptjs": "^3.0.2",
     "class-transformer": "^0.5.1",

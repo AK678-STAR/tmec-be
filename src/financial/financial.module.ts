@@ -5,11 +5,12 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { FinancialController } from './financial.controller';
 import { FinancialService } from './financial.service';
 import { FinancialScheduler } from './financial.scheduler';
+import { PayOSService } from './payos.service';
 
 @Module({
   imports: [PrismaModule, AuditModule, NotificationsModule],
   controllers: [FinancialController],
-  providers: [FinancialService, FinancialScheduler],
-  exports: [FinancialService],
+  providers: [FinancialService, FinancialScheduler, PayOSService],
+  exports: [FinancialService, PayOSService],
 })
 export class FinancialModule {}
