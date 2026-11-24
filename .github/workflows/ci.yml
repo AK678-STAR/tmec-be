@@ -134,8 +134,9 @@ jobs:
         run: npx prisma generate
 
       - name: Run White-box Tests with Coverage
-        run: npm run test:unit -- --coverage --coverageReporters=lcov --coverageReporters=json-summary --coverageReporters=text-summary
+        run: npm run test:unit -- --coverage --coverageReporters=lcov --coverageReporters=json-summary --coverageReporters=text-summary --maxWorkers=2 --workerIdleMemoryLimit=1GB
         env:
+          NODE_OPTIONS: "--max-old-space-size=8192"
           NODE_ENV: test
           JWT_SECRET: "ci-secret-key-racehorse-training-2026"
 

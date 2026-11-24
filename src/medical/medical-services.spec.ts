@@ -728,7 +728,7 @@ describe('Medical services', () => {
       mockPrismaService.medicalRecord.findUnique.mockResolvedValue(mockRecord);
       mockPrismaService.medicalLock.findFirst.mockResolvedValue({
         id: 'lock-active',
-        lockCode: 'KH-000001',
+        lockCode: 'MLK-2026-001',
         isLocked: true,
       });
 
@@ -865,7 +865,7 @@ describe('Medical services', () => {
       mockPrismaService.medicalLock.count.mockResolvedValue(0);
       mockPrismaService.medicalLock.create.mockResolvedValue({
         id: 'lock-1',
-        lockCode: 'KH-000001',
+        lockCode: 'MLK-2026-001',
         horseId: 'horse-1',
         isLocked: true,
         recheckDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
@@ -963,7 +963,7 @@ describe('Medical services', () => {
     it('should release medical lock and check warning flags', async () => {
       mockPrismaService.medicalLock.findUnique.mockResolvedValue({
         id: 'lock-1',
-        lockCode: 'KH-000001',
+        lockCode: 'MLK-2026-001',
         horseId: 'horse-1',
         isLocked: true,
         horse: {
@@ -974,7 +974,7 @@ describe('Medical services', () => {
       });
       mockPrismaService.medicalLock.update.mockResolvedValue({
         id: 'lock-1',
-        lockCode: 'KH-000001',
+        lockCode: 'MLK-2026-001',
         isLocked: false,
         horse: { id: 'horse-1', name: 'Thunder' },
       });
@@ -1020,7 +1020,7 @@ describe('Medical services', () => {
 
       mockPrismaService.medicalLock.findUnique.mockResolvedValue({
         id: 'lock-1',
-        lockCode: 'KH-000001',
+        lockCode: 'MLK-2026-001',
         isLocked: true,
         lockedAt: new Date(),
         recheckDate: currentRecheck,
@@ -1029,7 +1029,7 @@ describe('Medical services', () => {
 
       mockPrismaService.medicalLock.update.mockResolvedValue({
         id: 'lock-1',
-        lockCode: 'KH-000001',
+        lockCode: 'MLK-2026-001',
         horseId: 'horse-1',
         recheckDate: newRecheck,
         isLocked: true,
@@ -1129,7 +1129,7 @@ describe('Medical services', () => {
       mockPrismaService.medicalLock.count.mockResolvedValue(0);
       mockPrismaService.medicalLock.create.mockResolvedValue({
         id: 'lock-1',
-        lockCode: 'KH-000001',
+        lockCode: 'MLK-2026-001',
         horseId: 'horse-1',
         isLocked: true,
         recheckDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
@@ -1155,7 +1155,7 @@ describe('Medical services', () => {
       mockPrismaService.medicalLock.findMany.mockResolvedValue([
         {
           id: 'lock-1',
-          lockCode: 'KH-000001',
+          lockCode: 'MLK-2026-001',
           isLocked: true,
           lockedAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000),
           recheckDate: pastRecheck,
@@ -1729,7 +1729,7 @@ describe('Medical services', () => {
       mockPrismaService.medicalLock.count.mockResolvedValue(0);
       mockPrismaService.medicalLock.create.mockResolvedValue({
         id: 'lock-t017',
-        lockCode: 'KH-000017',
+        lockCode: 'MLK-2026-017',
         horseId: 'horse-t017',
         isLocked: true,
         recheckDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),

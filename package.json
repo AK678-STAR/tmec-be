@@ -111,6 +111,7 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node",
+    "workerIdleMemoryLimit": "1024MB",
     "moduleNameMapper": {
       "^src/(.*)$": "<rootDir>/$1"
     },
