@@ -5,6 +5,7 @@ export interface PayOSLinkResult {
   isRealPayOS: boolean;
   checkoutUrl: string | null;
   qrCode: string;
+  rawQrCode?: string;
   orderCode: number;
   amount: number;
   description: string;
@@ -80,16 +81,39 @@ export class PayOSService {
           cancelUrl,
         });
 
+        const rawQr = paymentLinkRes.qrCode;
+        const bin = paymentLinkRes.bin || '970422';
+        const accountNumber = paymentLinkRes.accountNumber;
+        const accountName = paymentLinkRes.accountName;
+        const amount = paymentLinkRes.amount;
+        const desc = paymentLinkRes.description;
+
+        // PayOS SDK trả về raw EMVCo text payload trong qrCode (e.g. 00020101...).
+        // Chuyển đổi thành VietQR image URL hoặc QR generator URL để trình duyệt hiển thị ngay.
+        let qrImageUrl = rawQr;
+        if (!rawQr || (!rawQr.startsWith('http') && !rawQr.startsWith('data:image'))) {
+          if (bin && accountNumber) {
+            qrImageUrl = `https://img.vietqr.io/image/${bin}-${accountNumber}-qr_only.png?amount=${amount}&addInfo=${encodeURIComponent(
+              desc,
+            )}&accountName=${encodeURIComponent(accountName)}`;
+          } else if (rawQr) {
+            qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(
+              rawQr,
+            )}`;
+          }
+        }
+
         return {
           isRealPayOS: true,
           checkoutUrl: paymentLinkRes.checkoutUrl,
-          qrCode: paymentLinkRes.qrCode,
+          qrCode: qrImageUrl,
+          rawQrCode: rawQr,
           orderCode: paymentLinkRes.orderCode,
           amount: paymentLinkRes.amount,
           description: paymentLinkRes.description,
           accountNumber: paymentLinkRes.accountNumber,
           accountName: paymentLinkRes.accountName,
-          bin: paymentLinkRes.bin,
+          bin,
           bankName: 'MBBank (Ngân hàng Quân Đội)',
         };
       } catch (err) {
@@ -104,7 +128,7 @@ export class PayOSService {
     const accountName = 'CLB DUA NGUA TMEC';
     const bin = '970422'; // MBBank
     const bankName = 'MBBank (Ngân hàng Quân Đội)';
-    const qrCode = `https://img.vietqr.io/image/${bin}-${accountNumber}-compact.png?amount=${effectiveAmount}&addInfo=${encodeURIComponent(
+    const qrCode = `https://img.vietqr.io/image/${bin}-${accountNumber}-qr_only.png?amount=${effectiveAmount}&addInfo=${encodeURIComponent(
       description,
     )}&accountName=${encodeURIComponent(accountName)}`;
 
@@ -112,6 +136,7 @@ export class PayOSService {
       isRealPayOS: false,
       checkoutUrl: null,
       qrCode,
+      rawQrCode: qrCode,
       orderCode,
       amount: effectiveAmount,
       description,
