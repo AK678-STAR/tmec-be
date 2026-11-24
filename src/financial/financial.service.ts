@@ -1628,7 +1628,11 @@ export class FinancialService {
     }
 
     if (user.role === 'HORSE_OWNER' && existing.ownerId !== user.id) {
-      throw apiError(HttpStatus.FORBIDDEN, 'FORBIDDEN', 'Bạn chỉ được thanh toán hóa đơn của mình.');
+      throw apiError(
+        HttpStatus.FORBIDDEN,
+        'FORBIDDEN',
+        'Bạn chỉ được thanh toán hóa đơn của mình.',
+      );
     }
 
     return this.payosService!.createPaymentLink({
@@ -1678,7 +1682,11 @@ export class FinancialService {
         {
           entityName: 'FinancialInvoice',
           oldValues: { status: existing.status },
-          newValues: { status: InvoiceStatus.PAID, paymentMethod: 'PAYOS', paymentRef: `PAYOS_${orderCode}` },
+          newValues: {
+            status: InvoiceStatus.PAID,
+            paymentMethod: 'PAYOS',
+            paymentRef: `PAYOS_${orderCode}`,
+          },
         },
       );
 

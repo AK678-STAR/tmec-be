@@ -230,10 +230,7 @@ export class FinancialController {
   @Post(':id/simulate-paid')
   @Roles(UserRole.CLUB_MANAGER, UserRole.HORSE_OWNER)
   @ApiOperation({ summary: 'Giả lập thanh toán thành công 1-click (Demo fallback)' })
-  async simulatePaid(
-    @Param('id') id: string,
-    @CurrentUser() user: CurrentUserPayload,
-  ) {
+  async simulatePaid(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
     return this.financialService.simulateMockPaid(id, {
       id: user.userId,
       name: user.fullName || user.email,

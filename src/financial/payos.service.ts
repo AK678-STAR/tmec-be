@@ -31,12 +31,16 @@ export class PayOSService {
         this.isConfigured = true;
         this.logger.log('PayOS SDK initialized successfully with provided merchant credentials.');
       } catch (err) {
-        this.logger.warn(`Failed to initialize PayOS SDK: ${(err as Error).message}. Operating in smart mock mode.`);
+        this.logger.warn(
+          `Failed to initialize PayOS SDK: ${(err as Error).message}. Operating in smart mock mode.`,
+        );
         this.isConfigured = false;
       }
     } else {
       this.isConfigured = false;
-      this.logger.log('PayOS merchant credentials not provided or using placeholders. Operating in smart mock/VietQR mode.');
+      this.logger.log(
+        'PayOS merchant credentials not provided or using placeholders. Operating in smart mock/VietQR mode.',
+      );
     }
   }
 
@@ -63,7 +67,8 @@ export class PayOSService {
     const description = `HD ${cleanPeriod} ${shortId}`.slice(0, 25);
 
     const returnUrl = params.returnUrl || 'http://localhost:5173/financial-reports?status=paid';
-    const cancelUrl = params.cancelUrl || 'http://localhost:5173/financial-reports?status=cancelled';
+    const cancelUrl =
+      params.cancelUrl || 'http://localhost:5173/financial-reports?status=cancelled';
 
     if (this.isConfigured && this.payos) {
       try {
@@ -88,7 +93,9 @@ export class PayOSService {
           bankName: 'MBBank (Ngân hàng Quân Đội)',
         };
       } catch (err) {
-        this.logger.warn(`PayOS API error: ${(err as Error).message}. Falling back to VietQR standard payload.`);
+        this.logger.warn(
+          `PayOS API error: ${(err as Error).message}. Falling back to VietQR standard payload.`,
+        );
       }
     }
 
