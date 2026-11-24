@@ -400,13 +400,13 @@ async function main() {
     return plan;
   }
 
-  // --- HLV B (trainer2@gmail.com): Đúng 8 con ở Barn A -> ĐẦY TẢI 8/8 ---
-  console.log('  -> Tạo 8 ngựa cho HLV B để đạt 8/8 đầy tải...');
+  // --- HLV B (trainer2@gmail.com): Đúng 6 con ở Barn A -> ĐẦY TẢI 6/6 ---
+  console.log('  -> Tạo 6 ngựa cho HLV B để đạt 6/6 đầy tải...');
   const horseNamesB = [
     'Tuyết Phong', 'Kim Long', 'Thần Phong', 'Hắc Báo',
-    'Hồng Kỳ', 'Phi Vũ', 'Tử Điện', 'Thanh Loan',
+    'Hồng Kỳ', 'Phi Vũ',
   ];
-  for (let i = 1; i <= 8; i++) {
+  for (let i = 1; i <= 6; i++) {
     const avatarUrl = `/images/horses/horse-${String(i).padStart(2, '0')}.jpg`;
     const h = await prisma.horse.create({
       data: {
@@ -432,14 +432,11 @@ async function main() {
       assignedStall = stallsA[5 + i];
       assignedGroomId = groom2.id;
       groom2Horses.push({ horse: h, stall: assignedStall });
-    } else if (i === 5 || i === 6) {
-      // Con thứ 5 và 6: Gán vào A-11 và A-12 của Barn A NHƯNG CHƯA GÁN GROOM -> Cảnh báo cam 'Chưa gán Groom'
-      assignedStall = stallsA[5 + i];
-      assignedGroomId = null;
     } else {
-      // Con thứ 7 và 8: Gán vào B-04 và B-05 của Barn B NHƯNG CHƯA GÁN GROOM -> Cảnh báo cam 'Chưa gán Groom'
-      assignedStall = stallsB[i - 4]; // B-04, B-05
-      assignedGroomId = null;
+      // Con thứ 5 và 6: Gán vào A-11 và A-12 của Barn A
+      assignedStall = stallsA[5 + i];
+      assignedGroomId = groom2.id;
+      groom2Horses.push({ horse: h, stall: assignedStall });
     }
 
     await prisma.stallAllocation.create({
@@ -451,7 +448,7 @@ async function main() {
       },
     });
 
-    // Tạo giáo án đang chạy cho HLV B (đủ 8 giáo án -> 8/8 Đầy tải)
+    // Tạo giáo án đang chạy cho HLV B (đủ 6 giáo án -> 6/6 Đầy tải)
     await createLivePlanWithWorkouts({
       horseId: h.id,
       trainerUserId: trainerB.id,
