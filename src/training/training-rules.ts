@@ -275,7 +275,8 @@ export function validatePhases(
   for (const p of phases) {
     const pDays =
       Math.round(
-        (new Date(`${p.endDate}T00:00:00Z`).getTime() - new Date(`${p.startDate}T00:00:00Z`).getTime()) /
+        (new Date(`${p.endDate}T00:00:00Z`).getTime() -
+          new Date(`${p.startDate}T00:00:00Z`).getTime()) /
           (24 * 60 * 60 * 1000),
       ) + 1;
     const isSpecial = p.type === 'PRE_RACE' || p.type === 'RECOVERY';

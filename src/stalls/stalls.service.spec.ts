@@ -370,8 +370,19 @@ describe('StallsService (SC-1.04, SC-1.07, DL-1.02, DL-1.03)', () => {
       expect(resGroom[0]?.allocations?.[0]?.horse?.owner).toBeNull();
     });
     it('throws GROOM_REQUIRED_FOR_STALL_ALLOCATION when assignedGroomUserId is missing', async () => {
-      prisma.stall.findUnique.mockResolvedValue({ id: 's-1', status: StallStatus.AVAILABLE, zoneId: 'z-1', zone: 'Barn A', allocations: [] });
-      prisma.horse.findUnique.mockResolvedValue({ id: 'h-1', deletedAt: null, stallAllocations: [], trainingPlans: [] });
+      prisma.stall.findUnique.mockResolvedValue({
+        id: 's-1',
+        status: StallStatus.AVAILABLE,
+        zoneId: 'z-1',
+        zone: 'Barn A',
+        allocations: [],
+      });
+      prisma.horse.findUnique.mockResolvedValue({
+        id: 'h-1',
+        deletedAt: null,
+        stallAllocations: [],
+        trainingPlans: [],
+      });
       prisma.stallAllocation.findFirst.mockResolvedValue(null);
 
       await expect(

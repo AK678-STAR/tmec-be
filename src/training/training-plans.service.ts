@@ -241,7 +241,6 @@ export class TrainingPlansService {
       );
     }
 
-
     if (
       dto.phaseName &&
       (/^\d+$/.test(dto.phaseName.trim()) || !/[\p{L}]/u.test(dto.phaseName.trim()))
@@ -355,10 +354,7 @@ export class TrainingPlansService {
       where: {
         trainingPlanId: id,
         status: WorkoutStatus.COMPLETED,
-        OR: [
-          { scheduledDate: { lt: startDate } },
-          { scheduledDate: { gt: endDate } },
-        ],
+        OR: [{ scheduledDate: { lt: startDate } }, { scheduledDate: { gt: endDate } }],
       },
     });
     if (outOfBoundsCompleted) {
@@ -404,10 +400,7 @@ export class TrainingPlansService {
         where: {
           trainingPlanId: id,
           status: { in: PENDING_WORKOUT_STATUSES },
-          OR: [
-            { scheduledDate: { lt: startDate } },
-            { scheduledDate: { gt: endDate } },
-          ],
+          OR: [{ scheduledDate: { lt: startDate } }, { scheduledDate: { gt: endDate } }],
         },
       });
       return tx.trainingPlan.update({
@@ -608,9 +601,15 @@ export class TrainingPlansService {
 
     if (dto.status === PlanStatus.CANCELLED) {
       if (result.status === PlanStatus.DRAFT && user.role === UserRole.HEAD_TRAINER) {
-        await this.recordHorseCooldown(result.horseId, result.trainerUserId, dto.reason || 'Huấn luyện viên tự hủy giáo án nháp', 'PLAN_CANCELLED_COOLDOWN');
+        await this.recordHorseCooldown(
+          result.horseId,
+          result.trainerUserId,
+          dto.reason || 'Huấn luyện viên tự hủy giáo án nháp',
+          'PLAN_CANCELLED_COOLDOWN',
+        );
       }
-      const isManagerCancel = user.role === UserRole.CLUB_MANAGER && result.trainerUserId !== user.userId;
+      const isManagerCancel =
+        user.role === UserRole.CLUB_MANAGER && result.trainerUserId !== user.userId;
       if (isManagerCancel) {
         await this.notifications.notifyUsers([result.trainerUserId], {
           type: 'PLAN_CANCELLED_BY_MANAGER',
@@ -774,12 +773,22 @@ export class TrainingPlansService {
   /**
    * Kiểm tra xem HLV có đang bị cooldown trên con ngựa này không
    */
-  private async getTrainerHorseCooldown(horseId: string, trainerUserId: string): Promise<Date | null> {
+  private async getTrainerHorseCooldown(
+    horseId: string,
+    trainerUserId: string,
+  ): Promise<Date | null> {
     if (!this.prisma.auditLog?.findFirst) return null;
     const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
     const latestCooldown = await this.prisma.auditLog.findFirst({
       where: {
-        action: { in: ['TRAINER_HORSE_COOLDOWN', 'DRAFT_EXPIRED', 'PLAN_CANCELLED_COOLDOWN', 'DELETE_PLAN_COOLDOWN'] },
+        action: {
+          in: [
+            'TRAINER_HORSE_COOLDOWN',
+            'DRAFT_EXPIRED',
+            'PLAN_CANCELLED_COOLDOWN',
+            'DELETE_PLAN_COOLDOWN',
+          ],
+        },
         entityName: 'Horse',
         entityId: horseId,
         userId: trainerUserId,
@@ -797,7 +806,9 @@ export class TrainingPlansService {
         if (parsed.cooldownUntil) {
           cooldownUntil = new Date(parsed.cooldownUntil);
         }
-      } catch {}
+      } catch (_e) {
+        void _e;
+      }
     }
 
     if (cooldownUntil <= new Date()) return null;
@@ -819,7 +830,9 @@ export class TrainingPlansService {
         if (parsed.trainerUserId === trainerUserId) {
           return null; // Đã được Quản lý mở khóa
         }
-      } catch {}
+      } catch (_e) {
+        void _e;
+      }
     }
 
     return cooldownUntil;
@@ -835,7 +848,14 @@ export class TrainingPlansService {
     const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
     const latest = await this.prisma.auditLog.findFirst({
       where: {
-        action: { in: ['TRAINER_HORSE_COOLDOWN', 'DRAFT_EXPIRED', 'PLAN_CANCELLED_COOLDOWN', 'DELETE_PLAN_COOLDOWN'] },
+        action: {
+          in: [
+            'TRAINER_HORSE_COOLDOWN',
+            'DRAFT_EXPIRED',
+            'PLAN_CANCELLED_COOLDOWN',
+            'DELETE_PLAN_COOLDOWN',
+          ],
+        },
         entityName: 'Horse',
         entityId: horseId,
         timestamp: { gte: since },
@@ -862,7 +882,11 @@ export class TrainingPlansService {
    */
   async unlockCooldown(horseId: string, dto: UnlockCooldownDto, user: CurrentUserPayload) {
     if (user.role !== UserRole.CLUB_MANAGER) {
-      throw apiError(HttpStatus.FORBIDDEN, 'FORBIDDEN', 'Chỉ Quản lý CLB mới có quyền mở khóa thời gian chờ.');
+      throw apiError(
+        HttpStatus.FORBIDDEN,
+        'FORBIDDEN',
+        'Chỉ Quản lý CLB mới có quyền mở khóa thời gian chờ.',
+      );
     }
     const horse = await this.prisma.horse.findUnique({
       where: { id: horseId },
@@ -922,7 +946,6 @@ export class TrainingPlansService {
     }
 
     const other = await client.trainingPlan.findFirst({
-
       where: {
         horseId,
         status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] },
@@ -1096,7 +1119,12 @@ export class TrainingPlansService {
 
     // Nếu HLV tự xóa bản nháp của mình, áp dụng cooldown 48h
     if (user.role === UserRole.HEAD_TRAINER && plan.trainerUserId === user.userId) {
-      await this.recordHorseCooldown(plan.horseId, plan.trainerUserId, 'Huấn luyện viên tự xóa bản nháp giáo án', 'DELETE_PLAN_COOLDOWN');
+      await this.recordHorseCooldown(
+        plan.horseId,
+        plan.trainerUserId,
+        'Huấn luyện viên tự xóa bản nháp giáo án',
+        'DELETE_PLAN_COOLDOWN',
+      );
     }
 
     await this.prisma.$transaction([
@@ -1104,7 +1132,8 @@ export class TrainingPlansService {
       this.prisma.trainingPlan.delete({ where: { id } }),
     ]);
 
-    const isManagerOverride = user.role === UserRole.CLUB_MANAGER && plan.trainerUserId !== user.userId;
+    const isManagerOverride =
+      user.role === UserRole.CLUB_MANAGER && plan.trainerUserId !== user.userId;
     await this.auditService.record(
       { id: user.userId, name: user.fullName || user.email },
       isManagerOverride ? 'DELETE_TRAINING_PLAN_BY_MANAGER' : 'DELETE_TRAINING_PLAN',
@@ -1184,7 +1213,6 @@ export class TrainingPlansService {
       );
     }
 
-
     const now = new Date();
     const startDate = dto.startDate ? new Date(dto.startDate) : addDays(startOfClubDay(now), 1);
     this.assertStartsFromTomorrow(startDate);
@@ -1211,7 +1239,6 @@ export class TrainingPlansService {
           scheduledDate: {
             gte: new Date(Math.min(...times) - 120 * MIN),
             lte: new Date(Math.max(...times) + 120 * MIN),
-
           },
         },
         select: {
@@ -1396,115 +1423,144 @@ export class TrainingPlansService {
           | 'MEDICAL_LOCKED'
           | 'DEBT_IMPOUNDED'
           | 'COOLDOWN_SELF' = 'READY';
-      let canAssign = true;
-      let badge = 'Sẵn sàng';
-      let explanation = 'Chiến mã sẵn sàng để tạo giáo án mới.';
-      let activePlanInfo: { id: string; planCode: string; name: string; trainerName: string } | null = null;
+        let canAssign = true;
+        let badge = 'Sẵn sàng';
+        let explanation = 'Chiến mã sẵn sàng để tạo giáo án mới.';
+        let activePlanInfo: {
+          id: string;
+          planCode: string;
+          name: string;
+          trainerName: string;
+        } | null = null;
 
-      if (h.isMedicalLocked) {
-        planState = 'MEDICAL_LOCKED';
-        canAssign = false;
-        badge = 'Khóa y tế';
-        explanation = 'Ngựa đang bị Khóa huấn luyện y tế bởi Bác sĩ thú y.';
-      } else if (h.isDebtImpounded) {
-        planState = 'DEBT_IMPOUNDED';
-        canAssign = false;
-        badge = 'Lưu giữ nợ phí';
-        explanation = 'Ngựa đang bị lưu giữ do nợ chi phí nuôi chuồng. Khóa quyền tạo giáo án cho đến khi thanh toán nợ.';
-      } else if (activePlan) {
-        activePlanInfo = {
-          id: activePlan.id,
-          planCode: activePlan.planCode ?? '',
-          name: activePlan.phaseName,
-          trainerName: activePlan.trainer.fullName,
-        };
-        if (activePlan.trainerUserId === user.userId) {
-          planState = 'ACTIVE_SELF';
+        if (h.isMedicalLocked) {
+          planState = 'MEDICAL_LOCKED';
           canAssign = false;
-          badge = `Đang tập (${activePlan.planCode ?? 'Của bạn'})`;
-          explanation = `Bạn đã có giáo án ${activePlan.planCode ?? ''} đang áp dụng cho ngựa này. Mỗi ngựa chỉ áp dụng 1 giáo án tại một thời điểm.`;
-        } else {
-          planState = 'ACTIVE_OTHER';
+          badge = 'Khóa y tế';
+          explanation = 'Ngựa đang bị Khóa huấn luyện y tế bởi Bác sĩ thú y.';
+        } else if (h.isDebtImpounded) {
+          planState = 'DEBT_IMPOUNDED';
           canAssign = false;
-          badge = `Đang tập · HLV ${activePlan.trainer.fullName}`;
-          explanation = `Ngựa đang do HLV ${activePlan.trainer.fullName} phụ trách (${activePlan.planCode ?? ''}). Bạn không thể can thiệp hoặc tạo đè giáo án.`;
-        }
-      } else if (draftPlan) {
-        if (draftPlan.trainerUserId === user.userId) {
-          planState = 'DRAFT_SELF';
-          canAssign = true;
-          badge = `Bản nháp của bạn (${draftPlan.planCode ?? ''})`;
-          explanation = `Bạn đang có bản nháp ${draftPlan.planCode ?? ''} cho ngựa này. Có thể mở bản nháp để tiếp tục hoàn thiện hoặc tạo thêm.`;
-        } else {
-          planState = 'DRAFT_OTHER';
-          canAssign = false;
-          badge = `Bản nháp · HLV ${draftPlan.trainer.fullName}`;
-          explanation = `HLV ${draftPlan.trainer.fullName} đang soạn bản nháp cho ngựa này (${draftPlan.planCode ?? ''}).`;
-        }
-      }
-
-      let activeCooldown: { remainingHours: number; trainerUserId: string; trainerName: string } | null = null;
-      if (user.role === UserRole.HEAD_TRAINER) {
-        const cd = await this.getTrainerHorseCooldown(h.id, user.userId);
-        if (cd && cd > new Date()) {
-          const remainingHours = Math.ceil((cd.getTime() - Date.now()) / (3600 * 1000));
-          activeCooldown = {
-            remainingHours,
-            trainerUserId: user.userId,
-            trainerName: user.fullName || user.email || 'Bạn',
+          badge = 'Lưu giữ nợ phí';
+          explanation =
+            'Ngựa đang bị lưu giữ do nợ chi phí nuôi chuồng. Khóa quyền tạo giáo án cho đến khi thanh toán nợ.';
+        } else if (activePlan) {
+          activePlanInfo = {
+            id: activePlan.id,
+            planCode: activePlan.planCode ?? '',
+            name: activePlan.phaseName,
+            trainerName: activePlan.trainer.fullName,
           };
-          if (!activePlan && !draftPlan && !h.isMedicalLocked && !h.isDebtImpounded) {
-            planState = 'COOLDOWN_SELF';
+          if (activePlan.trainerUserId === user.userId) {
+            planState = 'ACTIVE_SELF';
             canAssign = false;
-            badge = `Thời gian chờ (${remainingHours}h)`;
-            explanation = `Bạn vừa hủy hoặc để hết hạn bản nháp cho ngựa này. Cần chờ ${remainingHours} giờ hoặc liên hệ Quản lý CLB để mở khóa sớm.`;
+            badge = `Đang tập (${activePlan.planCode ?? 'Của bạn'})`;
+            explanation = `Bạn đã có giáo án ${activePlan.planCode ?? ''} đang áp dụng cho ngựa này. Mỗi ngựa chỉ áp dụng 1 giáo án tại một thời điểm.`;
+          } else {
+            planState = 'ACTIVE_OTHER';
+            canAssign = false;
+            badge = `Đang tập · HLV ${activePlan.trainer.fullName}`;
+            explanation = `Ngựa đang do HLV ${activePlan.trainer.fullName} phụ trách (${activePlan.planCode ?? ''}). Bạn không thể can thiệp hoặc tạo đè giáo án.`;
+          }
+        } else if (draftPlan) {
+          if (draftPlan.trainerUserId === user.userId) {
+            planState = 'DRAFT_SELF';
+            canAssign = true;
+            badge = `Bản nháp của bạn (${draftPlan.planCode ?? ''})`;
+            explanation = `Bạn đang có bản nháp ${draftPlan.planCode ?? ''} cho ngựa này. Có thể mở bản nháp để tiếp tục hoàn thiện hoặc tạo thêm.`;
+          } else {
+            planState = 'DRAFT_OTHER';
+            canAssign = false;
+            badge = `Bản nháp · HLV ${draftPlan.trainer.fullName}`;
+            explanation = `HLV ${draftPlan.trainer.fullName} đang soạn bản nháp cho ngựa này (${draftPlan.planCode ?? ''}).`;
           }
         }
-      } else if (user.role === UserRole.CLUB_MANAGER) {
-        const mgrCd = await this.getLatestHorseCooldownForManager(h.id);
-        if (mgrCd) {
-          activeCooldown = mgrCd;
-          if (!activePlan && !draftPlan && !h.isMedicalLocked && !h.isDebtImpounded) {
-            badge = `Đang chờ (${mgrCd.trainerName} · ${mgrCd.remainingHours}h)`;
-            explanation = `HLV ${mgrCd.trainerName} đang trong thời gian chờ sau khi hủy/hết hạn bản nháp. Quản lý có thể mở khóa sớm.`;
+
+        let activeCooldown: {
+          remainingHours: number;
+          trainerUserId: string;
+          trainerName: string;
+        } | null = null;
+        if (user.role === UserRole.HEAD_TRAINER) {
+          const cd = await this.getTrainerHorseCooldown(h.id, user.userId);
+          if (cd && cd > new Date()) {
+            const remainingHours = Math.ceil((cd.getTime() - Date.now()) / (3600 * 1000));
+            activeCooldown = {
+              remainingHours,
+              trainerUserId: user.userId,
+              trainerName: user.fullName || user.email || 'Bạn',
+            };
+            if (!activePlan && !draftPlan && !h.isMedicalLocked && !h.isDebtImpounded) {
+              planState = 'COOLDOWN_SELF';
+              canAssign = false;
+              badge = `Thời gian chờ (${remainingHours}h)`;
+              explanation = `Bạn vừa hủy hoặc để hết hạn bản nháp cho ngựa này. Cần chờ ${remainingHours} giờ hoặc liên hệ Quản lý CLB để mở khóa sớm.`;
+            }
+          }
+        } else if (user.role === UserRole.CLUB_MANAGER) {
+          const mgrCd = await this.getLatestHorseCooldownForManager(h.id);
+          if (mgrCd) {
+            activeCooldown = mgrCd;
+            if (!activePlan && !draftPlan && !h.isMedicalLocked && !h.isDebtImpounded) {
+              badge = `Đang chờ (${mgrCd.trainerName} · ${mgrCd.remainingHours}h)`;
+              explanation = `HLV ${mgrCd.trainerName} đang trong thời gian chờ sau khi hủy/hết hạn bản nháp. Quản lý có thể mở khóa sớm.`;
+            }
           }
         }
-      }
 
-      const stallInfo = h.stallAllocations[0]?.stall;
-      const stallName = stallInfo ? `${stallInfo.code} (${stallInfo.zoneRef?.name || stallInfo.zone})` : null;
+        const stallInfo = h.stallAllocations[0]?.stall;
+        const stallName = stallInfo
+          ? `${stallInfo.code} (${stallInfo.zoneRef?.name || stallInfo.zone})`
+          : null;
 
-      return {
-        id: h.id,
-        name: h.name,
-        horseCode: h.horseCode,
-        breed: h.breed,
-        dob: h.dob,
-        gender: h.gender,
-        color: h.color,
-        status: h.status,
-        isMedicalLocked: h.isMedicalLocked,
-        isDebtImpounded: Boolean(h.isDebtImpounded),
-        avatarUrl: h.avatarUrl,
-        ownerName: h.owner?.fullName ?? null,
-        stallName,
-        planState,
-        canAssign,
-        badge,
-        explanation,
-        activePlan: activePlanInfo,
-        activeCooldown,
-        existingPlanId: activePlan?.id || draftPlan?.id || null,
-      };
-    }));
+        return {
+          id: h.id,
+          name: h.name,
+          horseCode: h.horseCode,
+          breed: h.breed,
+          dob: h.dob,
+          gender: h.gender,
+          color: h.color,
+          status: h.status,
+          isMedicalLocked: h.isMedicalLocked,
+          isDebtImpounded: Boolean(h.isDebtImpounded),
+          avatarUrl: h.avatarUrl,
+          ownerName: h.owner?.fullName ?? null,
+          stallName,
+          planState,
+          canAssign,
+          badge,
+          explanation,
+          activePlan: activePlanInfo,
+          activeCooldown,
+          existingPlanId: activePlan?.id || draftPlan?.id || null,
+        };
+      }),
+    );
 
     // Bậc thang 6 cấp độ ưu tiên sẵn sàng thi đấu
-    const rankOf = (h: { status?: string; isMedicalLocked?: boolean; isDebtImpounded?: boolean; planState?: string }) => {
+    const rankOf = (h: {
+      status?: string;
+      isMedicalLocked?: boolean;
+      isDebtImpounded?: boolean;
+      planState?: string;
+    }) => {
       if (h.isDebtImpounded || h.status === 'RETIRED') return 6;
-      if (h.isMedicalLocked || h.status === 'INJURED' || h.status === 'ISOLATED' || h.planState === 'MEDICAL_LOCKED') return 5;
+      if (
+        h.isMedicalLocked ||
+        h.status === 'INJURED' ||
+        h.status === 'ISOLATED' ||
+        h.planState === 'MEDICAL_LOCKED'
+      )
+        return 5;
       if (h.status === 'UNDER_OBSERVATION') return 4;
       if (h.status === 'ACTIVE') return 1;
-      if (h.status === 'IN_TRAINING' || h.planState === 'ACTIVE_SELF' || h.planState === 'ACTIVE_OTHER') return 2;
+      if (
+        h.status === 'IN_TRAINING' ||
+        h.planState === 'ACTIVE_SELF' ||
+        h.planState === 'ACTIVE_OTHER'
+      )
+        return 2;
       if (h.status === 'RESTING' || h.planState === 'READY') return 3;
       return 3;
     };
@@ -1515,7 +1571,9 @@ export class TrainingPlansService {
       readyCount: items.filter((x) => x.planState === 'READY').length,
       myActiveCount: items.filter((x) => x.planState === 'ACTIVE_SELF').length,
       myDraftCount: items.filter((x) => x.planState === 'DRAFT_SELF').length,
-      otherTrainerCount: items.filter((x) => x.planState === 'ACTIVE_OTHER' || x.planState === 'DRAFT_OTHER').length,
+      otherTrainerCount: items.filter(
+        (x) => x.planState === 'ACTIVE_OTHER' || x.planState === 'DRAFT_OTHER',
+      ).length,
       medicalLockedCount: items.filter((x) => x.planState === 'MEDICAL_LOCKED').length,
       cooldownCount: items.filter((x) => x.planState === 'COOLDOWN_SELF').length,
     };

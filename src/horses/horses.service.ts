@@ -888,7 +888,7 @@ export class HorsesService {
       this.prisma.horse.count({ where }),
     ]);
 
-    let items = horses.map((h) => this.applyRolePolicy(h, user));
+    const items = horses.map((h) => this.applyRolePolicy(h, user));
 
     // Bậc thang 6 cấp độ ưu tiên sẵn sàng thi đấu
     if (isReadinessSort) {
@@ -906,9 +906,10 @@ export class HorsesService {
         return 3;
       };
       items.sort((a, b) => {
-        const diff = sortOrder === 'desc' 
-          ? horseReadinessRank(b) - horseReadinessRank(a) 
-          : horseReadinessRank(a) - horseReadinessRank(b);
+        const diff =
+          sortOrder === 'desc'
+            ? horseReadinessRank(b) - horseReadinessRank(a)
+            : horseReadinessRank(a) - horseReadinessRank(b);
         if (diff !== 0) return diff;
         return a.name.localeCompare(b.name, 'vi');
       });

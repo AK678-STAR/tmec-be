@@ -136,10 +136,7 @@ export class TrainingCommonService {
     const expiredDrafts = await this.prisma.trainingPlan.findMany({
       where: {
         status: PlanStatus.DRAFT,
-        OR: [
-          { startDate: { lt: today } },
-          { createdAt: { lt: seventyTwoHoursAgo } },
-        ],
+        OR: [{ startDate: { lt: today } }, { createdAt: { lt: seventyTwoHoursAgo } }],
       },
       include: {
         horse: { select: { id: true, name: true } },
@@ -154,7 +151,8 @@ export class TrainingCommonService {
           where: { id: draft.id },
           data: {
             status: PlanStatus.CANCELLED,
-            cancelReason: 'Hệ thống tự động hủy do bản nháp quá hạn 72 giờ hoặc quá ngày bắt đầu mà chưa được kích hoạt.',
+            cancelReason:
+              'Hệ thống tự động hủy do bản nháp quá hạn 72 giờ hoặc quá ngày bắt đầu mà chưa được kích hoạt.',
           },
         }),
       ];

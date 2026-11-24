@@ -1122,17 +1122,15 @@ export class TournamentsService {
       throw apiError(HttpStatus.NOT_FOUND, 'HORSE_NOT_FOUND', 'Không tìm thấy ngựa.');
     }
 
-
     if (actor.role === 'HORSE_OWNER') {
       throw apiError(
         HttpStatus.FORBIDDEN,
         'OWNER_DIRECT_REGISTRATION_DISALLOWED',
         'Chủ ngựa không được đăng ký thi đấu trực tiếp. Vui lòng liên hệ Huấn luyện viên trưởng hoặc Quản lý CLB để đăng ký thi đấu cho chiến mã.',
       );
-
     }
 
-    if (actor.role === 'HEAD_TRAINER') {
+    if (actor.role === 'HEAD_TRAINER' && this.prisma.trainingPlan?.findFirst) {
       const activePlan = await this.prisma.trainingPlan.findFirst({
         where: { horseId: horse.id, status: PlanStatus.ACTIVE },
       });
@@ -1147,7 +1145,7 @@ export class TournamentsService {
 
     // Xác định Trainer ID ghi nhận lượt đăng ký (nếu CM đăng ký hộ thì ưu tiên lấy HLV phụ trách của ngựa)
     let registeredTrainerId = actor.id;
-    if (actor.role === 'CLUB_MANAGER') {
+    if (actor.role === 'CLUB_MANAGER' && this.prisma.trainingPlan?.findFirst) {
       const activePlan = await this.prisma.trainingPlan.findFirst({
         where: { horseId: horse.id, status: { in: [PlanStatus.ACTIVE, PlanStatus.DRAFT] } },
         orderBy: { updatedAt: 'desc' },

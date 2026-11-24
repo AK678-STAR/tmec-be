@@ -219,7 +219,10 @@ export class TrainingController {
   @Patch('plans/:id/status')
   @RequirePermission('createPlan')
   @Roles(UserRole.HEAD_TRAINER, UserRole.CLUB_MANAGER)
-  @ApiOperation({ summary: 'DL-2.02 Kích hoạt / DL-2.04 Hoàn thành / DL-2.03 Hủy giáo án - HT, Quản lý CLB cưỡng chế' })
+  @ApiOperation({
+    summary:
+      'DL-2.02 Kích hoạt / DL-2.04 Hoàn thành / DL-2.03 Hủy giáo án - HT, Quản lý CLB cưỡng chế',
+  })
   async changePlanStatus(
     @Param('id') id: string,
     @Body() dto: ChangePlanStatusDto,
@@ -263,7 +266,9 @@ export class TrainingController {
 
   @Get('assignable-horses')
   @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER)
-  @ApiOperation({ summary: 'Lấy danh sách ngựa kèm trạng thái giáo án thời gian thực để tạo/nhân bản giáo án' })
+  @ApiOperation({
+    summary: 'Lấy danh sách ngựa kèm trạng thái giáo án thời gian thực để tạo/nhân bản giáo án',
+  })
   async getAssignableHorses(@CurrentUser() user: CurrentUserPayload) {
     return this.plans.getAssignableHorses(user);
   }
@@ -415,10 +420,7 @@ export class TrainingController {
   @RequirePermission('assignSchedule')
   @Roles(UserRole.HEAD_TRAINER, UserRole.CLUB_MANAGER)
   @ApiOperation({ summary: 'Xóa buổi tập chưa diễn ra hoặc thuộc giáo án Nháp' })
-  async deleteWorkout(
-    @Param('id') workoutId: string,
-    @CurrentUser() user: CurrentUserPayload,
-  ) {
+  async deleteWorkout(@Param('id') workoutId: string, @CurrentUser() user: CurrentUserPayload) {
     return this.workouts.deleteWorkout(workoutId, user);
   }
 

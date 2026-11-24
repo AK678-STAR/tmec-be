@@ -482,10 +482,7 @@ export class AccountsService {
       this.prisma.workoutSession
         ? this.prisma.workoutSession.findMany({
             where: {
-              OR: [
-                { assignedStaffUserId: userId },
-                { trainingPlan: { trainerUserId: userId } },
-              ],
+              OR: [{ assignedStaffUserId: userId }, { trainingPlan: { trainerUserId: userId } }],
               scheduledDate: { gte: new Date() },
               status: WorkoutStatus.SCHEDULED,
             },

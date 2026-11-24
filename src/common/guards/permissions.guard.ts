@@ -21,12 +21,18 @@ export class PermissionsGuard implements CanActivate {
     }
 
     const { user } = context.switchToHttp().getRequest();
-    // Quản lý CLB (Club Manager) là vai trò quản trị tối cao, có quyền can thiệp/ghi đè các thao tác
+    const permissions: Partial<PermissionMap> | undefined = user?.permissions;
+
+    // Nếu quyền bị tước rõ ràng (false) thì chặn
+    if (permissions && permissions[required] === false) {
+      throw apiError(HttpStatus.FORBIDDEN, 'FORBIDDEN', 'Not allowed');
+    }
+
+    // Quản lý CLB (Club Manager) là vai trò quản trị tối cao, có quyền mặc định nếu không bị thu hồi
     if (user?.role === 'CLUB_MANAGER') {
       return true;
     }
 
-    const permissions: Partial<PermissionMap> | undefined = user?.permissions;
     if (!permissions?.[required]) {
       throw apiError(HttpStatus.FORBIDDEN, 'FORBIDDEN', 'Not allowed');
     }
