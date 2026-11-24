@@ -8,7 +8,7 @@ import { CurrentUserPayload } from '../common/decorators/current-user.decorator'
 import { CreateTrainingPlanDto } from './dto/create-training-plan.dto';
 import { UpdateTrainingPlanDto } from './dto/update-training-plan.dto';
 import { QueryTrainingPlanDto } from './dto/query-training-plan.dto';
-import { ChangePlanStatusDto, ClonePlanDto } from './dto/workout-actions.dto';
+import { ChangePlanStatusDto, ClonePlanDto, UnlockCooldownDto } from './dto/workout-actions.dto';
 import {
   addDays,
   clubDate,
@@ -216,6 +216,32 @@ export class TrainingPlansService {
         'Ngựa đang bị Khóa huấn luyện y tế. Không thể tạo giáo án mới cho đến khi Bác sĩ thú y gỡ khóa.',
       );
     }
+    if (horse.isDebtImpounded) {
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'HORSE_DEBT_IMPOUNDED',
+        'Ngựa đang bị lưu giữ do nợ phí lưu chuồng. Không thể tạo giáo án mới cho đến khi chủ sở hữu hoàn tất thanh toán công nợ.',
+      );
+    }
+    await this.assertNoOtherTrainer(horse.id, horse.name, user.userId);
+
+    // BR-TRN-CAPACITY: Mỗi HLV chỉ được phụ trách tối đa 6 chiến mã đồng thời
+    const activePlanCount = await this.prisma.trainingPlan.count({
+      where: {
+        trainerUserId: user.userId,
+        status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] },
+        horse: { deletedAt: null },
+      },
+    });
+    if (activePlanCount >= MAX_HORSES_PER_TRAINER) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'TRAINER_CAPACITY_EXCEEDED',
+        `Mỗi Huấn luyện viên chỉ được quản lý tối đa ${MAX_HORSES_PER_TRAINER} chiến mã đồng thời. Vui lòng hoàn thành hoặc hủy bớt giáo án hiện có trước khi tạo mới.`,
+      );
+    }
+
+
     if (
       dto.phaseName &&
       (/^\d+$/.test(dto.phaseName.trim()) || !/[\p{L}]/u.test(dto.phaseName.trim()))
@@ -324,6 +350,25 @@ export class TrainingPlansService {
     this.assertPlanDates(startDate, endDate);
     const phases = this.checkedPhases(dto.phases ?? existing.phases, startDate, endDate);
 
+    // H-14: Không cho phép thu hẹp thời gian giáo án nếu có buổi tập ĐÃ HOÀN THÀNH nằm ngoài khoảng ngày mới.
+    const outOfBoundsCompleted = await this.prisma.workoutSession.findFirst({
+      where: {
+        trainingPlanId: id,
+        status: WorkoutStatus.COMPLETED,
+        OR: [
+          { scheduledDate: { lt: startDate } },
+          { scheduledDate: { gt: endDate } },
+        ],
+      },
+    });
+    if (outOfBoundsCompleted) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'CANNOT_EXCLUDE_COMPLETED_WORKOUTS',
+        'Không thể thu hẹp thời gian giáo án vì có buổi tập đã hoàn thành nằm ngoài khoảng ngày mới.',
+      );
+    }
+
     // Giai đoạn đã có buổi Hoàn thành phải còn và giữ nguyên Từ ngày.
     const done = await this.prisma.workoutSession.findMany({
       where: { trainingPlanId: id, status: WorkoutStatus.COMPLETED, phaseId: { not: null } },
@@ -354,6 +399,17 @@ export class TrainingPlansService {
           },
         });
       }
+      // H-14: Xóa các buổi tập chờ nằm ngoài khoảng thời gian [startDate, endDate] mới sau khi cập nhật
+      await tx.workoutSession.deleteMany({
+        where: {
+          trainingPlanId: id,
+          status: { in: PENDING_WORKOUT_STATUSES },
+          OR: [
+            { scheduledDate: { lt: startDate } },
+            { scheduledDate: { gt: endDate } },
+          ],
+        },
+      });
       return tx.trainingPlan.update({
         where: { id },
         data: {
@@ -418,7 +474,7 @@ export class TrainingPlansService {
           );
         }
         await this.assertCanActivate(tx, plan, horse, dto);
-        if (dto.moveHorseToTraining && horse!.status === HorseStatus.RESTING) {
+        if (horse!.status === HorseStatus.RESTING) {
           await tx.horse.update({
             where: { id: horse!.id },
             data: { status: HorseStatus.IN_TRAINING },
@@ -504,6 +560,32 @@ export class TrainingPlansService {
           data: { status: WorkoutStatus.CANCELLED, statusReason: 'Giáo án đã kết thúc' },
         });
         cancelledWorkouts = res.count;
+
+        // Tự động chuyển ngựa về RESTING nếu không còn giáo án nào khác đang chạy và ngựa đang ở IN_TRAINING
+        const otherActivePlans = await tx.trainingPlan.count({
+          where: { horseId: plan.horseId, id: { not: id }, status: PlanStatus.ACTIVE },
+        });
+        if (otherActivePlans === 0 && horse!.status === HorseStatus.IN_TRAINING) {
+          await tx.horse.update({
+            where: { id: horse!.id },
+            data: { status: HorseStatus.RESTING },
+          });
+          await this.auditService.record(
+            { id: user.userId, name: user.fullName || user.email },
+            'HORSE_STATUS_CHANGED',
+            `Changed status of horse ${horse!.name} from IN_TRAINING to RESTING. Reason: Giáo án kết thúc, chuyển về nghỉ ngơi hồi phục`,
+            horse!.id,
+            {
+              entityName: 'Horse',
+              newValues: {
+                oldStatus: 'IN_TRAINING',
+                newStatus: 'RESTING',
+                reason: 'Giáo án kết thúc',
+              },
+            },
+            tx,
+          );
+        }
       }
 
       const updated = await tx.trainingPlan.update({ where: { id }, data, include: PLAN_INCLUDE });
@@ -523,6 +605,23 @@ export class TrainingPlansService {
 
       return { ...updated, cancelledWorkouts };
     });
+
+    if (dto.status === PlanStatus.CANCELLED) {
+      if (result.status === PlanStatus.DRAFT && user.role === UserRole.HEAD_TRAINER) {
+        await this.recordHorseCooldown(result.horseId, result.trainerUserId, dto.reason || 'Huấn luyện viên tự hủy giáo án nháp', 'PLAN_CANCELLED_COOLDOWN');
+      }
+      const isManagerCancel = user.role === UserRole.CLUB_MANAGER && result.trainerUserId !== user.userId;
+      if (isManagerCancel) {
+        await this.notifications.notifyUsers([result.trainerUserId], {
+          type: 'PLAN_CANCELLED_BY_MANAGER',
+          category: 'TRAINING',
+          title: 'Giáo án bị Quản lý CLB hủy',
+          message: `Quản lý CLB (${user.fullName || 'Manager'}) đã hủy giáo án "${result.phaseName}" của bạn cho ngựa ${result.horse?.name ?? ''}. Lý do: ${dto.reason}`,
+          link: `/training/plans/${result.id}`,
+          senderName: user.fullName,
+        });
+      }
+    }
 
     if (dto.status === PlanStatus.ACTIVE) {
       await this.notifications.notifyHorse(
@@ -646,12 +745,184 @@ export class TrainingPlansService {
   }
 
   /**
+   * Ghi nhận thời gian chờ (cooldown 48h) khi HLV hủy hoặc để hết hạn bản nháp trên một chiến mã
+   */
+  private async recordHorseCooldown(
+    horseId: string,
+    trainerUserId: string,
+    reason: string,
+    action = 'TRAINER_HORSE_COOLDOWN',
+  ) {
+    if (!this.prisma.auditLog?.create) return;
+    const cooldownUntil = new Date(Date.now() + 48 * 60 * 60 * 1000);
+    await this.prisma.auditLog.create({
+      data: {
+        action,
+        entityName: 'Horse',
+        entityId: horseId,
+        userId: trainerUserId,
+        newValuesJson: JSON.stringify({
+          horseId,
+          trainerUserId,
+          cooldownUntil: cooldownUntil.toISOString(),
+          reason,
+        }),
+      },
+    });
+  }
+
+  /**
+   * Kiểm tra xem HLV có đang bị cooldown trên con ngựa này không
+   */
+  private async getTrainerHorseCooldown(horseId: string, trainerUserId: string): Promise<Date | null> {
+    if (!this.prisma.auditLog?.findFirst) return null;
+    const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const latestCooldown = await this.prisma.auditLog.findFirst({
+      where: {
+        action: { in: ['TRAINER_HORSE_COOLDOWN', 'DRAFT_EXPIRED', 'PLAN_CANCELLED_COOLDOWN', 'DELETE_PLAN_COOLDOWN'] },
+        entityName: 'Horse',
+        entityId: horseId,
+        userId: trainerUserId,
+        timestamp: { gte: since },
+      },
+      orderBy: { timestamp: 'desc' },
+    });
+
+    if (!latestCooldown) return null;
+
+    let cooldownUntil = new Date(latestCooldown.timestamp.getTime() + 48 * 60 * 60 * 1000);
+    if (latestCooldown.newValuesJson) {
+      try {
+        const parsed = JSON.parse(latestCooldown.newValuesJson);
+        if (parsed.cooldownUntil) {
+          cooldownUntil = new Date(parsed.cooldownUntil);
+        }
+      } catch {}
+    }
+
+    if (cooldownUntil <= new Date()) return null;
+
+    // Kiểm tra xem Quản lý CLB có mở khóa sau thời điểm cooldown này không
+    const unlock = await this.prisma.auditLog.findFirst({
+      where: {
+        action: 'UNLOCK_HORSE_COOLDOWN',
+        entityName: 'Horse',
+        entityId: horseId,
+        timestamp: { gte: latestCooldown.timestamp },
+      },
+      orderBy: { timestamp: 'desc' },
+    });
+
+    if (unlock && unlock.newValuesJson) {
+      try {
+        const parsed = JSON.parse(unlock.newValuesJson);
+        if (parsed.trainerUserId === trainerUserId) {
+          return null; // Đã được Quản lý mở khóa
+        }
+      } catch {}
+    }
+
+    return cooldownUntil;
+  }
+
+  /**
+   * Quản lý CLB xem cooldown mới nhất của bất kỳ HLV nào trên con ngựa này
+   */
+  private async getLatestHorseCooldownForManager(
+    horseId: string,
+  ): Promise<{ remainingHours: number; trainerUserId: string; trainerName: string } | null> {
+    if (!this.prisma.auditLog?.findFirst) return null;
+    const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const latest = await this.prisma.auditLog.findFirst({
+      where: {
+        action: { in: ['TRAINER_HORSE_COOLDOWN', 'DRAFT_EXPIRED', 'PLAN_CANCELLED_COOLDOWN', 'DELETE_PLAN_COOLDOWN'] },
+        entityName: 'Horse',
+        entityId: horseId,
+        timestamp: { gte: since },
+      },
+      include: { user: { select: { id: true, fullName: true, email: true } } },
+      orderBy: { timestamp: 'desc' },
+    });
+
+    if (!latest || !latest.userId) return null;
+
+    const cooldownUntil = await this.getTrainerHorseCooldown(horseId, latest.userId);
+    if (!cooldownUntil || cooldownUntil <= new Date()) return null;
+
+    const remainingHours = Math.ceil((cooldownUntil.getTime() - Date.now()) / (3600 * 1000));
+    return {
+      remainingHours,
+      trainerUserId: latest.userId,
+      trainerName: latest.user?.fullName || latest.user?.email || 'Huấn luyện viên',
+    };
+  }
+
+  /**
+   * Quản lý CLB mở khóa thời gian chờ (cooldown) cho HLV trên chiến mã
+   */
+  async unlockCooldown(horseId: string, dto: UnlockCooldownDto, user: CurrentUserPayload) {
+    if (user.role !== UserRole.CLUB_MANAGER) {
+      throw apiError(HttpStatus.FORBIDDEN, 'FORBIDDEN', 'Chỉ Quản lý CLB mới có quyền mở khóa thời gian chờ.');
+    }
+    const horse = await this.prisma.horse.findUnique({
+      where: { id: horseId },
+      select: { id: true, name: true },
+    });
+    if (!horse) {
+      throw apiError(HttpStatus.NOT_FOUND, 'HORSE_NOT_FOUND', 'Không tìm thấy chiến mã.');
+    }
+
+    await this.prisma.auditLog.create({
+      data: {
+        action: 'UNLOCK_HORSE_COOLDOWN',
+        entityName: 'Horse',
+        entityId: horseId,
+        userId: user.userId,
+        newValuesJson: JSON.stringify({
+          horseId,
+          trainerUserId: dto.trainerUserId,
+          unlockedBy: user.fullName || user.email,
+          reason: dto.reason.trim(),
+          unlockedAt: new Date().toISOString(),
+        }),
+      },
+    });
+
+    await this.notifications.notifyUsers([dto.trainerUserId], {
+      type: 'COOLDOWN_UNLOCKED',
+      category: 'TRAINING',
+      title: 'Đã mở khóa thời gian chờ tạo giáo án',
+      message: `Quản lý ${user.fullName || 'CLB'} đã mở khóa thời gian chờ cho bạn đối với chiến mã ${horse.name}. Lý do: ${dto.reason.trim()}`,
+      link: '/training/plans/new',
+      senderName: user.fullName,
+    });
+
+    return {
+      success: true,
+      message: `Đã mở khóa thời gian chờ thành công cho chiến mã ${horse.name}.`,
+    };
+  }
+
+  /**
    * Mỗi ngựa một HLV phụ trách tại một thời điểm: ngựa đang có giáo án Nháp / Đang áp dụng của
    * HLV khác thì không lập thêm (buổi nháp của người khác sẽ chiếm giờ ngựa mà HLV này không thấy).
    * Cùng một HLV vẫn được chuẩn bị giáo án tiếp theo cho ngựa của mình.
    */
-  private async assertNoOtherTrainer(horseId: string, horseName: string, userId: string, tx: Tx) {
-    const other = await tx.trainingPlan.findFirst({
+  private async assertNoOtherTrainer(horseId: string, horseName: string, userId: string, tx?: Tx) {
+    const client = tx || this.prisma;
+    // Kiểm tra Cooldown: nếu HLV này đang trong thời gian chờ (48h) do hủy / hết hạn
+    const cooldownUntil = await this.getTrainerHorseCooldown(horseId, userId);
+    if (cooldownUntil && cooldownUntil > new Date()) {
+      const remainingHours = Math.ceil((cooldownUntil.getTime() - Date.now()) / (3600 * 1000));
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'TRAINER_IN_COOLDOWN',
+        `Bạn đang trong thời gian chờ (${remainingHours} giờ còn lại) đối với chiến mã "${horseName}" do vừa hủy hoặc để hết hạn bản nháp. Vui lòng liên hệ Quản lý CLB nếu cần mở khóa sớm.`,
+      );
+    }
+
+    const other = await client.trainingPlan.findFirst({
+
       where: {
         horseId,
         status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] },
@@ -772,6 +1043,21 @@ export class TrainingPlansService {
         'Giáo án phải có ít nhất 1 buổi tập trước khi kích hoạt.',
       );
     }
+    // H-13: Giáo án phải có ít nhất 1 buổi tập khả thi trong tương lai (từ hôm nay trở đi)
+    const validUpcomingWorkouts = await tx.workoutSession.count({
+      where: {
+        trainingPlanId: plan.id,
+        status: WorkoutStatus.SCHEDULED,
+        scheduledDate: { gte: startOfClubDay(new Date()) },
+      },
+    });
+    if (validUpcomingWorkouts === 0) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'NO_UPCOMING_SCHEDULED_WORKOUTS',
+        'Giáo án phải có ít nhất 1 buổi tập khả thi trong tương lai (từ hôm nay trở đi) trước khi kích hoạt.',
+      );
+    }
     if (plan.endDate < startOfClubDay(new Date())) {
       throw apiError(HttpStatus.BAD_REQUEST, 'PLAN_ENDED', 'Ngày kết thúc của giáo án đã qua.');
     }
@@ -789,7 +1075,10 @@ export class TrainingPlansService {
   async deletePlan(id: string, user: CurrentUserPayload) {
     const plan = await this.prisma.trainingPlan.findUnique({
       where: { id },
-      include: { workoutSessions: { where: { status: WorkoutStatus.COMPLETED }, take: 1 } },
+      include: {
+        horse: { select: { id: true, name: true } },
+        workoutSessions: { where: { status: WorkoutStatus.COMPLETED }, take: 1 },
+      },
     });
     if (!plan) {
       throw apiError(HttpStatus.NOT_FOUND, 'PLAN_NOT_FOUND', 'Training plan not found.');
@@ -805,18 +1094,37 @@ export class TrainingPlansService {
       );
     }
 
+    // Nếu HLV tự xóa bản nháp của mình, áp dụng cooldown 48h
+    if (user.role === UserRole.HEAD_TRAINER && plan.trainerUserId === user.userId) {
+      await this.recordHorseCooldown(plan.horseId, plan.trainerUserId, 'Huấn luyện viên tự xóa bản nháp giáo án', 'DELETE_PLAN_COOLDOWN');
+    }
+
     await this.prisma.$transaction([
       this.prisma.workoutSession.deleteMany({ where: { trainingPlanId: id } }),
       this.prisma.trainingPlan.delete({ where: { id } }),
     ]);
 
+    const isManagerOverride = user.role === UserRole.CLUB_MANAGER && plan.trainerUserId !== user.userId;
     await this.auditService.record(
       { id: user.userId, name: user.fullName || user.email },
-      'DELETE_TRAINING_PLAN',
-      `Deleted draft training plan "${plan.phaseName}" (${id})`,
+      isManagerOverride ? 'DELETE_TRAINING_PLAN_BY_MANAGER' : 'DELETE_TRAINING_PLAN',
+      isManagerOverride
+        ? `Quản lý CLB (${user.fullName || user.email}) đã xóa bản nháp giáo án "${plan.phaseName}" (${id}) của HLV ${plan.trainerUserId}`
+        : `Deleted draft training plan "${plan.phaseName}" (${id})`,
       id,
-      { entityName: 'TrainingPlan' },
+      { entityName: 'TrainingPlan', newValues: { horseId: plan.horseId } },
     );
+
+    if (isManagerOverride) {
+      await this.notifications.notifyUsers([plan.trainerUserId], {
+        type: 'PLAN_DELETED_BY_MANAGER',
+        category: 'TRAINING',
+        title: 'Bản nháp giáo án bị Quản lý xóa',
+        message: `Quản lý CLB (${user.fullName || 'Manager'}) đã xóa bản nháp giáo án "${plan.phaseName}" cho ngựa ${plan.horse?.name ?? ''} để giải phóng vị trí.`,
+        link: '/training/plans',
+      });
+    }
+
     return { message: 'Training plan deleted successfully.' };
   }
 
@@ -851,6 +1159,32 @@ export class TrainingPlansService {
         'Ngựa đang bị Khóa huấn luyện y tế. Không thể tạo giáo án mới cho đến khi Bác sĩ thú y gỡ khóa.',
       );
     }
+    if (horse.isDebtImpounded) {
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'HORSE_DEBT_IMPOUNDED',
+        'Ngựa đang bị lưu giữ do nợ phí lưu chuồng. Không thể tạo giáo án mới cho đến khi chủ sở hữu hoàn tất thanh toán công nợ.',
+      );
+    }
+    await this.assertNoOtherTrainer(horse.id, horse.name, user.userId);
+
+    // BR-TRN-CAPACITY: Mỗi HLV chỉ được phụ trách tối đa 6 chiến mã đồng thời
+    const activePlanCount = await this.prisma.trainingPlan.count({
+      where: {
+        trainerUserId: user.userId,
+        status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] },
+        horse: { deletedAt: null },
+      },
+    });
+    if (activePlanCount >= MAX_HORSES_PER_TRAINER) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'TRAINER_CAPACITY_EXCEEDED',
+        `Mỗi Huấn luyện viên chỉ được quản lý tối đa ${MAX_HORSES_PER_TRAINER} chiến mã đồng thời. Vui lòng hoàn thành hoặc hủy bớt giáo án hiện có trước khi tạo mới.`,
+      );
+    }
+
+
     const now = new Date();
     const startDate = dto.startDate ? new Date(dto.startDate) : addDays(startOfClubDay(now), 1);
     this.assertStartsFromTomorrow(startDate);
@@ -877,6 +1211,7 @@ export class TrainingPlansService {
           scheduledDate: {
             gte: new Date(Math.min(...times) - 120 * MIN),
             lte: new Date(Math.max(...times) + 120 * MIN),
+
           },
         },
         select: {
@@ -973,5 +1308,218 @@ export class TrainingPlansService {
       },
     );
     return { ...plan, skippedWorkouts: candidates.length - copies.length };
+  }
+
+  /**
+   * UI/UX tối ưu tạo/sao chép giáo án: Lấy danh sách toàn bộ chiến mã kèm trạng thái giáo án thời gian thực.
+   * Giúp HLV phân biệt tức thì:
+   * - Ngựa chưa có giáo án (Sẵn sàng)
+   * - Ngựa đang có giáo án hoạt động do mình quản lý
+   * - Ngựa do HLV khác phụ trách (bị khóa chọn)
+   * - Ngựa đang bị Khóa y tế
+   */
+  async getAssignableHorses(user: CurrentUserPayload) {
+    await this.common.sweepOverdue();
+    const horses = await this.prisma.horse.findMany({
+      where: {
+        deletedAt: null,
+        status: { not: HorseStatus.RETIRED },
+      },
+      select: {
+        id: true,
+        name: true,
+        horseCode: true,
+        breed: true,
+        dob: true,
+        gender: true,
+        color: true,
+        status: true,
+        isMedicalLocked: true,
+        isDebtImpounded: true,
+        avatarUrl: true,
+        owner: { select: { id: true, fullName: true } },
+        stallAllocations: {
+          where: { isActive: true },
+          take: 1,
+          select: {
+            stall: {
+              select: {
+                id: true,
+                code: true,
+                zone: true,
+                zoneRef: { select: { name: true } },
+              },
+            },
+          },
+        },
+      },
+      orderBy: { name: 'asc' },
+    });
+
+    const activeOrDraftPlans = await this.prisma.trainingPlan.findMany({
+      where: {
+        status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] },
+        horse: { deletedAt: null },
+      },
+      select: {
+        id: true,
+        planCode: true,
+        phaseName: true,
+        status: true,
+        horseId: true,
+        trainerUserId: true,
+        trainer: { select: { id: true, fullName: true } },
+        startDate: true,
+        endDate: true,
+      },
+    });
+
+    const horsePlanMap = new Map<string, typeof activeOrDraftPlans>();
+    for (const p of activeOrDraftPlans) {
+      const list = horsePlanMap.get(p.horseId) || [];
+      list.push(p);
+      horsePlanMap.set(p.horseId, list);
+    }
+
+    const items = await Promise.all(
+      horses.map(async (h) => {
+        const plans = horsePlanMap.get(h.id) || [];
+        const activePlan = plans.find((p) => p.status === PlanStatus.ACTIVE) || null;
+        const draftPlan = plans.find((p) => p.status === PlanStatus.DRAFT) || null;
+
+        let planState:
+          | 'READY'
+          | 'ACTIVE_SELF'
+          | 'ACTIVE_OTHER'
+          | 'DRAFT_SELF'
+          | 'DRAFT_OTHER'
+          | 'MEDICAL_LOCKED'
+          | 'DEBT_IMPOUNDED'
+          | 'COOLDOWN_SELF' = 'READY';
+      let canAssign = true;
+      let badge = 'Sẵn sàng';
+      let explanation = 'Chiến mã sẵn sàng để tạo giáo án mới.';
+      let activePlanInfo: { id: string; planCode: string; name: string; trainerName: string } | null = null;
+
+      if (h.isMedicalLocked) {
+        planState = 'MEDICAL_LOCKED';
+        canAssign = false;
+        badge = 'Khóa y tế';
+        explanation = 'Ngựa đang bị Khóa huấn luyện y tế bởi Bác sĩ thú y.';
+      } else if (h.isDebtImpounded) {
+        planState = 'DEBT_IMPOUNDED';
+        canAssign = false;
+        badge = 'Lưu giữ nợ phí';
+        explanation = 'Ngựa đang bị lưu giữ do nợ chi phí nuôi chuồng. Khóa quyền tạo giáo án cho đến khi thanh toán nợ.';
+      } else if (activePlan) {
+        activePlanInfo = {
+          id: activePlan.id,
+          planCode: activePlan.planCode ?? '',
+          name: activePlan.phaseName,
+          trainerName: activePlan.trainer.fullName,
+        };
+        if (activePlan.trainerUserId === user.userId) {
+          planState = 'ACTIVE_SELF';
+          canAssign = false;
+          badge = `Đang tập (${activePlan.planCode ?? 'Của bạn'})`;
+          explanation = `Bạn đã có giáo án ${activePlan.planCode ?? ''} đang áp dụng cho ngựa này. Mỗi ngựa chỉ áp dụng 1 giáo án tại một thời điểm.`;
+        } else {
+          planState = 'ACTIVE_OTHER';
+          canAssign = false;
+          badge = `Đang tập · HLV ${activePlan.trainer.fullName}`;
+          explanation = `Ngựa đang do HLV ${activePlan.trainer.fullName} phụ trách (${activePlan.planCode ?? ''}). Bạn không thể can thiệp hoặc tạo đè giáo án.`;
+        }
+      } else if (draftPlan) {
+        if (draftPlan.trainerUserId === user.userId) {
+          planState = 'DRAFT_SELF';
+          canAssign = true;
+          badge = `Bản nháp của bạn (${draftPlan.planCode ?? ''})`;
+          explanation = `Bạn đang có bản nháp ${draftPlan.planCode ?? ''} cho ngựa này. Có thể mở bản nháp để tiếp tục hoàn thiện hoặc tạo thêm.`;
+        } else {
+          planState = 'DRAFT_OTHER';
+          canAssign = false;
+          badge = `Bản nháp · HLV ${draftPlan.trainer.fullName}`;
+          explanation = `HLV ${draftPlan.trainer.fullName} đang soạn bản nháp cho ngựa này (${draftPlan.planCode ?? ''}).`;
+        }
+      }
+
+      let activeCooldown: { remainingHours: number; trainerUserId: string; trainerName: string } | null = null;
+      if (user.role === UserRole.HEAD_TRAINER) {
+        const cd = await this.getTrainerHorseCooldown(h.id, user.userId);
+        if (cd && cd > new Date()) {
+          const remainingHours = Math.ceil((cd.getTime() - Date.now()) / (3600 * 1000));
+          activeCooldown = {
+            remainingHours,
+            trainerUserId: user.userId,
+            trainerName: user.fullName || user.email || 'Bạn',
+          };
+          if (!activePlan && !draftPlan && !h.isMedicalLocked && !h.isDebtImpounded) {
+            planState = 'COOLDOWN_SELF';
+            canAssign = false;
+            badge = `Thời gian chờ (${remainingHours}h)`;
+            explanation = `Bạn vừa hủy hoặc để hết hạn bản nháp cho ngựa này. Cần chờ ${remainingHours} giờ hoặc liên hệ Quản lý CLB để mở khóa sớm.`;
+          }
+        }
+      } else if (user.role === UserRole.CLUB_MANAGER) {
+        const mgrCd = await this.getLatestHorseCooldownForManager(h.id);
+        if (mgrCd) {
+          activeCooldown = mgrCd;
+          if (!activePlan && !draftPlan && !h.isMedicalLocked && !h.isDebtImpounded) {
+            badge = `Đang chờ (${mgrCd.trainerName} · ${mgrCd.remainingHours}h)`;
+            explanation = `HLV ${mgrCd.trainerName} đang trong thời gian chờ sau khi hủy/hết hạn bản nháp. Quản lý có thể mở khóa sớm.`;
+          }
+        }
+      }
+
+      const stallInfo = h.stallAllocations[0]?.stall;
+      const stallName = stallInfo ? `${stallInfo.code} (${stallInfo.zoneRef?.name || stallInfo.zone})` : null;
+
+      return {
+        id: h.id,
+        name: h.name,
+        horseCode: h.horseCode,
+        breed: h.breed,
+        dob: h.dob,
+        gender: h.gender,
+        color: h.color,
+        status: h.status,
+        isMedicalLocked: h.isMedicalLocked,
+        isDebtImpounded: Boolean(h.isDebtImpounded),
+        avatarUrl: h.avatarUrl,
+        ownerName: h.owner?.fullName ?? null,
+        stallName,
+        planState,
+        canAssign,
+        badge,
+        explanation,
+        activePlan: activePlanInfo,
+        activeCooldown,
+        existingPlanId: activePlan?.id || draftPlan?.id || null,
+      };
+    }));
+
+    // Bậc thang 6 cấp độ ưu tiên sẵn sàng thi đấu
+    const rankOf = (h: { status?: string; isMedicalLocked?: boolean; isDebtImpounded?: boolean; planState?: string }) => {
+      if (h.isDebtImpounded || h.status === 'RETIRED') return 6;
+      if (h.isMedicalLocked || h.status === 'INJURED' || h.status === 'ISOLATED' || h.planState === 'MEDICAL_LOCKED') return 5;
+      if (h.status === 'UNDER_OBSERVATION') return 4;
+      if (h.status === 'ACTIVE') return 1;
+      if (h.status === 'IN_TRAINING' || h.planState === 'ACTIVE_SELF' || h.planState === 'ACTIVE_OTHER') return 2;
+      if (h.status === 'RESTING' || h.planState === 'READY') return 3;
+      return 3;
+    };
+    items.sort((a, b) => rankOf(a) - rankOf(b) || a.name.localeCompare(b.name, 'vi'));
+
+    const summary = {
+      total: items.length,
+      readyCount: items.filter((x) => x.planState === 'READY').length,
+      myActiveCount: items.filter((x) => x.planState === 'ACTIVE_SELF').length,
+      myDraftCount: items.filter((x) => x.planState === 'DRAFT_SELF').length,
+      otherTrainerCount: items.filter((x) => x.planState === 'ACTIVE_OTHER' || x.planState === 'DRAFT_OTHER').length,
+      medicalLockedCount: items.filter((x) => x.planState === 'MEDICAL_LOCKED').length,
+      cooldownCount: items.filter((x) => x.planState === 'COOLDOWN_SELF').length,
+    };
+
+    return { items, summary };
   }
 }

@@ -39,6 +39,11 @@ export class RestoreWorkoutDto {
   @IsOptional()
   @IsISO8601({}, { message: 'Ngày tập không hợp lệ.' })
   scheduledDate?: string;
+
+  @ApiPropertyOptional({ description: 'Xác nhận tiếp tục dù có cảnh báo an toàn' })
+  @IsOptional()
+  @IsBoolean()
+  acknowledgeWarnings?: boolean;
 }
 
 /** DL-2.02 Kích hoạt · DL-2.04 Hoàn thành · DL-2.03 Hủy giáo án (HT). */
@@ -104,4 +109,18 @@ export class AcknowledgeAlertDto {
   @Length(2, 1000, { message: 'Nhận xét phải từ 2 đến 1000 ký tự.' })
   @Transform(trimString)
   vetNotes: string;
+}
+
+/** Quản lý CLB mở khóa thời gian chờ (cooldown) cho HLV trên chiến mã. */
+export class UnlockCooldownDto {
+  @ApiProperty({ description: 'ID tài khoản Huấn luyện viên cần mở khóa' })
+  @IsNotEmpty({ message: 'Vui lòng chọn Huấn luyện viên.' })
+  @IsString()
+  trainerUserId: string;
+
+  @ApiProperty({ description: 'Lý do mở khóa sớm (tối thiểu 5 ký tự)' })
+  @IsString()
+  @Length(5, 500, { message: 'Lý do mở khóa phải từ 5 đến 500 ký tự.' })
+  @Transform(trimString)
+  reason: string;
 }
