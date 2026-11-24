@@ -6,7 +6,6 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
 import { Complaint, ComplaintStatus, Prisma, Role, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -119,9 +118,24 @@ export class ComplaintsService {
     });
     if (!subject) throw new BadRequestException('Subject must be an active staff member');
     const row = await this.prisma.$transaction(async (tx) => {
+      const dateStr = new Date().toISOString().slice(0, 10).replaceAll('-', '');
+      const countToday = await tx.complaint.count({
+        where: { code: { startsWith: `CMP-${dateStr}-` } },
+      });
+      let seq = countToday + 1;
+      const existingToday = await tx.complaint.findMany({
+        where: { code: { startsWith: `CMP-${dateStr}-` } },
+        select: { code: true },
+      });
+      const existingCodes = new Set(existingToday.map((c) => c.code));
+      while (existingCodes.has(`CMP-${dateStr}-${String(seq).padStart(3, '0')}`)) {
+        seq++;
+      }
+      const code = `CMP-${dateStr}-${String(seq).padStart(3, '0')}`;
+
       const created = await tx.complaint.create({
         data: {
-          code: `CMP-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${randomUUID()}`,
+          code,
           subjectUserId: dto.subjectUserId,
           reporterId: user.userId,
           reason: dto.reason,
