@@ -1,5 +1,4 @@
 import { stallMove } from '../business-mail/templates/health-templates';
-import { onDutyGrooms } from '../shift-rosters/groom-zones';
 import { HttpStatus, Injectable, Optional } from '@nestjs/common';
 import { HorseStatus, Prisma, Role, StallStatus, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -31,6 +30,7 @@ const LIVE_TRAINERS = {
 } satisfies Prisma.Horse$trainingPlansArgs;
 
 export const MAX_STALLS_PER_ZONE = 12;
+export const MAX_STALLS_PER_GROOM = 6;
 
 function assertGridSize(rows: number, cols: number) {
   if (rows * cols > MAX_STALLS_PER_ZONE) {
@@ -138,8 +138,43 @@ export class StallsService {
         'ALLOCATION_NOT_ACTIVE',
         'Allocation is no longer active.',
       );
-    const rows = await onDutyGrooms(this.prisma, allocation.stall.zoneId);
-    return [...new Map(rows.map((row) => [row.groom.id, row.groom])).values()];
+    const targetZoneId = allocation.stall.zoneId;
+
+    const grooms = await this.prisma.user.findMany({
+      where: { role: Role.GROOM, status: UserStatus.ACTIVE },
+      select: { id: true, fullName: true, email: true },
+      orderBy: { fullName: 'asc' },
+    });
+
+    const candidates: Array<{
+      id: string;
+      fullName: string;
+      email: string;
+      currentStallsCount: number;
+      maxStallsCount: number;
+      isFull: boolean;
+    }> = [];
+    for (const g of grooms) {
+      const activeAllocations = await this.prisma.stallAllocation.findMany({
+        where: { assignedGroomUserId: g.id, isActive: true },
+        include: { stall: true },
+      });
+      // Kiểm tra xem Groom đã phụ trách chuồng ở phân khu khác chưa (1 Groom chỉ thuộc 1 Barn)
+      const otherZone = activeAllocations.find(
+        (a) => a.stall.zoneId && a.stall.zoneId !== targetZoneId,
+      );
+      if (!otherZone) {
+        candidates.push({
+          id: g.id,
+          fullName: g.fullName,
+          email: g.email,
+          currentStallsCount: activeAllocations.length,
+          maxStallsCount: MAX_STALLS_PER_GROOM,
+          isFull: activeAllocations.length >= MAX_STALLS_PER_GROOM,
+        });
+      }
+    }
+    return candidates;
   }
 
   async assignAllocationGroom(allocationId: string, groomUserId: string, user: CurrentUserPayload) {
@@ -158,29 +193,27 @@ export class StallsService {
           'Allocation is no longer active.',
         );
       await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${row.horseId} FOR UPDATE`;
-      const candidates = await onDutyGrooms(tx, row.stall.zoneId);
-      if (!candidates.some((candidate) => candidate.groomUserId === groomUserId))
-        throw apiError(
-          HttpStatus.CONFLICT,
-          'GROOM_NOT_ON_DUTY',
-          'Selected Groom is not currently on duty in this zone.',
-        );
+
+      // Kiểm tra Groom hợp lệ, chặn cứng 6 chuồng và 1 Barn
+      await this.assertGroom(tx, row.stall.zoneId, groomUserId, allocationId);
+
       const updated = await tx.stallAllocation.update({
         where: { id: allocationId },
         data: { assignedGroomUserId: groomUserId },
       });
-      const candidate = candidates.find((candidate) => candidate.groomUserId === groomUserId)!;
+
+      // Đồng bộ các đầu việc chăm sóc chưa hoàn thành hôm nay của chiến mã sang Groom mới
       await tx.dailyCareTask.updateMany({
         where: {
           horseId: row.horseId,
           stallZoneId: row.stall.zoneId,
           date: rosterDay(),
-          shiftId: candidate.shiftId,
           isCompleted: false,
           OR: [{ taskCode: null }, { NOT: { taskCode: { startsWith: STALL_HANDOVER_PREFIX } } }],
         },
         data: { assignedGroomUserId: groomUserId },
       });
+
       await this.auditService.record(
         this.actor(user),
         'ASSIGN_ALLOCATION_GROOM',
@@ -199,18 +232,147 @@ export class StallsService {
     }
     let sent: boolean | undefined;
     try {
-      sent = await this.notifications?.notifyUsers([groomUserId], {
-        type: 'GROOM_CARE_ASSIGNED',
+      await this.notifications?.notifyUsers([groomUserId], {
+        type: 'STALL_HANDOVER_ASSIGNED',
         category: 'SYSTEM',
-        title: 'Đã phân công ngựa chăm sóc',
-        message: 'Mở checklist ca đang trực để xem công việc.',
-        link: '/tasks',
-        dedupeKey: `allocation-groom-assigned:${result.id}:${result.updatedAt.toISOString()}`,
+        title: 'Gán người chăm sóc',
+        message: 'Bạn đã được phân công phụ trách ô chuồng mới.',
+        link: '/stalls/map',
       });
+      sent = true;
     } catch {
       sent = false;
     }
     return { ...result, careSyncFailed, notificationFailed: sent === false };
+  }
+
+  async bulkAssignGroom(
+    dto: { groomUserId: string; allocationIds: string[] },
+    user: CurrentUserPayload,
+  ) {
+    if (user.role !== Role.CLUB_MANAGER)
+      throw apiError(HttpStatus.FORBIDDEN, 'MANAGER_REQUIRED', 'Only Manager can assign care.');
+    if (!dto.allocationIds || dto.allocationIds.length === 0) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'EMPTY_ALLOCATIONS',
+        'Vui lòng chọn ít nhất 1 ô chuồng.',
+      );
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const groom = await tx.user.findUnique({ where: { id: dto.groomUserId } });
+      if (!groom || groom.role !== Role.GROOM || groom.status !== UserStatus.ACTIVE) {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'INVALID_GROOM',
+          'Groom không hợp lệ hoặc đang không hoạt động.',
+        );
+      }
+
+      // Khóa và lấy danh sách allocations
+      const allocations = await tx.stallAllocation.findMany({
+        where: { id: { in: dto.allocationIds }, isActive: true },
+        include: { stall: true },
+      });
+      if (allocations.length !== dto.allocationIds.length) {
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'SOME_ALLOCATIONS_INACTIVE',
+          'Một số ô chuồng không còn hoạt động.',
+        );
+      }
+
+      const targetZoneId = allocations[0].stall.zoneId;
+      if (!targetZoneId || allocations.some((a) => a.stall.zoneId !== targetZoneId)) {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'DIFFERENT_ZONES',
+          'Tất cả các ô chuồng được chọn phải thuộc cùng 1 phân khu.',
+        );
+      }
+
+      // Kiểm tra Groom không có chuồng ở phân khu khác
+      const otherZoneAlloc = await tx.stallAllocation.findFirst({
+        where: {
+          assignedGroomUserId: dto.groomUserId,
+          isActive: true,
+          stall: { zoneId: { not: targetZoneId } },
+          id: { notIn: dto.allocationIds },
+        },
+        include: { stall: { include: { zoneRef: true } } },
+      });
+      if (otherZoneAlloc) {
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'GROOM_MULTI_ZONE_FORBIDDEN',
+          `Nhân viên ${groom.fullName} đang phụ trách tại ${otherZoneAlloc.stall.zoneRef?.name || otherZoneAlloc.stall.zone}. Mỗi Groom chỉ được phụ trách các ô chuồng trong cùng 1 phân khu.`,
+        );
+      }
+
+      // Kiểm tra Hard Limit 6 chuồng
+      const currentActiveCount = await tx.stallAllocation.count({
+        where: {
+          assignedGroomUserId: dto.groomUserId,
+          isActive: true,
+          id: { notIn: dto.allocationIds },
+        },
+      });
+      if (currentActiveCount + dto.allocationIds.length > MAX_STALLS_PER_GROOM) {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'GROOM_MAX_STALLS_EXCEEDED',
+          `Groom ${groom.fullName} chỉ còn nhận được ${MAX_STALLS_PER_GROOM - currentActiveCount} ô chuồng. Bạn đang gán ${dto.allocationIds.length} ô chuồng (vượt định mức tối đa ${MAX_STALLS_PER_GROOM}).`,
+        );
+      }
+
+      // Cập nhật tất cả allocations
+      await tx.stallAllocation.updateMany({
+        where: { id: { in: dto.allocationIds } },
+        data: { assignedGroomUserId: dto.groomUserId },
+      });
+
+      // Cập nhật toàn bộ dailyCareTask hôm nay của các con ngựa này
+      const horseIds = allocations.map((a) => a.horseId);
+      await tx.dailyCareTask.updateMany({
+        where: {
+          horseId: { in: horseIds },
+          stallZoneId: targetZoneId,
+          date: rosterDay(),
+          isCompleted: false,
+          OR: [{ taskCode: null }, { NOT: { taskCode: { startsWith: STALL_HANDOVER_PREFIX } } }],
+        },
+        data: { assignedGroomUserId: dto.groomUserId },
+      });
+
+      await this.auditService.record(
+        this.actor(user),
+        'BULK_ASSIGN_GROOM',
+        `Phân công hàng loạt ${dto.allocationIds.length} ô chuồng cho Groom ${groom.fullName}`,
+        dto.groomUserId,
+        {
+          entityName: 'StallAllocation',
+          newValues: { groomUserId: dto.groomUserId, allocationIds: dto.allocationIds },
+        },
+        tx,
+      );
+
+      return { success: true, count: dto.allocationIds.length, groomName: groom.fullName };
+    });
+
+    try {
+      await this.notifications?.notifyUsers([dto.groomUserId], {
+        type: 'STALL_HANDOVER_ASSIGNED',
+        category: 'SYSTEM',
+        title: 'Phân công quản lý ô chuồng',
+        message: `Bạn đã được phân công phụ trách ${dto.allocationIds.length} ô chuồng mới.`,
+        link: '/stalls/map',
+      });
+    } catch {
+      // ignore
+    }
+
+    return result;
   }
 
   private actor(user: CurrentUserPayload) {
@@ -248,9 +410,10 @@ export class StallsService {
         for (let i = 2; await tx.stallZone.findUnique({ where: { code } }); i++) {
           code = `${codeFromName(name).slice(0, 17)}-${i}`;
         }
-        const cols = Math.min(stalls.length, 6);
+        const cols = 3;
+        const rows = Math.max(4, Math.ceil(stalls.length / cols));
         const zone = await tx.stallZone.create({
-          data: { code, name, cols, rows: Math.ceil(stalls.length / cols) },
+          data: { code, name, cols, rows },
         });
         for (const [i, s] of stalls.entries()) {
           await tx.stall.update({
@@ -548,7 +711,12 @@ export class StallsService {
     return stall;
   }
 
-  private async assertGroom(tx: Tx, zoneId: string | null, groomId?: string) {
+  private async assertGroom(
+    tx: Tx,
+    zoneId: string | null,
+    groomId?: string,
+    allocationIdToExclude?: string,
+  ) {
     if (!groomId) return;
     const groom = await tx.user.findUnique({ where: { id: groomId } });
     if (!groom || groom.role !== Role.GROOM || groom.status !== UserStatus.ACTIVE) {
@@ -558,18 +726,46 @@ export class StallsService {
         'Người được chọn phải là nhân viên chăm sóc đang hoạt động.',
       );
     }
-    if (!zoneId || !(await groomZoneIds(tx, groomId)).includes(zoneId)) {
+    if (zoneId && !(await groomZoneIds(tx, groomId)).includes(zoneId)) {
       throw apiError(
         HttpStatus.CONFLICT,
         'GROOM_ZONE_MISMATCH',
         'Nhân viên chăm sóc phải được phân ca hôm nay tại khu chuồng được chọn.',
       );
     }
-    if (!(await onDutyGrooms(tx, zoneId)).some((row) => row.groomUserId === groomId)) {
+    // 1. Chặn gán xuyên phân khu: 1 Groom chỉ thuộc 1 phân khu Barn
+    if (zoneId) {
+      const otherZoneAlloc = await tx.stallAllocation.findFirst({
+        where: {
+          assignedGroomUserId: groomId,
+          isActive: true,
+          stall: { zoneId: { not: zoneId } },
+          ...(allocationIdToExclude ? { id: { not: allocationIdToExclude } } : {}),
+        },
+        include: { stall: { include: { zoneRef: true } } },
+      });
+      if (otherZoneAlloc) {
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'GROOM_MULTI_ZONE_FORBIDDEN',
+          `Nhân viên ${groom.fullName} đang phụ trách tại ${otherZoneAlloc.stall.zoneRef?.name || otherZoneAlloc.stall.zone}. Mỗi Groom chỉ được phụ trách các ô chuồng trong cùng 1 phân khu.`,
+        );
+      }
+    }
+
+    // 2. Chặn cứng tối đa 6 ô chuồng / Groom (MAX_STALLS_PER_GROOM = 6)
+    const activeCount = await tx.stallAllocation.count({
+      where: {
+        assignedGroomUserId: groomId,
+        isActive: true,
+        ...(allocationIdToExclude ? { id: { not: allocationIdToExclude } } : {}),
+      },
+    });
+    if (activeCount >= MAX_STALLS_PER_GROOM) {
       throw apiError(
-        HttpStatus.CONFLICT,
-        'GROOM_NOT_ON_DUTY',
-        'Nhân viên được chọn chưa bắt đầu ca hoặc đã kết thúc ca trực tại khu.',
+        HttpStatus.BAD_REQUEST,
+        'GROOM_MAX_STALLS_EXCEEDED',
+        `Nhân viên ${groom.fullName} đã đạt định mức tối đa ${MAX_STALLS_PER_GROOM} ô chuồng (${activeCount}/${MAX_STALLS_PER_GROOM}). Không thể phân công thêm.`,
       );
     }
   }

@@ -11,6 +11,7 @@ import { AssignHorseDto } from './dto/assign-horse.dto';
 import { TransferHorseDto } from './dto/transfer-horse.dto';
 import { ReturnStallDto } from './dto/return-stall.dto';
 import { AssignAllocationGroomDto } from './dto/assign-allocation-groom.dto';
+import { BulkAssignGroomDto } from './dto/bulk-assign-groom.dto';
 import { CurrentUser, CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { UserRole } from '../common/enums/role.enum';
@@ -38,6 +39,13 @@ export class StallsController {
     @CurrentUser() user: CurrentUserPayload,
   ) {
     return this.stallsService.assignAllocationGroom(id, dto.groomUserId, user);
+  }
+
+  @Post('allocations/bulk-groom')
+  @Roles(UserRole.CLUB_MANAGER)
+  @ApiOperation({ summary: 'Phân công hàng loạt ô chuồng cho một nhân viên chăm sóc (Groom)' })
+  bulkAssignGroom(@Body() dto: BulkAssignGroomDto, @CurrentUser() user: CurrentUserPayload) {
+    return this.stallsService.bulkAssignGroom(dto, user);
   }
 
   @Get()
