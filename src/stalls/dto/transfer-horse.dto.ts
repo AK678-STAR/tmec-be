@@ -12,6 +12,11 @@ export class TransferHorseDto {
   @IsOptional()
   assignedGroomUserId?: string;
 
+  @ApiPropertyOptional({ description: 'ID người nhận bàn giao' })
+  @IsUUID()
+  @IsOptional()
+  receivingGroomUserId?: string;
+
   @ApiPropertyOptional({ description: 'Ghi chú chuyển ô' })
   @IsString()
   @IsOptional()

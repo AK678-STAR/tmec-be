@@ -1,3 +1,4 @@
+import { rosterDay } from '../shift-rosters/groom-zones';
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { DailyTaskType, Role } from '@prisma/client';
@@ -19,6 +20,7 @@ describe('DailyTasksService', () => {
       $queryRaw: jest.fn().mockResolvedValue([]),
       $transaction: jest.fn((fn: any) => fn(prisma)),
       horse: { findMany: jest.fn().mockResolvedValue([]), findUnique: jest.fn() },
+      stallAllocation: { findFirst: jest.fn().mockResolvedValue({ id: 'alloc' }) },
       shiftRoster: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn() },
       dailyCareTask: {
         findMany: jest.fn().mockResolvedValue([]),
@@ -215,12 +217,26 @@ describe('DailyTasksService', () => {
   describe('completeTask & uncompleteTask (15-minute undo window)', () => {
     it('completes a task and sets undoUntil to 15 minutes in the future', async () => {
       const mockTask = {
+        assignedGroomUserId: 'groom-1',
+        date: rosterDay(),
+        shiftId: 'shift-1',
+        stallId: 'stall-1',
+        stallZoneId: 'zone-1',
         id: 'task-1',
         taskCode: 'TSK-001',
         isCompleted: false,
         horse: { name: 'Flash' },
       };
 
+      prisma.shiftRoster.findMany.mockResolvedValue([
+        {
+          date: rosterDay(),
+          groomUserId: 'groom-1',
+          shiftId: 'shift-1',
+          dutyTypes: ['CLEANING', 'HORSE_CARE'],
+          shift: { startTime: '00:00', endTime: '00:00', isOvernight: true },
+        },
+      ]);
       prisma.dailyCareTask.findUnique.mockResolvedValue(mockTask);
       prisma.dailyCareTask.update.mockResolvedValue({ ...mockTask, isCompleted: true });
 
@@ -271,11 +287,16 @@ describe('DailyTasksService', () => {
 
     it('rejects legacy medication with no record/prescription provenance', async () => {
       const mockTask = {
+        assignedGroomUserId: 'groom-1',
+        date: rosterDay(),
+        shiftId: 'shift-1',
+        stallId: 'stall-1',
+        stallZoneId: 'zone-1',
         id: 'task-med-1',
         taskCode: 'TSK-MED-001',
         taskType: DailyTaskType.MEDICATION,
         isCompleted: false,
-        stallZoneId: 'zone-c',
+
         horseId: 'horse-1',
         horse: { name: 'Thunder' },
         itemsSnapshotJson: [
@@ -289,6 +310,15 @@ describe('DailyTasksService', () => {
         ],
       };
 
+      prisma.shiftRoster.findMany.mockResolvedValue([
+        {
+          date: rosterDay(),
+          groomUserId: 'groom-1',
+          shiftId: 'shift-1',
+          dutyTypes: ['CLEANING', 'HORSE_CARE'],
+          shift: { startTime: '00:00', endTime: '00:00', isOvernight: true },
+        },
+      ]);
       prisma.dailyCareTask.findUnique.mockResolvedValue(mockTask);
       prisma.dailyCareTask.update.mockResolvedValue({ ...mockTask, isCompleted: true });
 
@@ -418,9 +448,78 @@ describe('DailyTasksService', () => {
     });
   });
 
+  describe('ad-hoc task shift assignment', () => {
+    const manager = { userId: 'manager', role: Role.CLUB_MANAGER, fullName: 'Quản lý' } as any;
+    it('stores the real roster and receiving Groom for an ad-hoc task', async () => {
+      prisma.horse.findUnique.mockResolvedValue({
+        id: 'horse',
+        name: 'Atlas',
+        stallAllocations: [
+          { assignedGroomUserId: 'groom', stall: { id: 'stall', zoneId: 'zone' } },
+        ],
+      });
+      prisma.user = {
+        findUnique: jest.fn().mockResolvedValue({ role: Role.GROOM, status: 'ACTIVE' }),
+      };
+      prisma.shiftRoster.findMany.mockResolvedValue([
+        {
+          date: rosterDay(),
+          groomUserId: 'groom',
+          shiftId: 'shift',
+          dutyTypes: ['HORSE_CARE'],
+          shift: { startTime: '00:00', endTime: '00:00', isOvernight: true },
+        },
+      ]);
+      prisma.dailyCareTask.create.mockImplementation(({ data }) => ({
+        id: 'adhoc',
+        ...data,
+        horse: { name: 'Atlas' },
+      }));
+      const task = await service.createAdHocTask(
+        {
+          horseId: 'horse',
+          title: 'Kiểm tra móng',
+          taskType: DailyTaskType.OTHER,
+          scheduledTime: '14:00',
+        },
+        manager,
+      );
+      expect(task).toMatchObject({
+        assignedGroomUserId: 'groom',
+        shiftId: 'shift',
+        stallId: 'stall',
+        stallZoneId: 'zone',
+      });
+    });
+    it('rejects an off-duty Groom before creating the task', async () => {
+      prisma.horse.findUnique.mockResolvedValue({
+        id: 'horse',
+        name: 'Atlas',
+        stallAllocations: [
+          { assignedGroomUserId: 'groom', stall: { id: 'stall', zoneId: 'zone' } },
+        ],
+      });
+      prisma.user = {
+        findUnique: jest.fn().mockResolvedValue({ role: Role.GROOM, status: 'ACTIVE' }),
+      };
+      await expect(
+        service.createAdHocTask(
+          { horseId: 'horse', title: 'Kiểm tra móng', taskType: DailyTaskType.OTHER },
+          manager,
+        ),
+      ).rejects.toMatchObject({ response: { code: 'GROOM_NOT_ON_DUTY' } });
+      expect(prisma.dailyCareTask.create).not.toHaveBeenCalled();
+    });
+  });
+
   describe('completeTask', () => {
     it('returns task directly if already completed', async () => {
-      const mockTask = { id: 'task-completed', isCompleted: true };
+      const mockTask = {
+        id: 'task-completed',
+        isCompleted: true,
+        assignedGroomUserId: 'u1',
+        completedById: 'u1',
+      };
       prisma.dailyCareTask.findUnique.mockResolvedValue(mockTask);
 
       const res = await service.completeTask('task-completed', {}, {
@@ -437,37 +536,18 @@ describe('DailyTasksService', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('allows a groom rostered in the same zone to complete a teammate task', async () => {
-      const mockTask = {
-        id: 'task-zone-1',
-        taskCode: 'TSK-Z1',
-        date: new Date('2026-10-18T00:00:00.000Z'),
-        stallZoneId: 'zone-1',
-        assignedGroomUserId: 'groom-other',
+    it('rejects a teammate task even when the Groom is rostered in the same zone', async () => {
+      prisma.dailyCareTask.findUnique.mockResolvedValue({
+        id: 'task',
+        assignedGroomUserId: 'other',
+        stallZoneId: 'zone',
         isCompleted: false,
-        horse: { name: 'Flash' },
-      };
-
-      prisma.dailyCareTask.findUnique.mockResolvedValue(mockTask);
-      prisma.shiftRoster.findFirst.mockResolvedValue({ id: 'roster-1' });
-      prisma.dailyCareTask.update.mockResolvedValue({ ...mockTask, isCompleted: true });
-
-      const res = await service.completeTask('task-zone-1', {}, {
-        userId: 'groom-current',
-        role: Role.GROOM,
-        fullName: 'Groom Current',
-      } as any);
-
-      expect(res.isCompleted).toBe(true);
-      expect(prisma.shiftRoster.findFirst).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: {
-            date: mockTask.date,
-            zoneId: 'zone-1',
-            groomUserId: 'groom-current',
-          },
-        }),
-      );
+      });
+      prisma.shiftRoster.findMany.mockResolvedValue([{ groomUserId: 'groom-current' }]);
+      await expect(
+        service.completeTask('task', {}, { userId: 'groom-current', role: Role.GROOM } as any),
+      ).rejects.toMatchObject({ response: { code: 'TASK_NOT_ASSIGNED_TO_YOU' } });
+      expect(prisma.dailyCareTask.update).not.toHaveBeenCalled();
     });
 
     it('throws TASK_NOT_ASSIGNED_TO_YOU when groom is neither assigned nor rostered in the zone', async () => {
@@ -606,12 +686,26 @@ describe('DailyTasksService', () => {
 
     it('includes shift and stallZone relations when completing a task', async () => {
       const mockTask = {
+        assignedGroomUserId: 'groom-1',
+        date: rosterDay(),
+        shiftId: 'shift-1',
+        stallId: 'stall-1',
+        stallZoneId: 'zone-1',
         id: 'task-1',
         taskCode: 'TSK-001',
         isCompleted: false,
         horse: { name: 'Flash' },
       };
 
+      prisma.shiftRoster.findMany.mockResolvedValue([
+        {
+          date: rosterDay(),
+          groomUserId: 'groom-1',
+          shiftId: 'shift-1',
+          dutyTypes: ['CLEANING', 'HORSE_CARE'],
+          shift: { startTime: '00:00', endTime: '00:00', isOvernight: true },
+        },
+      ]);
       prisma.dailyCareTask.findUnique.mockResolvedValue(mockTask);
       prisma.dailyCareTask.update.mockResolvedValue({
         ...mockTask,

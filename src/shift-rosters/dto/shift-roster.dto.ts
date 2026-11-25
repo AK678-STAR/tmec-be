@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
+  ArrayMinSize,
   IsArray,
   IsBoolean,
   IsDateString,
@@ -74,6 +75,13 @@ export class AssignShiftRosterDto {
   @ArrayMaxSize(10, { message: 'Mỗi ca tối đa 10 nhân viên.' })
   @IsUUID('4', { each: true, message: 'ID nhân viên không hợp lệ.' })
   groomUserIds: string[];
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(2)
+  @IsIn(['CLEANING', 'HORSE_CARE'], { each: true })
+  dutyTypes?: string[];
 
   @ApiPropertyOptional({
     enum: ['ONLY_THIS_DAY', 'REST_OF_WEEK', 'SAME_DAY_4_WEEKS'],

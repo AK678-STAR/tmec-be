@@ -93,3 +93,32 @@ describe('shiftCovers', () => {
     expect(shiftCovers(night, toMinutes('12:00'))).toBe(false);
   });
 });
+
+describe('Groom duty and stall capacity', () => {
+  const roster = {
+    zoneId: 'zone',
+    groomUserId: 'groom',
+    shiftId: 'day',
+    startTime: '00:00',
+    endTime: '00:00',
+    isOvernight: true,
+  };
+  it('does not assign horse-care tasks to cleaning-only shifts', () => {
+    const tasks = planDailyTasks(
+      [{ id: 'horse', zoneId: 'zone', isLocked: false }],
+      [{ ...roster, dutyTypes: ['CLEANING'] }],
+    );
+    expect(tasks.some((t) => t.assignedGroomUserId && t.taskType === 'CLEANING')).toBe(true);
+    expect(
+      tasks.filter((t) => t.taskType !== 'CLEANING').every((t) => !t.assignedGroomUserId),
+    ).toBe(true);
+  });
+  it('leaves the seventh horse unassigned instead of exceeding shift capacity', () => {
+    const tasks = planDailyTasks(
+      Array.from({ length: 7 }, (_, i) => ({ id: String(i), zoneId: 'zone', isLocked: false })),
+      [roster],
+    );
+    expect(new Set(tasks.filter((t) => t.assignedGroomUserId).map((t) => t.horseId)).size).toBe(6);
+    expect(tasks.some((t) => !t.assignedGroomUserId)).toBe(true);
+  });
+});

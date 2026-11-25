@@ -299,7 +299,12 @@ async function main() {
     async () => {
       const moved = await stables.transferHorse(
         allocation.id,
-        { newStallId: stalls[1].id, notes: 'QA handover' },
+        {
+          newStallId: stalls[1].id,
+          assignedGroomUserId: targetGroom.id,
+          receivingGroomUserId: targetGroom.id,
+          notes: 'QA handover',
+        },
         actor(manager),
       );
       const moveMails = await db.businessMailing.findMany({
