@@ -740,7 +740,12 @@ export class StallsService {
       if (horse.status === HorseStatus.RETIRED) {
         throw apiError(HttpStatus.BAD_REQUEST, 'HORSE_RETIRED', 'Ngựa đã ngừng quản lý.');
       }
-      if (horse.status === HorseStatus.PENDING_ADMISSION) throw apiError(HttpStatus.CONFLICT, 'HORSE_ADMISSION_REQUIRED', 'Ngựa chưa được duyệt tiếp nhận. Hãy bố trí ô chuồng và Groom tại hồ sơ thẩm định.');
+      if (horse.status === HorseStatus.PENDING_ADMISSION)
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'HORSE_ADMISSION_REQUIRED',
+          'Ngựa chưa được duyệt tiếp nhận. Hãy bố trí ô chuồng và Groom tại hồ sơ thẩm định.',
+        );
       const current = horse.stallAllocations[0];
       if (current) {
         throw apiError(

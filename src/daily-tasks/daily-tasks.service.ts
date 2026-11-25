@@ -1249,30 +1249,49 @@ export class DailyTasksService {
 
     const taskCode = `ADHOC-${todayStr.replace(/-/g, '')}-${Date.now().toString().slice(-6)}`;
 
-    const task = await this.prisma.$transaction(async tx => {
+    const task = await this.prisma.$transaction(async (tx) => {
       await lockCareAssignments(tx);
-      if (!targetGroomId || !stallZoneId || !stallId) throw apiError(HttpStatus.BAD_REQUEST, 'GROOM_REQUIRED', 'Chọn Groom và ô chuồng cho công việc phát sinh.');
-      const active = await tx.stallAllocation.findFirst({ where: { horseId: dto.horseId, stallId, isActive: true } });
-      if (!active) throw apiError(HttpStatus.CONFLICT, 'TASK_STALL_OUTDATED', 'Ngựa đã đổi ô chuồng. Vui lòng tải lại.');
+      if (!targetGroomId || !stallZoneId || !stallId)
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'GROOM_REQUIRED',
+          'Chọn Groom và ô chuồng cho công việc phát sinh.',
+        );
+      const active = await tx.stallAllocation.findFirst({
+        where: { horseId: dto.horseId, stallId, isActive: true },
+      });
+      if (!active)
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'TASK_STALL_OUTDATED',
+          'Ngựa đã đổi ô chuồng. Vui lòng tải lại.',
+        );
       const scheduled = new Date(`${todayStr}T${dto.scheduledTime || '14:00'}:00+07:00`);
-      const roster = await assertReceivingGroom(tx, stallZoneId, targetGroomId, dto.horseId, scheduled, dto.taskType === DailyTaskType.CLEANING ? 'CLEANING' : 'HORSE_CARE');
-      return tx.dailyCareTask.create({
-      data: {
-        taskCode,
-        date: roster.date,
-        shiftId: roster.shiftId,
-        horseId: dto.horseId,
+      const roster = await assertReceivingGroom(
+        tx,
         stallZoneId,
-        stallId,
-        taskType: dto.taskType,
-        title: dto.title,
-        scheduledTime: dto.scheduledTime || '14:00',
-        assignedGroomUserId: targetGroomId || null,
-        description: dto.description || null,
-        isCompleted: false,
-      },
-      include: TASK_DETAIL_INCLUDE,
-    });
+        targetGroomId,
+        dto.horseId,
+        scheduled,
+        dto.taskType === DailyTaskType.CLEANING ? 'CLEANING' : 'HORSE_CARE',
+      );
+      return tx.dailyCareTask.create({
+        data: {
+          taskCode,
+          date: roster.date,
+          shiftId: roster.shiftId,
+          horseId: dto.horseId,
+          stallZoneId,
+          stallId,
+          taskType: dto.taskType,
+          title: dto.title,
+          scheduledTime: dto.scheduledTime || '14:00',
+          assignedGroomUserId: targetGroomId || null,
+          description: dto.description || null,
+          isCompleted: false,
+        },
+        include: TASK_DETAIL_INCLUDE,
+      });
     });
 
     if (targetGroomId) {

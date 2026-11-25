@@ -958,7 +958,14 @@ export class HorsesService {
     if (user.role === UserRole.HORSE_OWNER) {
       where.ownerId = user.userId;
     } else if (user.role === UserRole.GROOM) {
-      where.OR = [{ stallAllocations: { some: { isActive: true, assignedGroomUserId: user.userId } } }, { dailyCareTasks: { some: { date: rosterDay(), assignedGroomUserId: user.userId, cancelledAt: null } } }];
+      where.OR = [
+        { stallAllocations: { some: { isActive: true, assignedGroomUserId: user.userId } } },
+        {
+          dailyCareTasks: {
+            some: { date: rosterDay(), assignedGroomUserId: user.userId, cancelledAt: null },
+          },
+        },
+      ];
     } else if (user.role === UserRole.HEAD_TRAINER) {
       where.AND = [trainerHorseScope(user.userId, query.assignable === 'true')];
     }
@@ -1141,8 +1148,19 @@ export class HorsesService {
 
     if (user.role === UserRole.GROOM) {
       const allocations = (horse as any).stallAllocations || [];
-      const isPrimary = allocations.some((a: any) => a.isActive && a.assignedGroomUserId === user.userId);
-      const isAssigned = isPrimary || !!(await this.prisma.dailyCareTask.findFirst({ where: { horseId: id, date: rosterDay(), assignedGroomUserId: user.userId, cancelledAt: null } }));
+      const isPrimary = allocations.some(
+        (a: any) => a.isActive && a.assignedGroomUserId === user.userId,
+      );
+      const isAssigned =
+        isPrimary ||
+        !!(await this.prisma.dailyCareTask.findFirst({
+          where: {
+            horseId: id,
+            date: rosterDay(),
+            assignedGroomUserId: user.userId,
+            cancelledAt: null,
+          },
+        }));
       if (!isAssigned) {
         throw apiError(
           HttpStatus.NOT_FOUND,

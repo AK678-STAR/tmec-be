@@ -214,8 +214,15 @@ describe('StallsService (SC-1.04, SC-1.07, DL-1.02, DL-1.03)', () => {
 
     it('does not bypass admission by directly assigning a pending horse to a stall', async () => {
       prisma.stall.findUnique.mockResolvedValue(freeStall);
-      prisma.horse.findUnique.mockResolvedValue({ id: 'pending', status: 'PENDING_ADMISSION', stallAllocations: [], trainingPlans: [] });
-      await expect(service.assignHorse('s-1', { horseId: 'pending', assignedGroomUserId: 'g-1' }, manager)).rejects.toMatchObject({ response: { code: 'HORSE_ADMISSION_REQUIRED' } });
+      prisma.horse.findUnique.mockResolvedValue({
+        id: 'pending',
+        status: 'PENDING_ADMISSION',
+        stallAllocations: [],
+        trainingPlans: [],
+      });
+      await expect(
+        service.assignHorse('s-1', { horseId: 'pending', assignedGroomUserId: 'g-1' }, manager),
+      ).rejects.toMatchObject({ response: { code: 'HORSE_ADMISSION_REQUIRED' } });
       expect(prisma.stallAllocation.create).not.toHaveBeenCalled();
     });
 
