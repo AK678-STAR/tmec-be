@@ -13,6 +13,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { apiError } from '../common/exceptions/api-error';
+import { effectiveNow, isDemoClockActive } from '../common/utils/demo-clock';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { UserRole } from '../common/enums/role.enum';
 import { CreateTournamentDto } from './dto/create-tournament.dto';
@@ -798,7 +799,7 @@ export class TournamentsService {
           where: {
             status: 'COMPLETED',
             scheduledDate: {
-              gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+              gte: new Date(effectiveNow().getTime() - 30 * 24 * 60 * 60 * 1000),
             },
           },
           select: { id: true },
@@ -954,7 +955,7 @@ export class TournamentsService {
           where: {
             horseId,
             status: { not: 'DRAFT' },
-            createdAt: { gte: new Date(Date.now() - 90 * 86400000) },
+            createdAt: { gte: new Date(effectiveNow().getTime() - 90 * 86400000) },
           },
           select: {
             examinationDate: true,
@@ -982,7 +983,7 @@ export class TournamentsService {
               ? new Date(rx.startDate)
               : new Date(rec.examinationDate);
           const clearDate = new Date(rxDate.getTime() + wDays * 86400000);
-          if (clearDate > raceDate) {
+          if (clearDate > raceDate && (!isDemoClockActive() || clearDate > effectiveNow())) {
             const clearDateStr = clearDate.toISOString().slice(0, 10);
             withdrawalViolations.push(
               `${rx.medicationName || 'Thuốc điều trị'} (ngưng ${wDays} ngày, hết hạn ${clearDateStr})`,
@@ -1107,7 +1108,7 @@ export class TournamentsService {
       );
     }
 
-    if (new Date() > tournament.registrationDeadline) {
+    if (effectiveNow() > tournament.registrationDeadline) {
       throw apiError(HttpStatus.BAD_REQUEST, 'DEADLINE_EXPIRED', 'Đã quá hạn đăng ký giải này.');
     }
 
@@ -1471,7 +1472,7 @@ export class TournamentsService {
 
       const savedResults: any[] = [];
       if (dto.lockResults) {
-        const now = new Date();
+        const now = effectiveNow();
         // 1. Upsert results from dto
         for (const item of dto.results) {
           const calculatedSpeed =
@@ -1713,7 +1714,7 @@ export class TournamentsService {
       }
 
       const hasResults = tournament.registrations.some((r) => r.result !== null);
-      if (new Date() < new Date(tournament.raceDate) && !hasResults) {
+      if (effectiveNow() < new Date(tournament.raceDate) && !hasResults) {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'RACE_NOT_FINISHED',
@@ -1744,7 +1745,7 @@ export class TournamentsService {
       }
 
       // Xử lý trong transaction
-      const now = new Date();
+      const now = effectiveNow();
 
       // 1. Chốt giải đấu
       await tx.tournament.update({

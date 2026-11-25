@@ -46,11 +46,11 @@ export class DemoDataGuard implements CanActivate {
           select: { id: true, role: true, status: true },
         })
       : null;
-    if (!account || account.role !== 'CLUB_MANAGER' || account.status !== 'ACTIVE') {
+    if (!account || account.status !== 'ACTIVE') {
       throw apiError(
         HttpStatus.FORBIDDEN,
         'DEMO_FORBIDDEN',
-        'Chỉ Quản lý CLB đang hoạt động được tạo dữ liệu mẫu.',
+        'Chỉ tài khoản đang hoạt động ở môi trường dev local mới được dùng Agent Toolkit.',
       );
     }
     return true;
