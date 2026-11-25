@@ -7,7 +7,7 @@ export const MAX_CARE_STALLS = 6;
 
 export async function lockCareAssignments(tx: Prisma.TransactionClient) {
   // A single club-level lock keeps roster edits and care allocations consistent.
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(74203211)`;
+  await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(74203211)`;
 }
 
 export async function assertPrimaryGroom(
