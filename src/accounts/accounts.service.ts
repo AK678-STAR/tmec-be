@@ -482,11 +482,13 @@ export class AccountsService {
       this.prisma.workoutSession
         ? this.prisma.workoutSession.findMany({
             where: {
-              assignedStaffUserId: userId,
+              OR: [{ assignedStaffUserId: userId }, { trainingPlan: { trainerUserId: userId } }],
               scheduledDate: { gte: new Date() },
               status: WorkoutStatus.SCHEDULED,
             },
-            include: { horse: { select: { id: true, name: true } } },
+            include: { horse: { select: { id: true, name: true, horseCode: true } } },
+            orderBy: { scheduledDate: 'asc' },
+            take: 15,
           })
         : [],
       this.prisma.shiftRoster
@@ -496,10 +498,23 @@ export class AccountsService {
           })
         : [],
       this.prisma.trainingPlan
-        ? this.prisma.trainingPlan.findMany({
-            where: { trainerUserId: userId, status: PlanStatus.ACTIVE },
-            include: { horse: { select: { id: true, name: true } } },
-          })
+        ? this.prisma.trainingPlan
+            .findMany({
+              where: { trainerUserId: userId, status: PlanStatus.ACTIVE },
+              include: {
+                horse: { select: { id: true, name: true, horseCode: true } },
+              },
+            })
+            .then((items) =>
+              items.map((p) => ({
+                id: p.id,
+                planCode: p.planCode,
+                phaseName: p.phaseName ?? 'Đang thực hiện',
+                startDate: p.startDate,
+                endDate: p.endDate,
+                horse: p.horse,
+              })),
+            )
         : [],
     ]);
 

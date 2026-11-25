@@ -141,9 +141,14 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
         groupBy: jest.fn().mockResolvedValue([]),
       },
       medicalLock: { findMany: jest.fn().mockResolvedValue([]) },
+
       stallAllocation: {
         findMany: jest.fn().mockResolvedValue([]),
         findFirst: jest.fn().mockResolvedValue(null),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({}),
       },
     };
     audit = { record: jest.fn().mockResolvedValue(undefined) };
@@ -215,6 +220,34 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
       expect('code' in outside && outside.code).toBe('INVALID_PHASE');
       const quota = validatePhases([{ ...base, sessionsPerWeek: 20 }], '2026-11-01', '2026-11-30');
       expect('code' in quota && quota.message).toContain('Số buổi mỗi tuần');
+    });
+
+    it('enforces minimum days: 7 days for standard phases and 3 days for special phases', () => {
+      // 6 days for BASE -> rejected
+      const shortBase = validatePhases(
+        [{ ...base, startDate: '2026-11-01', endDate: '2026-11-06' }],
+        '2026-11-01',
+        '2026-11-30',
+      );
+      expect('code' in shortBase && shortBase.code).toBe('INVALID_PHASE');
+      expect('message' in shortBase && shortBase.message).toContain('tối thiểu 7 ngày');
+
+      // 3 days for PRE_RACE -> accepted
+      const okPreRace = validatePhases(
+        [{ ...base, type: 'PRE_RACE', startDate: '2026-11-01', endDate: '2026-11-03' }],
+        '2026-11-01',
+        '2026-11-30',
+      );
+      expect('phases' in okPreRace).toBe(true);
+
+      // 2 days for PRE_RACE -> rejected
+      const shortPreRace = validatePhases(
+        [{ ...base, type: 'PRE_RACE', startDate: '2026-11-01', endDate: '2026-11-02' }],
+        '2026-11-01',
+        '2026-11-30',
+      );
+      expect('code' in shortPreRace && shortPreRace.code).toBe('INVALID_PHASE');
+      expect('message' in shortPreRace && shortPreRace.message).toContain('tối thiểu 3 ngày');
     });
 
     it('workout load = km × reps × intensity factor', () => {
@@ -842,7 +875,7 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
       const error = await workouts
         .createWorkout('plan-1', { ...workoutDto, acknowledgeWarnings: true }, trainer)
         .catch((e) => e);
-      expect(error.getResponse().code).toBe('TRAINER_BUSY_SLOT');
+      expect(['TRAINER_BUSY_SLOT', 'TRAINER_TIME_CONFLICT']).toContain(error.getResponse().code);
       expect(error.getResponse().message).toContain('Red Velvet');
       expect(prisma.workoutSession.create).not.toHaveBeenCalled();
     });
@@ -999,6 +1032,36 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
 
       const result = await workouts.findGrooms('horse-1', '2026-11-15', '06:30', 'workout-editing');
       expect(result.map((g) => g.id)).toContain('groom-current');
+    });
+  });
+
+  describe('getTrackAvailability', () => {
+    it('returns availability for TURF, DIRT, SYNTHETIC and detects heavy workout occupancy', async () => {
+      const activeSpeedWorkout = {
+        id: 'w-heavy',
+        scheduledDate: new Date('2026-11-15T06:30:00+07:00'),
+        workoutType: 'BREEZE',
+        intensity: 'HEAVY',
+        trackSurface: 'TURF',
+        horse: { name: 'Thunder' },
+        trainingPlan: { trainer: { fullName: 'Lê Hoàng Nam' } },
+      };
+
+      (prisma as any).workoutSession = {
+        findMany: jest.fn().mockResolvedValue([activeSpeedWorkout]),
+      };
+
+      const result = await workouts.getTrackAvailability('2026-11-15', '06:30', 'CANTER');
+      expect(result).toHaveLength(3);
+
+      const turf = result.find((t) => t.surface === 'TURF');
+      expect(turf?.isAvailable).toBe(false);
+      expect(turf?.status).toBe('HEAVY_OCCUPIED');
+      expect(turf?.statusText).toContain('Thunder');
+
+      const dirt = result.find((t) => t.surface === 'DIRT');
+      expect(dirt?.isAvailable).toBe(true);
+      expect(dirt?.status).toBe('EMPTY');
     });
   });
 

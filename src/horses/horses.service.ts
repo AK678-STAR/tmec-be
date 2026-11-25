@@ -839,15 +839,19 @@ export class HorsesService {
       where.gender = { equals: gender, mode: 'insensitive' };
     }
 
+    // Sắp xếp
+    const isReadinessSort = !sortBy || sortBy === 'readiness' || sortBy === 'name';
     let orderBy: Prisma.HorseOrderByWithRelationInput = { name: sortOrder };
-    if (sortBy === 'horseCode') {
-      orderBy = { horseCode: sortOrder };
-    } else if (sortBy === 'status') {
-      orderBy = { status: sortOrder };
-    } else if (sortBy === 'dob') {
-      orderBy = { dob: sortOrder };
-    } else if (sortBy === 'createdAt') {
-      orderBy = { createdAt: sortOrder };
+    if (!isReadinessSort) {
+      if (sortBy === 'horseCode') {
+        orderBy = { horseCode: sortOrder };
+      } else if (sortBy === 'status') {
+        orderBy = { status: sortOrder };
+      } else if (sortBy === 'dob') {
+        orderBy = { dob: sortOrder };
+      } else if (sortBy === 'createdAt') {
+        orderBy = { createdAt: sortOrder };
+      }
     }
 
     const skip = (page - 1) * limit;
@@ -885,6 +889,31 @@ export class HorsesService {
     ]);
 
     const items = horses.map((h) => this.applyRolePolicy(h, user));
+
+    // Bậc thang 6 cấp độ ưu tiên sẵn sàng thi đấu
+    if (isReadinessSort) {
+      const horseReadinessRank = (h: {
+        status: string;
+        isMedicalLocked?: boolean;
+        isDebtImpounded?: boolean;
+      }): number => {
+        if (h.isDebtImpounded || h.status === 'RETIRED') return 6;
+        if (h.isMedicalLocked || h.status === 'INJURED' || h.status === 'ISOLATED') return 5;
+        if (h.status === 'UNDER_OBSERVATION') return 4;
+        if (h.status === 'ACTIVE') return 1;
+        if (h.status === 'IN_TRAINING') return 2;
+        if (h.status === 'RESTING') return 3;
+        return 3;
+      };
+      items.sort((a, b) => {
+        const diff =
+          sortOrder === 'desc'
+            ? horseReadinessRank(b) - horseReadinessRank(a)
+            : horseReadinessRank(a) - horseReadinessRank(b);
+        if (diff !== 0) return diff;
+        return a.name.localeCompare(b.name, 'vi');
+      });
+    }
 
     return {
       items,

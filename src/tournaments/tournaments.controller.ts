@@ -121,8 +121,8 @@ export class TournamentsController {
   }
 
   @Post(':id/registrations')
-  @Roles(UserRole.HEAD_TRAINER, UserRole.CLUB_MANAGER, UserRole.HORSE_OWNER)
-  @ApiOperation({ summary: 'Đăng ký ngựa tham gia giải đua (Trainer / CM / Owner)' })
+  @Roles(UserRole.HEAD_TRAINER, UserRole.CLUB_MANAGER)
+  @ApiOperation({ summary: 'Đăng ký ngựa tham gia giải đua (Trainer / CM)' })
   async registerHorse(
     @Param('id') id: string,
     @Body() dto: RegisterHorseDto,
