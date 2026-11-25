@@ -1,3 +1,11 @@
+import {
+  assertPrimaryGroom,
+  assertReceivingGroom,
+  lockCareAssignments,
+  transferPendingCare,
+  MAX_CARE_STALLS,
+} from '../stalls/groom-care.rules';
+import { onDutyGrooms, rosterDay } from '../shift-rosters/groom-zones';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import * as crypto from 'crypto';
 import {
@@ -20,13 +28,13 @@ import { QueryHorseDto } from './dto/query-horse.dto';
 import { AssignHorseTrainerDto, HandoverAction, RespondHandoverDto } from './dto/handover.dto';
 import { MAX_HORSES_PER_TRAINER } from '../training/training-rules';
 import { PrismaService } from '../prisma/prisma.service';
-import { groomZoneIds, horsesInZones } from '../shift-rosters/groom-zones';
 import { AuditService } from '../audit/audit.service';
 import { CounterService } from '../audit/counter.service';
 import { HorseCatalogsService } from '../horse-catalogs/horse-catalogs.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { BusinessMailService } from '../business-mail/business-mail.service';
 import {
+  ApproveAdmissionDto,
   CancelAdmissionDto,
   InspectAdmissionDto,
   QueryAdmissionDto,
@@ -47,7 +55,14 @@ import {
 } from './admission-rules';
 import { assertStatusTransition } from './horse-rules';
 import {
+  assertAdmissionCapacity,
+  availableAdmissionStalls,
+  lockAdmissionStall,
+} from './admission-capacity';
+import { assertStaffAvailable, workInterval } from './staff-work.rules';
+import {
   admissionAppointmentScheduled,
+  admissionCapacityDeferred,
   admissionApproved,
   admissionRejected,
   admissionRequestReceived,
@@ -133,6 +148,158 @@ export class HorsesService {
       'ADMISSION_CODE_EXHAUSTED',
       'Không thể sinh mã tiếp nhận duy nhất sau nhiều lần thử, vui lòng thử lại.',
     );
+  }
+
+  async admissionPlacement(stallId?: string, allocationId?: string) {
+    const stalls = await this.prisma.stall.findMany({
+      where: { ...availableAdmissionStalls, zoneId: { not: null } },
+      include: { zoneRef: { select: { name: true } } },
+      orderBy: { code: 'asc' },
+    });
+    const target = stalls.find((s) => s.id === stallId);
+    if (!target?.zoneId) return { stalls, grooms: [], receivingGrooms: [] };
+    const users = await this.prisma.user.findMany({
+      where: { role: 'GROOM', status: 'ACTIVE' },
+      select: { id: true, fullName: true },
+      orderBy: { fullName: 'asc' },
+    });
+    const allocations = await this.prisma.stallAllocation.findMany({
+      where: { isActive: true, assignedGroomUserId: { not: null } },
+      include: { stall: { select: { zoneId: true } } },
+    });
+    const grooms = users.map((g) => {
+      const own = allocations.filter(
+        (a) => a.assignedGroomUserId === g.id && a.id !== allocationId,
+      );
+      return {
+        ...g,
+        count: own.length,
+        max: MAX_CARE_STALLS,
+        eligible:
+          own.length < MAX_CARE_STALLS && own.every((a) => a.stall.zoneId === target.zoneId),
+      };
+    });
+    const receivingGrooms: Array<{ id: string; fullName: string }> = [];
+    for (const roster of await onDutyGrooms(this.prisma, target.zoneId)) {
+      if (!roster.dutyTypes.includes('HORSE_CARE')) continue;
+      const tasks = await this.prisma.dailyCareTask.findMany({
+        where: {
+          date: roster.date,
+          shiftId: roster.shiftId,
+          assignedGroomUserId: roster.groomUserId,
+          cancelledAt: null,
+        },
+        select: { horseId: true },
+        distinct: ['horseId'],
+      });
+      const excluded = allocationId
+        ? allocations.find((a) => a.id === allocationId)?.horseId
+        : undefined;
+      if (
+        new Set(tasks.filter((t) => t.horseId !== excluded).map((t) => t.horseId)).size <
+        MAX_CARE_STALLS
+      )
+        receivingGrooms.push({ id: roster.groomUserId, fullName: roster.groom.fullName });
+    }
+    return { stalls, grooms, receivingGrooms };
+  }
+
+  async admissionCapacity() {
+    const available = await this.prisma.stall.count({ where: availableAdmissionStalls });
+    return { available };
+  }
+
+  async deferAdmissionForCapacity(admissionId: string, user: CurrentUserPayload) {
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "HorseAdmissionRecord" WHERE "id" = ${admissionId} FOR UPDATE`;
+      const record = await tx.horseAdmissionRecord.findUnique({
+        where: { id: admissionId },
+        include: { horse: true, owner: { select: USER_SAFE_SELECT } },
+      });
+      if (!record)
+        throw apiError(
+          HttpStatus.NOT_FOUND,
+          'ADMISSION_NOT_FOUND',
+          'Không tìm thấy hồ sơ tiếp nhận.',
+        );
+      if (!['PENDING_VERIFICATION', 'APPOINTED'].includes(record.status)) {
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'ADMISSION_NOT_DEFERRABLE',
+          'Chỉ hoãn được hồ sơ chưa bắt đầu thẩm định.',
+        );
+      }
+      if (record.capacityDeferredAt) return { record, changed: false };
+      if (await tx.stall.count({ where: availableAdmissionStalls })) {
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'ADMISSION_HAS_CAPACITY',
+          'CLB vẫn còn chuồng trống. Vui lòng kiểm tra lại trước khi hoãn.',
+        );
+      }
+      const deferredAt = new Date();
+      await tx.horseAdmissionRecord.update({
+        where: { id: admissionId },
+        data: {
+          status: 'PENDING_VERIFICATION',
+          appointmentDate: null,
+          appointmentEndDate: null,
+          managerUserId: null,
+          veterinarianUserId: null,
+          capacityDeferredAt: deferredAt,
+        },
+      });
+      await tx.admissionHistoryLog.create({
+        data: {
+          admissionId,
+          fromStatus: record.status,
+          toStatus: 'PENDING_VERIFICATION',
+          actorUserId: user.userId,
+          actorName: user.fullName || user.email,
+          note: 'Hoãn thẩm định vì hết chuồng; giữ hồ sơ để liên hệ hẹn lại.',
+        },
+      });
+      await this.auditService.record(
+        { id: user.userId, name: user.fullName || user.email },
+        'ADMISSION_CAPACITY_DEFERRED',
+        'Hoãn thẩm định vì hết chuồng',
+        admissionId,
+        {
+          entityName: 'HorseAdmissionRecord',
+          oldValues: { appointmentDate: record.appointmentDate },
+          newValues: { capacityDeferredAt: deferredAt },
+        },
+        tx,
+      );
+      return { record, changed: true };
+    });
+    if (result.changed)
+      await this.safeSendMail({
+        eventCode: 'ADMISSION_CAPACITY_DEFERRED',
+        recipients: [
+          {
+            userId: result.record.ownerId,
+            body: {
+              ...admissionCapacityDeferred(result.record, result.record.horse, result.record.owner),
+              refId: admissionId,
+              milestone: `capacity-${result.record.appointmentDate?.getTime() ?? result.record.createdAt.getTime()}`,
+            },
+          },
+        ],
+      });
+    if (result.changed)
+      await this.notifications.notifyUsers(
+        [result.record.managerUserId, result.record.veterinarianUserId],
+        {
+          type: 'ADMISSION_CAPACITY_DEFERRED',
+          category: 'SYSTEM',
+          title: 'Hoãn lịch thẩm định vì hết chuồng',
+          message: `Hồ sơ ${result.record.admissionCode} được giữ lại để hẹn mới. Lịch hẹn cũ không còn hiệu lực.`,
+          link: '/staff/schedule',
+          dedupeKey: `admission-capacity:${result.record.id}:${result.record.appointmentDate?.getTime() ?? result.record.createdAt.getTime()}`,
+        },
+      );
+    return { deferred: true, notified: result.changed };
   }
 
   /**
@@ -792,24 +959,40 @@ export class HorsesService {
     } = query;
 
     const where: Prisma.HorseWhereInput = { deletedAt: null };
+    const andFilters: Prisma.HorseWhereInput[] = [];
 
     if (user.role === UserRole.HORSE_OWNER) {
       where.ownerId = user.userId;
     } else if (user.role === UserRole.GROOM) {
-      Object.assign(where, horsesInZones(await groomZoneIds(this.prisma, user.userId)));
+      andFilters.push({
+        OR: [
+          { stallAllocations: { some: { isActive: true, assignedGroomUserId: user.userId } } },
+          {
+            dailyCareTasks: {
+              some: { date: rosterDay(), assignedGroomUserId: user.userId, cancelledAt: null },
+            },
+          },
+        ],
+      });
     } else if (user.role === UserRole.HEAD_TRAINER) {
-      where.AND = [trainerHorseScope(user.userId, query.assignable === 'true')];
+      andFilters.push(trainerHorseScope(user.userId, query.assignable === 'true'));
     }
 
     if (search && search.trim()) {
       const q = search.trim();
-      where.OR = [
-        { name: { contains: q, mode: 'insensitive' } },
-        { horseCode: { contains: q, mode: 'insensitive' } },
-        { microchip: { contains: q, mode: 'insensitive' } },
-        { microchipRfid: { contains: q, mode: 'insensitive' } },
-        { breed: { contains: q, mode: 'insensitive' } },
-      ];
+      andFilters.push({
+        OR: [
+          { name: { contains: q, mode: 'insensitive' } },
+          { horseCode: { contains: q, mode: 'insensitive' } },
+          { microchip: { contains: q, mode: 'insensitive' } },
+          { microchipRfid: { contains: q, mode: 'insensitive' } },
+          { breed: { contains: q, mode: 'insensitive' } },
+        ],
+      });
+    }
+
+    if (andFilters.length > 0) {
+      where.AND = andFilters;
     }
 
     if (status && status !== 'ALL') {
@@ -989,10 +1172,19 @@ export class HorsesService {
 
     if (user.role === UserRole.GROOM) {
       const allocations = (horse as any).stallAllocations || [];
-      const zones = await groomZoneIds(this.prisma, user.userId);
-      const isAssigned = allocations.some(
-        (a: any) => a.isActive && zones.includes(a.stall?.zoneId),
+      const isPrimary = allocations.some(
+        (a: any) => a.isActive && a.assignedGroomUserId === user.userId,
       );
+      const isAssigned =
+        isPrimary ||
+        !!(await this.prisma.dailyCareTask.findFirst({
+          where: {
+            horseId: id,
+            date: rosterDay(),
+            assignedGroomUserId: user.userId,
+            cancelledAt: null,
+          },
+        }));
       if (!isAssigned) {
         throw apiError(
           HttpStatus.NOT_FOUND,
@@ -1013,12 +1205,13 @@ export class HorsesService {
    * 1. GET /horses/admissions: Tra cứu danh sách hồ sơ tiếp nhận (Staff-only).
    * Hỗ trợ tìm kiếm, lọc trạng thái, lọc nhanh recent7Days=true, và phân trang.
    */
-  async listAdmissions(query: QueryAdmissionDto) {
+  async listAdmissions(query: QueryAdmissionDto, user: CurrentUserPayload) {
     const page = Math.max(1, Number(query.page) || 1);
     const pageSize = Math.min(100, Math.max(1, Number(query.pageSize) || 10));
     const skip = (page - 1) * pageSize;
 
     const where: Prisma.HorseAdmissionRecordWhereInput = {};
+    if (user.role === UserRole.VETERINARIAN) where.veterinarianUserId = user.userId;
 
     if (query.recent7Days) {
       const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -1085,10 +1278,11 @@ export class HorsesService {
   /**
    * 2. GET /horses/admissions/:id/history: Xem dòng thời gian lịch sử các bước của hồ sơ tiếp nhận.
    */
-  async getAdmissionHistory(admissionId: string) {
+  async getAdmissionHistory(admissionId: string, user: CurrentUserPayload) {
     const admission = await this.prisma.horseAdmissionRecord.findUnique({
       where: { id: admissionId },
       include: {
+        healthReviews: { orderBy: { createdAt: 'desc' } },
         horse: {
           select: { id: true, name: true, horseCode: true, microchip: true, status: true },
         },
@@ -1098,7 +1292,10 @@ export class HorsesService {
       },
     });
 
-    if (!admission) {
+    if (
+      !admission ||
+      (user.role === UserRole.VETERINARIAN && admission.veterinarianUserId !== user.userId)
+    ) {
       throw apiError(
         HttpStatus.NOT_FOUND,
         'ADMISSION_NOT_FOUND',
@@ -1126,6 +1323,7 @@ export class HorsesService {
     dto: ScheduleAdmissionDto,
     user: CurrentUserPayload,
   ) {
+    const previousParticipants: Array<string | null> = [];
     const appointmentDate = new Date(dto.appointmentDate);
     if (isNaN(appointmentDate.getTime())) {
       throw apiError(HttpStatus.BAD_REQUEST, 'INVALID_DATE', 'Thời gian hẹn không hợp lệ.');
@@ -1161,12 +1359,58 @@ export class HorsesService {
       }
 
       assertValidScheduleTransition(record.status);
+      previousParticipants.push(record.managerUserId, record.veterinarianUserId);
+
+      const managerUserId = dto.managerUserId ?? user.userId;
+      const veterinarianUserId = dto.veterinarianUserId ?? record.veterinarianUserId;
+      if (!veterinarianUserId) {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'ADMISSION_VET_REQUIRED',
+          'Vui lòng chọn bác sĩ cùng tham gia thẩm định.',
+        );
+      }
+      const { startsAt, endsAt } = workInterval(
+        appointmentDate,
+        dto.appointmentEndDate ?? new Date(appointmentDate.getTime() + 3600000),
+      );
+      if (startsAt <= new Date()) {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'APPOINTMENT_IN_PAST',
+          'Lịch hẹn phải ở thời điểm trong tương lai.',
+        );
+      }
+      const participants = await tx.user.findMany({
+        where: {
+          id: { in: [managerUserId, veterinarianUserId] },
+          status: UserStatus.ACTIVE,
+        },
+        select: { id: true, role: true },
+      });
+      if (
+        !participants.some((p) => p.id === managerUserId && p.role === Role.CLUB_MANAGER) ||
+        !participants.some((p) => p.id === veterinarianUserId && p.role === Role.VETERINARIAN)
+      ) {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'INVALID_ADMISSION_PARTICIPANTS',
+          'Quản lý và bác sĩ phải là tài khoản đang hoạt động, đúng vai trò.',
+        );
+      }
+      await assertStaffAvailable(tx, [managerUserId, veterinarianUserId], startsAt, endsAt, {
+        admissionId,
+      });
 
       const res = await tx.horseAdmissionRecord.update({
         where: { id: admissionId },
         data: {
           status: AdmissionStatus.APPOINTED,
           appointmentDate,
+          appointmentEndDate: endsAt,
+          managerUserId,
+          veterinarianUserId,
+          capacityDeferredAt: null,
           appointmentNotes: dto.appointmentNotes != null ? dto.appointmentNotes.trim() : null,
         },
         include: {
@@ -1224,6 +1468,34 @@ export class HorsesService {
     });
 
     // Gửi Email 1 sau transaction; phân biệt phiên bản lịch hẹn bằng timestamp milestone
+    const removedParticipants = previousParticipants.filter(
+      (id) => id && id !== updated.managerUserId && id !== updated.veterinarianUserId,
+    );
+    if (removedParticipants.length)
+      await this.notifications.notifyUsers(removedParticipants, {
+        type: 'ADMISSION_APPOINTMENT_SCHEDULED',
+        category: 'SYSTEM',
+        title: 'Lịch thẩm định chung',
+        message: `Lịch thẩm định ${updated.horse.name} (${updated.admissionCode}) đã được cập nhật. Vui lòng kiểm tra thời gian trên lịch công việc.`,
+        link: '/staff/schedule',
+        dedupeKey: `admission-schedule:${updated.id}:${updated.updatedAt?.getTime() ?? appointmentDate.getTime()}`,
+      });
+    await this.notifications.notifyUsers([updated.managerUserId], {
+      type: 'ADMISSION_APPOINTMENT_ASSIGNED',
+      category: 'SYSTEM',
+      title: 'Lịch thẩm định được phân công',
+      message: `Bạn phụ trách thẩm định ${updated.horse.name} (${updated.admissionCode}).`,
+      link: `/horses/admissions?inspection=${updated.id}`,
+      dedupeKey: `admission-manager:${updated.id}:${updated.updatedAt?.getTime() ?? appointmentDate.getTime()}`,
+    });
+    await this.notifications.notifyUsers([updated.veterinarianUserId], {
+      type: 'ADMISSION_APPOINTMENT_ASSIGNED',
+      category: 'SYSTEM',
+      title: 'Thẩm định sức khỏe được phân công',
+      message: `Quản lý đã phân công bạn khám thẩm định ${updated.horse.name} (${updated.admissionCode}).`,
+      link: `/medical/admissions?inspection=${updated.id}`,
+      dedupeKey: `admission-vet:${updated.id}:${updated.updatedAt?.getTime() ?? appointmentDate.getTime()}`,
+    });
     await this.safeSendMail({
       eventCode: 'ADMISSION_APPOINTMENT_SCHEDULED',
       recipients: [
@@ -1245,7 +1517,12 @@ export class HorsesService {
    * 4. PATCH /horses/admissions/:id/inspect: Cập nhật kết quả quét chip, giấy tờ pháp lý hoặc khám thú y.
    * Lock order: Horse -> HorseAdmissionRecord. Chặn field spoofing; tính toán microchipVerified server-side.
    */
-  async inspectAdmission(admissionId: string, dto: InspectAdmissionDto, user: CurrentUserPayload) {
+  async inspectAdmission(
+    admissionId: string,
+    dto: InspectAdmissionDto,
+    user: CurrentUserPayload,
+    reviewReason?: string,
+  ) {
     assertInspectFieldRoles(user.role, dto);
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -1277,6 +1554,15 @@ export class HorsesService {
       }
 
       assertValidInspectTransition(record.status);
+
+      await assertAdmissionCapacity(tx);
+      if (user.role === UserRole.VETERINARIAN && record.veterinarianUserId !== user.userId) {
+        throw apiError(
+          HttpStatus.FORBIDDEN,
+          'ADMISSION_VET_MISMATCH',
+          'Hồ sơ này đã được phân công cho bác sĩ khác.',
+        );
+      }
 
       const updateData: Prisma.HorseAdmissionRecordUpdateInput = {};
       const oldSnap: Record<string, any> = {};
@@ -1314,6 +1600,43 @@ export class HorsesService {
       }
 
       if (user.role === UserRole.VETERINARIAN) {
+        if (record.healthFinalizedAt && !reviewReason)
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'ADMISSION_HEALTH_FINALIZED',
+            'Kết luận đã chốt. Chỉ được ghi nhận lượt đánh giá bổ sung, không sửa bản cũ.',
+          );
+        if (dto.isHealthEligible !== undefined && !dto.finalizeHealth)
+          throw apiError(
+            HttpStatus.BAD_REQUEST,
+            'HEALTH_CONFIRMATION_REQUIRED',
+            'Vui lòng xác nhận chốt kết luận sức khỏe.',
+          );
+        if (dto.finalizeHealth) {
+          if (
+            typeof dto.isHealthEligible !== 'boolean' ||
+            !dto.healthCheckNotes ||
+            dto.healthCheckNotes.trim().length < 2
+          )
+            throw apiError(
+              HttpStatus.BAD_REQUEST,
+              'HEALTH_CONCLUSION_REQUIRED',
+              'Chọn kết luận và nhập ghi chú khám trước khi chốt.',
+            );
+          updateData.healthFinalizedAt = new Date();
+          await tx.admissionHealthReview.create({
+            data: {
+              admissionId,
+              veterinarianUserId: user.userId,
+              veterinarianName: user.fullName || user.email,
+              isHealthEligible: dto.isHealthEligible,
+              notes: dto.healthCheckNotes.trim(),
+              reason: reviewReason?.trim() || null,
+            },
+          });
+          newSnap.healthFinalizedAt = updateData.healthFinalizedAt;
+          if (reviewReason) newSnap.reviewReason = reviewReason;
+        }
         if (dto.isHealthEligible !== undefined) {
           updateData.isHealthEligible = dto.isHealthEligible;
           oldSnap.isHealthEligible = record.isHealthEligible;
@@ -1339,6 +1662,7 @@ export class HorsesService {
         where: { id: admissionId },
         data: updateData,
         include: {
+          healthReviews: { orderBy: { createdAt: 'desc' } },
           horse: {
             select: {
               id: true,
@@ -1416,11 +1740,23 @@ export class HorsesService {
 
   /**
    * 5. POST /horses/admissions/:id/approve: Quản lý CLB duyệt tiếp nhận ngựa vào CLB.
-   * Lock order: Horse -> HorseAdmissionRecord.
+   * Lock order: Stall -> Horse -> HorseAdmissionRecord, matching stall assignment.
    * Cập nhật atomic Horse.status = RESTING, Admission = APPROVED. Trả về snapshot horse mới nhất (RESTING).
    */
-  async approveAdmission(admissionId: string, user: CurrentUserPayload) {
+  async approveAdmission(
+    admissionId: string,
+    user: CurrentUserPayload,
+    placement?: ApproveAdmissionDto,
+  ) {
     const updated = await this.prisma.$transaction(async (tx) => {
+      if (!placement)
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'ADMISSION_PLACEMENT_REQUIRED',
+          'Chọn ô chuồng, Groom chính và người đang trực nhận bàn giao.',
+        );
+      await lockCareAssignments(tx);
+      const stall = await lockAdmissionStall(tx, placement.stallId);
       const pre = await tx.horseAdmissionRecord.findUnique({
         where: { id: admissionId },
         select: { id: true, horseId: true },
@@ -1468,8 +1804,70 @@ export class HorsesService {
         isAdmissionProcess: true,
       });
 
+      if (!record.healthFinalizedAt)
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'HEALTH_NOT_FINALIZED',
+          'Bác sĩ chưa chốt kết luận sức khỏe.',
+        );
+      const target = await tx.stall.findUniqueOrThrow({ where: { id: stall.id } });
+      await assertPrimaryGroom(tx, target.zoneId, placement.assignedGroomUserId);
+      const receiving = await assertReceivingGroom(
+        tx,
+        target.zoneId!,
+        placement.receivingGroomUserId,
+        record.horseId,
+      );
       const admittedAt = new Date();
 
+      if (
+        await tx.stallAllocation.findFirst({ where: { horseId: record.horseId, isActive: true } })
+      ) {
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'HORSE_HAS_STALL',
+          'Ngựa đã được bố trí ô chuồng. Vui lòng tải lại hồ sơ.',
+        );
+      }
+      await tx.stallAllocation.create({
+        data: {
+          stallId: stall.id,
+          horseId: record.horseId,
+          isActive: true,
+          assignedGroomUserId: placement.assignedGroomUserId,
+          startDate: admittedAt,
+        },
+      });
+      await tx.stall.update({ where: { id: stall.id }, data: { status: 'OCCUPIED' } });
+
+      await transferPendingCare(
+        tx,
+        record.horseId,
+        target.zoneId!,
+        target.id,
+        placement.receivingGroomUserId,
+        receiving.shiftId,
+        receiving.date,
+      );
+      await tx.dailyCareTask.create({
+        data: {
+          taskCode: `STALL-HANDOVER-${record.id}`,
+          horseId: record.horseId,
+          date: receiving.date,
+          stallZoneId: target.zoneId,
+          stallId: target.id,
+          shiftId: receiving.shiftId,
+          assignedGroomUserId: placement.receivingGroomUserId,
+          taskType: 'OTHER',
+          title: 'Nhận bàn giao ngựa mới tiếp nhận',
+          description: 'Kiểm tra hồ sơ bàn giao, tình trạng ngựa và ô chuồng trước khi chăm sóc.',
+          scheduledTime: new Date().toLocaleTimeString('en-GB', {
+            timeZone: 'Asia/Ho_Chi_Minh',
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+        },
+      });
       await tx.horse.update({
         where: { id: record.horseId },
         data: { status: HorseStatus.RESTING },
@@ -1802,6 +2200,17 @@ export class HorsesService {
       return res;
     });
 
+    await this.notifications.notifyUsers(
+      [updated.managerUserId, updated.veterinarianUserId, updated.ownerId],
+      {
+        type: 'ADMISSION_APPOINTMENT_CANCELLED',
+        category: 'SYSTEM',
+        title: 'Lịch tiếp nhận đã hủy',
+        message: `Hồ sơ ${updated.admissionCode} đã hủy. Lịch thẩm định liên quan không còn hiệu lực.`,
+        link: '/horses',
+        dedupeKey: `admission-cancelled:${updated.id}`,
+      },
+    );
     return updated;
   }
 

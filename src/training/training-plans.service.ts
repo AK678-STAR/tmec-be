@@ -3,6 +3,7 @@ import { lockWorkoutSchedule } from './workout-availability.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { HorseStatus, PlanStatus, Prisma, TrackSurface, WorkoutStatus } from '@prisma/client';
 import { apiError } from '../common/exceptions/api-error';
+import { effectiveNow } from '../common/utils/demo-clock';
 import { UserRole } from '../common/enums/role.enum';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { CreateTrainingPlanDto } from './dto/create-training-plan.dto';
@@ -181,7 +182,7 @@ export class TrainingPlansService {
 
   /** Giáo án chỉ được bắt đầu từ ngày mai (hôm nay tạo thì ngày mai mới áp dụng). */
   private assertStartsFromTomorrow(startDate: Date) {
-    if (startDate < addDays(startOfClubDay(new Date()), 1)) {
+    if (startDate < addDays(startOfClubDay(effectiveNow()), 1)) {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'START_DATE_TOO_EARLY',

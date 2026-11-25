@@ -42,6 +42,7 @@ export interface ScheduleRoster {
   startTime: string; // "05:00"
   endTime: string; // "13:00"
   isOvernight: boolean;
+  dutyTypes?: string[];
 }
 
 export const WORKOUT_PREP_PREFIX = 'WORKOUT-PREP-';
@@ -345,10 +346,16 @@ export function planDailyTasks(horses: ScheduleHorse[], rosters: ScheduleRoster[
     );
 
   const cursor = new Map<string, number>();
+  const careHorses = new Map<string, Set<string>>();
   return rows.map(({ horse, t, base }) => {
     const matchingRosters = rosters.filter((r) => {
       const start = Math.max(base, cursor.get(`${r.groomUserId}|${r.shiftId}`) ?? 0);
+      const lane = `${r.groomUserId}|${r.shiftId}`;
+      const owned = careHorses.get(lane);
+      const duty = t.taskType === DailyTaskType.CLEANING ? 'CLEANING' : 'HORSE_CARE';
       return (
+        (!r.dutyTypes || r.dutyTypes.includes(duty)) &&
+        (!owned || owned.has(horse.id) || owned.size < 6) &&
         r.zoneId === horse.zoneId &&
         shiftCovers(r, base) &&
         shiftCovers(r, start + t.minutes - 1) &&
@@ -365,6 +372,11 @@ export function planDailyTasks(horses: ScheduleHorse[], rosters: ScheduleRoster[
       }, undefined);
     const groom = roster?.groomUserId;
     const lane = groom ? `${groom}|${roster?.shiftId ?? 'none'}` : `horse|${horse.id}`;
+    if (groom) {
+      const owned = careHorses.get(lane) ?? new Set<string>();
+      owned.add(horse.id);
+      careHorses.set(lane, owned);
+    }
     const start = Math.max(base, cursor.get(lane) ?? 0);
     cursor.set(lane, start + t.minutes);
     return {

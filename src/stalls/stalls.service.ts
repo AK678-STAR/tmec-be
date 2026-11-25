@@ -1,3 +1,9 @@
+import {
+  assertPrimaryGroom,
+  assertReceivingGroom,
+  lockCareAssignments,
+  transferPendingCare,
+} from './groom-care.rules';
 import { stallMove } from '../business-mail/templates/health-templates';
 import { HttpStatus, Injectable, Optional } from '@nestjs/common';
 import { HorseStatus, Prisma, Role, StallStatus, UserStatus } from '@prisma/client';
@@ -16,10 +22,10 @@ import { CurrentUserPayload } from '../common/decorators/current-user.decorator'
 import { AuditService } from '../audit/audit.service';
 import { apiError } from '../common/exceptions/api-error';
 import { DailyTasksService } from '../daily-tasks/daily-tasks.service';
-import { shiftCovers, STALL_HANDOVER_PREFIX } from '../daily-tasks/daily-schedule';
+import { STALL_HANDOVER_PREFIX } from '../daily-tasks/daily-schedule';
 import { NotificationsService } from '../notifications/notifications.service';
 import { clubTime } from '../training/training-rules';
-import { groomZoneIds, rosterDay, zoneGroomIds } from '../shift-rosters/groom-zones';
+import { rosterDay, zoneGroomIds } from '../shift-rosters/groom-zones';
 import { assertTrainerZone, LIVE_TRAINER_PLAN_STATUSES } from '../training/trainer-zones';
 
 type Tx = Prisma.TransactionClient;
@@ -190,6 +196,7 @@ export class StallsService {
     if (user.role !== Role.CLUB_MANAGER)
       throw apiError(HttpStatus.FORBIDDEN, 'MANAGER_REQUIRED', 'Only Manager can assign care.');
     const result = await this.prisma.$transaction(async (tx) => {
+      await lockCareAssignments(tx);
       await tx.$queryRaw`SELECT "id" FROM "StallAllocation" WHERE "id" = ${allocationId} FOR UPDATE`;
       const row = await tx.stallAllocation.findUnique({
         where: { id: allocationId },
@@ -208,18 +215,6 @@ export class StallsService {
 
       const updated = await tx.stallAllocation.update({
         where: { id: allocationId },
-        data: { assignedGroomUserId: groomUserId },
-      });
-
-      // Đồng bộ các đầu việc chăm sóc chưa hoàn thành hôm nay của chiến mã sang Groom mới
-      await tx.dailyCareTask.updateMany({
-        where: {
-          horseId: row.horseId,
-          stallZoneId: row.stall.zoneId,
-          date: rosterDay(),
-          isCompleted: false,
-          OR: [{ taskCode: null }, { NOT: { taskCode: { startsWith: STALL_HANDOVER_PREFIX } } }],
-        },
         data: { assignedGroomUserId: groomUserId },
       });
 
@@ -270,6 +265,7 @@ export class StallsService {
     }
 
     const result = await this.prisma.$transaction(async (tx) => {
+      await lockCareAssignments(tx);
       const groom = await tx.user.findUnique({ where: { id: dto.groomUserId } });
       if (!groom || groom.role !== Role.GROOM || groom.status !== UserStatus.ACTIVE) {
         throw apiError(
@@ -403,6 +399,7 @@ export class StallsService {
     for (const s of orphans) byZone.set(s.zone, [...(byZone.get(s.zone) ?? []), s]);
 
     await this.prisma.$transaction(async (tx) => {
+      await lockCareAssignments(tx);
       for (const [name, stalls] of byZone) {
         const existing = await tx.stallZone.findFirst({
           where: { name: { equals: name, mode: 'insensitive' } },
@@ -480,6 +477,7 @@ export class StallsService {
       );
     }
     const updated = await this.prisma.$transaction(async (tx) => {
+      await lockCareAssignments(tx);
       const z = await tx.stallZone.update({
         where: { id },
         data: {
@@ -614,6 +612,7 @@ export class StallsService {
 
   async update(id: string, dto: UpdateStallDto, user: CurrentUserPayload) {
     return this.prisma.$transaction(async (tx) => {
+      await lockCareAssignments(tx);
       await tx.$queryRaw`SELECT "id" FROM "Stall" WHERE "id" = ${id} FOR UPDATE`;
       const stall = await this.findStallOrThrow(id, tx);
       if (dto.code && dto.code !== stall.code) await this.assertStallCodeFree(dto.code, tx);
@@ -727,60 +726,12 @@ export class StallsService {
     allocationIdToExclude?: string,
   ) {
     if (!groomId) return;
-    const groom = await tx.user.findUnique({ where: { id: groomId } });
-    if (!groom || groom.role !== Role.GROOM || groom.status !== UserStatus.ACTIVE) {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'INVALID_GROOM',
-        'Người được chọn phải là nhân viên chăm sóc đang hoạt động.',
-      );
-    }
-    if (zoneId && !(await groomZoneIds(tx, groomId)).includes(zoneId)) {
-      throw apiError(
-        HttpStatus.CONFLICT,
-        'GROOM_ZONE_MISMATCH',
-        'Nhân viên chăm sóc phải được phân ca hôm nay tại khu chuồng được chọn.',
-      );
-    }
-    // 1. Chặn gán xuyên phân khu: 1 Groom chỉ thuộc 1 phân khu Barn
-    if (zoneId) {
-      const otherZoneAlloc = await tx.stallAllocation.findFirst({
-        where: {
-          assignedGroomUserId: groomId,
-          isActive: true,
-          stall: { zoneId: { not: zoneId } },
-          ...(allocationIdToExclude ? { id: { not: allocationIdToExclude } } : {}),
-        },
-        include: { stall: { include: { zoneRef: true } } },
-      });
-      if (otherZoneAlloc) {
-        throw apiError(
-          HttpStatus.CONFLICT,
-          'GROOM_MULTI_ZONE_FORBIDDEN',
-          `Nhân viên ${groom.fullName} đang phụ trách tại ${otherZoneAlloc.stall.zoneRef?.name || otherZoneAlloc.stall.zone}. Mỗi Groom chỉ được phụ trách các ô chuồng trong cùng 1 phân khu.`,
-        );
-      }
-    }
-
-    // 2. Chặn cứng tối đa 6 ô chuồng / Groom (MAX_STALLS_PER_GROOM = 6)
-    const activeCount = await tx.stallAllocation.count({
-      where: {
-        assignedGroomUserId: groomId,
-        isActive: true,
-        ...(allocationIdToExclude ? { id: { not: allocationIdToExclude } } : {}),
-      },
-    });
-    if (activeCount >= MAX_STALLS_PER_GROOM) {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'GROOM_MAX_STALLS_EXCEEDED',
-        `Nhân viên ${groom.fullName} đã đạt định mức tối đa ${MAX_STALLS_PER_GROOM} ô chuồng (${activeCount}/${MAX_STALLS_PER_GROOM}). Không thể phân công thêm.`,
-      );
-    }
+    await assertPrimaryGroom(tx, zoneId, groomId, allocationIdToExclude);
   }
 
   async assignHorse(stallId: string, dto: AssignHorseDto, user: CurrentUserPayload) {
     const result = await this.prisma.$transaction(async (tx) => {
+      await lockCareAssignments(tx);
       // Khóa dòng ô và dòng ngựa: 2 người gán cùng lúc thì người sau chờ và thấy ô đã có ngựa.
       await tx.$queryRaw`SELECT "id" FROM "Stall" WHERE "id" = ${stallId} FOR UPDATE`;
       await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${dto.horseId} FOR UPDATE`;
@@ -798,6 +749,12 @@ export class StallsService {
       if (horse.status === HorseStatus.RETIRED) {
         throw apiError(HttpStatus.BAD_REQUEST, 'HORSE_RETIRED', 'Ngựa đã ngừng quản lý.');
       }
+      if (horse.status === HorseStatus.PENDING_ADMISSION)
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'HORSE_ADMISSION_REQUIRED',
+          'Ngựa chưa được duyệt tiếp nhận. Hãy bố trí ô chuồng và Groom tại hồ sơ thẩm định.',
+        );
       const current = horse.stallAllocations[0];
       if (current) {
         throw apiError(
@@ -848,6 +805,7 @@ export class StallsService {
 
   async transferHorse(allocationId: string, dto: TransferHorseDto, user: CurrentUserPayload) {
     const { handover, ...result } = await this.prisma.$transaction(async (tx) => {
+      await lockCareAssignments(tx);
       await tx.$queryRaw`SELECT "id" FROM "StallAllocation" WHERE "id" = ${allocationId} FOR UPDATE`;
       const old = await tx.stallAllocation.findUnique({
         where: { id: allocationId },
@@ -869,8 +827,14 @@ export class StallsService {
       }
       await tx.$queryRaw`SELECT "id" FROM "Stall" WHERE "id" = ${dto.newStallId} FOR UPDATE`;
       const target = await this.assertStallReady(tx, dto.newStallId);
-      await this.assertGroom(tx, target.zoneId, dto.assignedGroomUserId);
       const sameZone = target.zoneId === old.stall.zoneId;
+      const primaryId = dto.assignedGroomUserId ?? (sameZone ? old.assignedGroomUserId : null);
+      if (!primaryId || !dto.receivingGroomUserId)
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'GROOM_REQUIRED',
+          'Chọn Groom chính và người đang trực nhận bàn giao tại khu mới.',
+        );
       if (!sameZone) {
         await assertTrainerZone(
           tx,
@@ -879,6 +843,13 @@ export class StallsService {
           old.horse.trainingPlans.map((plan) => plan.trainerUserId),
         );
       }
+      await assertPrimaryGroom(tx, target.zoneId, primaryId, old.id);
+      const receiver = await assertReceivingGroom(
+        tx,
+        target.zoneId!,
+        dto.receivingGroomUserId,
+        old.horseId,
+      );
 
       const now = new Date();
       await tx.stallAllocation.update({
@@ -893,8 +864,7 @@ export class StallsService {
         data: {
           stallId: dto.newStallId,
           horseId: old.horseId,
-          assignedGroomUserId:
-            dto.assignedGroomUserId ?? (sameZone ? old.assignedGroomUserId : null),
+          assignedGroomUserId: primaryId,
           startDate: now,
           isActive: true,
         },
@@ -916,23 +886,18 @@ export class StallsService {
         },
         tx,
       );
-      const date = rosterDay(now);
+      const date = receiver.date;
       const { hour, minute } = clubTime(now);
       const time = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-      const rosters = old.stall.zoneId
-        ? await tx.shiftRoster.findMany({
-            where: {
-              date,
-              zoneId: old.stall.zoneId,
-              groom: { role: Role.GROOM, status: UserStatus.ACTIVE },
-              shift: { isActive: true },
-            },
-            include: { shift: true },
-            orderBy: [{ shiftId: 'asc' }, { groomUserId: 'asc' }],
-          })
-        : [];
-      const onDuty = rosters.filter((row) => shiftCovers(row.shift, hour * 60 + minute));
-      const roster = onDuty.find((row) => row.groomUserId === old.assignedGroomUserId) ?? onDuty[0];
+      await transferPendingCare(
+        tx,
+        old.horseId,
+        target.zoneId!,
+        target.id,
+        receiver.groomUserId,
+        receiver.shiftId,
+        receiver.date,
+      );
       const handover = await tx.dailyCareTask.create({
         data: {
           taskCode: STALL_HANDOVER_PREFIX + created.id,
@@ -947,10 +912,10 @@ export class StallsService {
           horseId: old.horseId,
           date,
           scheduledTime: time,
-          stallId: old.stallId,
-          stallZoneId: old.stall.zoneId,
-          shiftId: roster?.shiftId,
-          assignedGroomUserId: roster?.groomUserId,
+          stallId: target.id,
+          stallZoneId: target.zoneId,
+          shiftId: receiver.shiftId,
+          assignedGroomUserId: receiver.groomUserId,
         },
       });
       return {
@@ -1034,6 +999,7 @@ export class StallsService {
 
   async returnStall(allocationId: string, dto: ReturnStallDto, user: CurrentUserPayload) {
     const result = await this.prisma.$transaction(async (tx) => {
+      await lockCareAssignments(tx);
       await tx.$queryRaw`SELECT "id" FROM "StallAllocation" WHERE "id" = ${allocationId} FOR UPDATE`;
       const old = await tx.stallAllocation.findUnique({
         where: { id: allocationId },

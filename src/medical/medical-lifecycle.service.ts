@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
+import { generateMedicalLockCode } from './medical-locks.service';
 import { CreateMedicalLockDto } from './dto/medical-lock.dto';
 import {
   HorseStatus,
@@ -61,6 +61,7 @@ export class MedicalLifecycleService {
       veterinarian: { select: { id: true, fullName: true, email: true } },
       medicalRecord: { select: { id: true, examinationDate: true, clinicalDiagnosis: true } },
     };
+    const lockCode = bound ? bound.lockCode : await generateMedicalLockCode(tx);
     const lock = bound
       ? await tx.medicalLock.update({ where: { id: bound.id }, data, include })
       : await tx.medicalLock.create({
@@ -69,7 +70,7 @@ export class MedicalLifecycleService {
             ...lockIssuer('VET', actor.userId, actor.userId),
             horseId: horse.id,
             medicalRecordId: dto.medicalRecordId ?? null,
-            lockCode: `KH-${randomUUID()}`,
+            lockCode,
           },
           include,
         });
@@ -175,11 +176,12 @@ export class MedicalLifecycleService {
       ? horse.status
       : HorseStatus.UNDER_OBSERVATION;
     const now = new Date();
+    const lockCode = await generateMedicalLockCode(tx);
     const lock = await tx.medicalLock.create({
       data: {
         ...lockIssuer('INCIDENT_AUTO', actor.userId, undefined, incident.id),
         horseId: horse.id,
-        lockCode: `KH-AUTO-${incident.id}`,
+        lockCode,
         appliedMedicalStatus: status,
         lockReason: 'Bảo vệ tạm thời sau báo cáo nặng; chờ bác sĩ đánh giá.',
         unlockConditions: 'Bác sĩ xác nhận hồi phục trong bệnh án liên quan',

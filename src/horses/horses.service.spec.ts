@@ -23,6 +23,11 @@ describe('HorsesService', () => {
   let catalogs: { resolveName: jest.Mock };
   let businessMail: { emit: jest.Mock };
 
+  const placement = {
+    stallId: 'stall-1',
+    assignedGroomUserId: 'groom-1',
+    receivingGroomUserId: 'groom-1',
+  };
   const mockManager: CurrentUserPayload = {
     userId: 'manager-1',
     email: 'manager@gmail.com',
@@ -48,7 +53,7 @@ describe('HorsesService', () => {
     prisma = {
       // $transaction chạy callback với chính đối tượng giả; $queryRaw (FOR UPDATE) trả rỗng
       $transaction: jest.fn((fn: (tx: any) => unknown) => fn(prisma)),
-      $queryRaw: jest.fn().mockResolvedValue([]),
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 'stall-1', code: 'A01' }]),
       horse: {
         count: jest.fn().mockResolvedValue(0),
         findUnique: jest.fn(),
@@ -88,6 +93,28 @@ describe('HorsesService', () => {
           }),
         ),
       },
+      admissionHealthReview: { create: jest.fn().mockResolvedValue({}) },
+      dailyCareTask: {
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+      shiftRoster: {
+        findMany: jest.fn().mockImplementation(async () => {
+          const date = new Date(
+            new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10) + 'T00:00:00Z',
+          );
+          return [
+            {
+              date,
+              shiftId: 'shift',
+              groomUserId: 'groom-1',
+              dutyTypes: ['HORSE_CARE'],
+              shift: { startTime: '00:00', endTime: '00:00', isOvernight: true },
+            },
+          ];
+        }),
+      },
       admissionHistoryLog: {
         create: jest
           .fn()
@@ -97,6 +124,10 @@ describe('HorsesService', () => {
         findMany: jest.fn().mockResolvedValue([]),
       },
       user: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: 'manager-1', role: Role.CLUB_MANAGER },
+          { id: 'vet-1', role: Role.VETERINARIAN },
+        ]),
         findUnique: jest.fn().mockResolvedValue({
           id: 'owner-1',
           role: Role.HORSE_OWNER,
@@ -105,12 +136,18 @@ describe('HorsesService', () => {
         }),
       },
       stallAllocation: {
+        count: jest.fn().mockResolvedValue(0),
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'allocation-1' }),
         findMany: jest.fn().mockResolvedValue([]),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
+      staffWorkItem: { findFirst: jest.fn().mockResolvedValue(null) },
       stall: {
+        findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'stall-1', zoneId: 'zone-1' }),
+        count: jest.fn().mockResolvedValue(1),
         findUnique: jest.fn(),
-        update: jest.fn(),
+        update: jest.fn().mockResolvedValue({}),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       medicalLock: {
@@ -446,7 +483,9 @@ describe('HorsesService', () => {
         name: 'Thunderbolt',
         microchip: '123456789012345',
         microchipRfid: '123456789012345',
-        stallAllocations: [{ stall: { zoneId: 'zone-a' }, isActive: true }],
+        stallAllocations: [
+          { stall: { zoneId: 'zone-a' }, assignedGroomUserId: 'groom-1', isActive: true },
+        ],
       };
       prisma.horse.findUnique.mockResolvedValue(horse);
       prisma.shiftRoster = { findMany: jest.fn().mockResolvedValue([{ zoneId: 'zone-a' }]) };
@@ -454,6 +493,31 @@ describe('HorsesService', () => {
       const res = await service.findOne('h-1', mockGroom);
       expect(res.microchip).toBe('***********2345');
       expect(res.microchipRfid).toBe('***********2345');
+    });
+
+    it('does not expose an unassigned horse merely because the Groom is rostered in its zone', async () => {
+      prisma.horse.findUnique.mockResolvedValue({
+        id: 'h-1',
+        stallAllocations: [
+          { isActive: true, assignedGroomUserId: 'other', stall: { zoneId: 'zone-a' } },
+        ],
+      });
+      prisma.dailyCareTask.findFirst = jest.fn().mockResolvedValue(null);
+      await expect(service.findOne('h-1', mockGroom)).rejects.toMatchObject({
+        response: { code: 'HORSE_NOT_FOUND' },
+      });
+    });
+    it('allows a receiving Groom to view the horse assigned through the daily checklist', async () => {
+      prisma.horse.findUnique.mockResolvedValue({
+        id: 'h-1',
+        microchip: '123456789012345',
+        stallAllocations: [{ isActive: true, assignedGroomUserId: 'other' }],
+      });
+      prisma.dailyCareTask.findFirst = jest.fn().mockResolvedValue({ id: 'handover' });
+      await expect(service.findOne('h-1', mockGroom)).resolves.toMatchObject({
+        id: 'h-1',
+        microchip: '***********2345',
+      });
     });
 
     it('should hide stall information for HORSE_OWNER', async () => {
@@ -1002,6 +1066,32 @@ describe('HorsesService', () => {
         }),
       );
     });
+
+    it('should preserve GROOM assigned-only scope even when search query is provided', async () => {
+      prisma.horse.findMany.mockResolvedValue([]);
+      prisma.horse.count.mockResolvedValue(0);
+
+      await service.findAll({ search: 'Thunder' }, mockGroom);
+
+      const callWhere = prisma.horse.findMany.mock.calls[0][0].where;
+      expect(Array.isArray(callWhere.AND)).toBe(true);
+      expect(callWhere.AND).toHaveLength(2);
+      expect(callWhere.AND[0].OR).toEqual([
+        { stallAllocations: { some: { isActive: true, assignedGroomUserId: mockGroom.userId } } },
+        {
+          dailyCareTasks: {
+            some: {
+              date: expect.any(Date),
+              assignedGroomUserId: mockGroom.userId,
+              cancelledAt: null,
+            },
+          },
+        },
+      ]);
+      expect(callWhere.AND[1].OR).toEqual(
+        expect.arrayContaining([{ name: { contains: 'Thunder', mode: 'insensitive' } }]),
+      );
+    });
   });
 
   describe('findOne - ownership isolation', () => {
@@ -1364,11 +1454,20 @@ describe('HorsesService', () => {
 
         const res = await service.scheduleAdmission(
           'adm-10',
-          { appointmentDate, appointmentNotes: 'Cổng tiếp nhận A' },
+          { appointmentDate, veterinarianUserId: 'vet-1', appointmentNotes: 'Cổng tiếp nhận A' },
           mockManager,
         );
 
         expect(res.status).toBe(AdmissionStatus.APPOINTED);
+        const notificationService = (
+          service as unknown as { notifications: { notifyUsers: jest.Mock } }
+        ).notifications;
+        expect(notificationService.notifyUsers).toHaveBeenCalledWith(
+          ['vet-1'],
+          expect.objectContaining({
+            link: '/medical/admissions?inspection=adm-10',
+          }),
+        );
         expect(prisma.horseAdmissionRecord.update).toHaveBeenCalledWith(
           expect.objectContaining({
             data: expect.objectContaining({
@@ -1405,7 +1504,7 @@ describe('HorsesService', () => {
         await expect(
           service.scheduleAdmission(
             'adm-approved',
-            { appointmentDate: '2026-11-26T10:00:00Z' },
+            { appointmentDate: '2026-11-26T10:00:00Z', veterinarianUserId: 'vet-1' },
             mockManager,
           ),
         ).rejects.toMatchObject({
@@ -1431,7 +1530,7 @@ describe('HorsesService', () => {
         await expect(
           service.scheduleAdmission(
             'adm-rollback',
-            { appointmentDate: '2026-11-26T10:00:00Z' },
+            { appointmentDate: '2026-11-26T10:00:00Z', veterinarianUserId: 'vet-1' },
             mockManager,
           ),
         ).rejects.toThrow('Admission history log table write failure');
@@ -1583,6 +1682,76 @@ describe('HorsesService', () => {
       });
     });
 
+    describe('immutable medical conclusion', () => {
+      const vet = {
+        userId: 'vet-1',
+        email: 'vet@example.com',
+        fullName: 'Bác sĩ',
+        role: UserRole.VETERINARIAN,
+      };
+      const record = {
+        id: 'immutable',
+        horseId: 'horse',
+        status: AdmissionStatus.INSPECTION_IN_PROGRESS,
+        veterinarianUserId: 'vet-1',
+        horse: { id: 'horse', status: HorseStatus.PENDING_ADMISSION },
+        owner: { id: 'owner' },
+      };
+      it.each([true, false])('locks a finalized %s conclusion, including notes', async (result) => {
+        prisma.horseAdmissionRecord.findUnique.mockResolvedValue({
+          ...record,
+          isHealthEligible: result,
+          healthFinalizedAt: new Date(),
+        });
+        await expect(
+          service.inspectAdmission('immutable', { healthCheckNotes: 'Ghi đè kết quả' }, vet),
+        ).rejects.toMatchObject({ response: { code: 'ADMISSION_HEALTH_FINALIZED' } });
+        expect(prisma.horseAdmissionRecord.update).not.toHaveBeenCalled();
+      });
+      it('requires explicit confirmation and writes an immutable review snapshot', async () => {
+        prisma.horseAdmissionRecord.findUnique.mockResolvedValue(record);
+        await expect(
+          service.inspectAdmission(
+            'immutable',
+            { isHealthEligible: true, healthCheckNotes: 'Đã khám' },
+            vet,
+          ),
+        ).rejects.toMatchObject({ response: { code: 'HEALTH_CONFIRMATION_REQUIRED' } });
+        await service.inspectAdmission(
+          'immutable',
+          { isHealthEligible: false, healthCheckNotes: 'Cần cách ly', finalizeHealth: true },
+          vet,
+        );
+        expect(prisma.admissionHealthReview.create).toHaveBeenCalledWith({
+          data: expect.objectContaining({
+            admissionId: 'immutable',
+            isHealthEligible: false,
+            notes: 'Cần cách ly',
+            reason: null,
+          }),
+        });
+      });
+      it('records a new review with reason while keeping the previous review', async () => {
+        prisma.horseAdmissionRecord.findUnique.mockResolvedValue({
+          ...record,
+          isHealthEligible: false,
+          healthFinalizedAt: new Date(),
+        });
+        await service.inspectAdmission(
+          'immutable',
+          { isHealthEligible: true, healthCheckNotes: 'Đã hồi phục', finalizeHealth: true },
+          vet,
+          'Khám lại sau thời gian cách ly',
+        );
+        expect(prisma.admissionHealthReview.create).toHaveBeenCalledWith({
+          data: expect.objectContaining({
+            reason: 'Khám lại sau thời gian cách ly',
+            isHealthEligible: true,
+          }),
+        });
+      });
+    });
+
     describe('approveAdmission', () => {
       it('approves admission atomically, sets horse to RESTING and returns fresh resting status', async () => {
         const mockRecord = {
@@ -1594,6 +1763,7 @@ describe('HorsesService', () => {
           microchipVerified: true,
           legalVerified: true,
           isHealthEligible: true,
+          healthFinalizedAt: new Date(),
           declaredMicrochip: '985123456789012',
           scannedMicrochip: '985123456789012',
           horse: {
@@ -1612,7 +1782,12 @@ describe('HorsesService', () => {
           status: HorseStatus.RESTING,
         });
 
-        const res = await service.approveAdmission('adm-appr', mockManager);
+        prisma.user.findUnique.mockResolvedValue({
+          id: 'groom-1',
+          role: 'GROOM',
+          status: 'ACTIVE',
+        });
+        const res = await service.approveAdmission('adm-appr', mockManager, placement);
 
         expect(res.status).toBe(AdmissionStatus.APPROVED);
         expect(prisma.horse.update).toHaveBeenCalledWith(
@@ -1653,11 +1828,14 @@ describe('HorsesService', () => {
           microchipVerified: false, // CHƯA KHỚP
           legalVerified: true,
           isHealthEligible: true,
+          healthFinalizedAt: new Date(),
           horse: { id: 'h-31', status: HorseStatus.PENDING_ADMISSION, isMedicalLocked: false },
           owner: { id: 'o-1' },
         });
 
-        await expect(service.approveAdmission('adm-unmet', mockManager)).rejects.toMatchObject({
+        await expect(
+          service.approveAdmission('adm-unmet', mockManager, placement),
+        ).rejects.toMatchObject({
           status: HttpStatus.BAD_REQUEST,
           response: expect.objectContaining({ code: 'ADMISSION_CRITERIA_NOT_MET' }),
         });
@@ -1673,6 +1851,7 @@ describe('HorsesService', () => {
           microchipVerified: true,
           legalVerified: true,
           isHealthEligible: true,
+          healthFinalizedAt: new Date(),
           declaredMicrochip: '985123456789012',
           scannedMicrochip: '985123456789012',
           horse: {
@@ -1691,11 +1870,16 @@ describe('HorsesService', () => {
           status: HorseStatus.RESTING,
         });
 
-        await service.approveAdmission('adm-lock-order', mockManager);
+        prisma.user.findUnique.mockResolvedValue({
+          id: 'groom-1',
+          role: 'GROOM',
+          status: 'ACTIVE',
+        });
+        await service.approveAdmission('adm-lock-order', mockManager, placement);
 
         // Thứ tự khóa an toàn chống deadlock
-        expect(prisma.$queryRaw).toHaveBeenNthCalledWith(1, expect.anything(), 'h-31');
-        expect(prisma.$queryRaw).toHaveBeenNthCalledWith(2, expect.anything(), 'adm-lock-order');
+        expect(prisma.$queryRaw).toHaveBeenNthCalledWith(3, expect.anything(), 'h-31');
+        expect(prisma.$queryRaw).toHaveBeenNthCalledWith(4, expect.anything(), 'adm-lock-order');
 
         // Chiếu an toàn không làm rò rỉ passwordHash/permissions
         expect(prisma.horseAdmissionRecord.update).toHaveBeenCalledWith(
@@ -1841,12 +2025,15 @@ describe('HorsesService', () => {
           },
         ]);
 
-        const res = await service.listAdmissions({
-          search: 'Phoenix',
-          status: AdmissionStatus.PENDING_VERIFICATION,
-          page: 1,
-          pageSize: 10,
-        });
+        const res = await service.listAdmissions(
+          {
+            search: 'Phoenix',
+            status: AdmissionStatus.PENDING_VERIFICATION,
+            page: 1,
+            pageSize: 10,
+          },
+          mockManager,
+        );
 
         expect(res.total).toBe(1);
         expect(res.data).toHaveLength(1);
@@ -1876,7 +2063,7 @@ describe('HorsesService', () => {
           { id: 'adm-rec-2', status: AdmissionStatus.APPROVED },
         ]);
 
-        const res = await service.listAdmissions({ recent7Days: true });
+        const res = await service.listAdmissions({ recent7Days: true }, mockManager);
 
         expect(res.total).toBe(2);
         expect(prisma.horseAdmissionRecord.findMany).toHaveBeenCalledWith(
@@ -1895,7 +2082,7 @@ describe('HorsesService', () => {
           new Array(10).fill({ id: 'adm-item' }),
         );
 
-        const res = await service.listAdmissions({ page: 2, pageSize: 10 });
+        const res = await service.listAdmissions({ page: 2, pageSize: 10 }, mockManager);
 
         expect(res.total).toBe(35);
         expect(res.page).toBe(2);
@@ -2009,6 +2196,7 @@ describe('HorsesService', () => {
           microchipVerified: true,
           legalVerified: true,
           isHealthEligible: true,
+          healthFinalizedAt: new Date(),
           declaredMicrochip: '985123456789012',
           scannedMicrochip: '985123456789012',
           horse: {
@@ -2028,10 +2216,150 @@ describe('HorsesService', () => {
         });
 
         // Không ném lỗi dù SMTP gặp sự cố mạng
-        await expect(service.approveAdmission('adm-mail-fail', mockManager)).resolves.toBeDefined();
+        prisma.user.findUnique.mockResolvedValue({
+          id: 'groom-1',
+          role: 'GROOM',
+          status: 'ACTIVE',
+        });
+        await expect(
+          service.approveAdmission('adm-mail-fail', mockManager, placement),
+        ).resolves.toBeDefined();
         expect(prisma.horseAdmissionRecord.update).toHaveBeenCalled();
         expect(prisma.horse.update).toHaveBeenCalled();
       });
+    });
+  });
+  describe('admission capacity safeguards', () => {
+    it('blocks inspection without writing when no usable stall remains', async () => {
+      prisma.stall.count.mockResolvedValue(0);
+      prisma.horseAdmissionRecord.findUnique.mockResolvedValue({
+        id: 'a',
+        horseId: 'h',
+        status: AdmissionStatus.APPOINTED,
+      });
+      await expect(
+        service.inspectAdmission('a', { legalVerified: true }, mockManager),
+      ).rejects.toMatchObject({ response: { code: 'ADMISSION_NO_STALL' } });
+      expect(prisma.horseAdmissionRecord.update).not.toHaveBeenCalled();
+    });
+    it('defers an appointment without rejection and emits one capacity email on repeated clicks', async () => {
+      prisma.stall.count.mockResolvedValue(0);
+      const record = {
+        id: 'a',
+        horseId: 'h',
+        ownerId: 'owner-1',
+        admissionCode: 'ADM-1',
+        status: AdmissionStatus.APPOINTED,
+        appointmentDate: new Date('2026-12-01T02:00:00Z'),
+        capacityDeferredAt: null,
+        createdAt: new Date(),
+        horse: { id: 'h', name: 'Ngựa A' },
+        owner: { id: 'owner-1', fullName: 'Chủ ngựa' },
+      };
+      prisma.horseAdmissionRecord.findUnique.mockImplementation(async () => ({ ...record }));
+      prisma.horseAdmissionRecord.update.mockImplementation(async (args) =>
+        Object.assign(record, args.data),
+      );
+      await service.deferAdmissionForCapacity('a', mockManager);
+      await service.deferAdmissionForCapacity('a', mockManager);
+      expect(record.status).toBe(AdmissionStatus.PENDING_VERIFICATION);
+      expect(record.appointmentDate).toBeNull();
+      expect(businessMail.emit).toHaveBeenCalledTimes(1);
+      expect(businessMail.emit).toHaveBeenCalledWith(
+        expect.objectContaining({ eventCode: 'ADMISSION_CAPACITY_DEFERRED' }),
+      );
+    });
+    it('does not defer or send mail while capacity is available', async () => {
+      prisma.horseAdmissionRecord.findUnique.mockResolvedValue({
+        id: 'a',
+        status: AdmissionStatus.APPOINTED,
+      });
+      await expect(service.deferAdmissionForCapacity('a', mockManager)).rejects.toMatchObject({
+        response: { code: 'ADMISSION_HAS_CAPACITY' },
+      });
+      expect(businessMail.emit).not.toHaveBeenCalled();
+    });
+  });
+  describe('assigned veterinarian admissions', () => {
+    const vet = {
+      userId: 'vet-1',
+      role: UserRole.VETERINARIAN,
+      fullName: 'Bác sĩ',
+      email: 'vet@gmail.com',
+      permissions: {},
+    } as CurrentUserPayload;
+    it('scopes list and count to the current veterinarian, including search and pagination', async () => {
+      await service.listAdmissions({ search: 'Atlas', page: 2, pageSize: 10 }, vet);
+      expect(prisma.horseAdmissionRecord.count).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ veterinarianUserId: 'vet-1' }),
+        }),
+      );
+      expect(prisma.horseAdmissionRecord.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ veterinarianUserId: 'vet-1' }),
+          skip: 10,
+        }),
+      );
+    });
+    it('does not restrict the manager to a veterinarian assignment', async () => {
+      await service.listAdmissions({}, mockManager);
+      expect(prisma.horseAdmissionRecord.findMany.mock.calls[0][0].where).not.toHaveProperty(
+        'veterinarianUserId',
+      );
+    });
+    it('does not expose another doctor admission through a direct history/detail URL', async () => {
+      prisma.horseAdmissionRecord.findUnique.mockResolvedValue({
+        id: 'other',
+        veterinarianUserId: 'other-vet',
+      });
+      await expect(service.getAdmissionHistory('other', vet)).rejects.toMatchObject({
+        response: { code: 'ADMISSION_NOT_FOUND' },
+      });
+      expect(prisma.admissionHistoryLog.findMany).not.toHaveBeenCalled();
+    });
+    it('lets the assigned doctor load their admission and history', async () => {
+      prisma.horseAdmissionRecord.findUnique.mockResolvedValue({
+        id: 'mine',
+        veterinarianUserId: 'vet-1',
+      });
+      const result = await service.getAdmissionHistory('mine', vet);
+      expect(result.admission.id).toBe('mine');
+      expect(result.history).toEqual([]);
+    });
+    it.each([null, 'other-vet'])(
+      'rejects health updates when assigned doctor is %s',
+      async (assigned) => {
+        prisma.horseAdmissionRecord.findUnique.mockResolvedValue({
+          id: 'a',
+          horseId: 'h',
+          status: AdmissionStatus.APPOINTED,
+          veterinarianUserId: assigned,
+        });
+        await expect(
+          service.inspectAdmission('a', { isHealthEligible: true }, vet),
+        ).rejects.toMatchObject({ response: { code: 'ADMISSION_VET_MISMATCH' } });
+        expect(prisma.horseAdmissionRecord.update).not.toHaveBeenCalled();
+      },
+    );
+    it('allows the assigned doctor to save health fields without changing legal verification', async () => {
+      prisma.horseAdmissionRecord.findUnique.mockResolvedValue({
+        id: 'mine',
+        horseId: 'h',
+        status: AdmissionStatus.APPOINTED,
+        veterinarianUserId: 'vet-1',
+        horse: { name: 'Atlas' },
+        owner: { id: 'owner' },
+      });
+      await service.inspectAdmission(
+        'mine',
+        { isHealthEligible: true, healthCheckNotes: 'Đã khám', finalizeHealth: true },
+        vet,
+      );
+      const data = prisma.horseAdmissionRecord.update.mock.calls[0][0].data;
+      expect(data.isHealthEligible).toBe(true);
+      expect(data).not.toHaveProperty('legalVerified');
+      expect(data).not.toHaveProperty('microchipVerified');
     });
   });
 });

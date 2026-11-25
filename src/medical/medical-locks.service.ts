@@ -2,6 +2,7 @@ import { lockChanged } from '../business-mail/templates/health-templates';
 import { HttpStatus, Injectable, Logger, Optional } from '@nestjs/common';
 import { NotificationsService } from '../notifications/notifications.service';
 import { apiError } from '../common/exceptions/api-error';
+import { effectiveNow } from '../common/utils/demo-clock';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import {
   Role,
@@ -26,6 +27,38 @@ import { DailyTasksService } from '../daily-tasks/daily-tasks.service';
 import { SimulatorRealtimeService } from '../simulator/simulator-realtime.service';
 
 /** P2-04: Khóa huấn luyện — đặt, gỡ, gia hạn, danh sách (FR-3.10 → FR-3.12). */
+export async function generateMedicalLockCode(tx: {
+  medicalLock?: {
+    count?: (args?: any) => Promise<number>;
+    findUnique?: (args: any) => Promise<any>;
+  };
+}): Promise<string> {
+  const year = new Date().getFullYear();
+  const prefix = `MLK-${year}-`;
+  let seq = 1;
+  try {
+    if (typeof tx?.medicalLock?.count === 'function') {
+      const countThisYear = await tx.medicalLock.count({
+        where: { lockCode: { startsWith: prefix } },
+      });
+      seq = countThisYear + 1;
+    }
+  } catch {
+    // fallback if count throws
+  }
+  let lockCode = `${prefix}${String(seq).padStart(3, '0')}`;
+  let attempts = 0;
+  while (attempts < 20) {
+    if (typeof tx?.medicalLock?.findUnique !== 'function') break;
+    const existing = await tx.medicalLock.findUnique({ where: { lockCode } });
+    if (!existing) break;
+    attempts++;
+    seq++;
+    lockCode = `${prefix}${String(seq).padStart(3, '0')}`;
+  }
+  return lockCode;
+}
+
 @Injectable()
 export class MedicalLocksService {
   private readonly logger = new Logger(MedicalLocksService.name);
@@ -158,16 +191,7 @@ export class MedicalLocksService {
         );
       }
 
-      const lockCount = await tx.medicalLock.count();
-      let lockCode = `KH-${String(lockCount + 1).padStart(6, '0')}`;
-      let attempts = 0;
-      while (attempts < 5) {
-        const existing = await tx.medicalLock.findUnique({ where: { lockCode } });
-        if (!existing) break;
-        attempts++;
-        const randomPart = Math.floor(100000 + Math.random() * 900000);
-        lockCode = `KH-${randomPart}`;
-      }
+      const lockCode = await generateMedicalLockCode(tx);
 
       const lock = await tx.medicalLock.create({
         data: {
@@ -436,7 +460,7 @@ export class MedicalLocksService {
           where: { id: lockId },
           data: {
             isLocked: false,
-            unlockedAt: new Date(),
+            unlockedAt: effectiveNow(),
             unlockVetUserId: actor.userId,
             unlockReason: dto.unlockReason,
             recheckNotes: dto.recheckNotes || dto.unlockReason,
