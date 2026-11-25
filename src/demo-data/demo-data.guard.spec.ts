@@ -21,7 +21,9 @@ describe('DemoDataGuard', () => {
   beforeEach(() => {
     user = { id: 'manager', role: 'CLUB_MANAGER', status: 'ACTIVE' };
   });
-  it('allows an active manager on local development only', async () => {
+  it('allows any active account on local development only', async () => {
+    await expect(check()).resolves.toBe(true);
+    user = { id: 'trainer', role: 'HEAD_TRAINER', status: 'ACTIVE' };
     await expect(check()).resolves.toBe(true);
   });
   it.each([
@@ -34,8 +36,8 @@ describe('DemoDataGuard', () => {
     await expect(check(overrides)).rejects.toThrow();
   });
   it.each([
-    { role: 'GROOM', status: 'ACTIVE' },
     { role: 'CLUB_MANAGER', status: 'LOCKED' },
+    { role: 'GROOM', status: 'INACTIVE' },
   ])('rechecks the account %o', async (fields) => {
     user = { ...user, ...fields };
     await expect(check()).rejects.toThrow();

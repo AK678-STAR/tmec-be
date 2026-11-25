@@ -4,6 +4,7 @@ import { HorseStatus, PlanStatus, Prisma, Role, UserStatus, WorkoutStatus } from
 import { DailyTasksService } from '../daily-tasks/daily-tasks.service';
 import { assertTrainerZone } from './trainer-zones';
 import { apiError } from '../common/exceptions/api-error';
+import { effectiveNow } from '../common/utils/demo-clock';
 import { UserRole } from '../common/enums/role.enum';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { CreateWorkoutSessionDto, RepeatWorkoutDto } from './dto/create-workout-session.dto';
@@ -1061,7 +1062,7 @@ export class WorkoutsService {
         );
       }
       previousDate = existing.scheduledDate;
-      if (existing.status !== WorkoutStatus.SCHEDULED || existing.scheduledDate <= new Date()) {
+      if (existing.status !== WorkoutStatus.SCHEDULED || existing.scheduledDate <= effectiveNow()) {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'WORKOUT_NOT_EDITABLE',
@@ -1156,7 +1157,7 @@ export class WorkoutsService {
         );
       }
       await tx.$queryRaw`SELECT "id" FROM "WorkoutSession" WHERE "id" = ${workoutId} FOR UPDATE`;
-      const now = new Date();
+      const now = effectiveNow();
       const editing = existing.status === WorkoutStatus.COMPLETED;
 
       if (existing.status === WorkoutStatus.SCHEDULED) {

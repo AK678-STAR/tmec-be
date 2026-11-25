@@ -5,6 +5,7 @@ import { InvoiceLineItemsService } from './invoice-line-items.service';
 import { HttpStatus, Injectable, Logger, Optional } from '@nestjs/common';
 import { InvoiceStatus, Prisma, RestockStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { effectiveNow } from '../common/utils/demo-clock';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { BusinessMailService, BusinessMailEvent } from '../business-mail/business-mail.service';
@@ -445,7 +446,7 @@ export class FinancialService {
         'New invoices must be draft or issued for payment.',
       );
     const { start, end } = boardingMonth(dto.billingPeriod);
-    if (end > new Date()) {
+    if (end > effectiveNow()) {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'BILLING_PERIOD_NOT_CLOSED',
@@ -1251,7 +1252,7 @@ export class FinancialService {
   /** Closed months only: a payment settles its own period, never the next month. */
   async generateMonthlyDrafts(billingPeriod: string, user: FinancialActor) {
     const { start, end } = boardingMonth(billingPeriod);
-    if (end > new Date()) {
+    if (end > effectiveNow()) {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'BILLING_PERIOD_NOT_CLOSED',

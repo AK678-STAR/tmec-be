@@ -2,6 +2,7 @@ import { lockChanged } from '../business-mail/templates/health-templates';
 import { HttpStatus, Injectable, Logger, Optional } from '@nestjs/common';
 import { NotificationsService } from '../notifications/notifications.service';
 import { apiError } from '../common/exceptions/api-error';
+import { effectiveNow } from '../common/utils/demo-clock';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import {
   Role,
@@ -459,7 +460,7 @@ export class MedicalLocksService {
           where: { id: lockId },
           data: {
             isLocked: false,
-            unlockedAt: new Date(),
+            unlockedAt: effectiveNow(),
             unlockVetUserId: actor.userId,
             unlockReason: dto.unlockReason,
             recheckNotes: dto.recheckNotes || dto.unlockReason,

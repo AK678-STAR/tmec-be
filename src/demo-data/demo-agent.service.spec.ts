@@ -76,12 +76,25 @@ describe('DemoAgentService', () => {
     expect(body).not.toContain('availableStalls');
     expect(body).not.toContain(actor.userId);
   });
-  it('asks for an owner before calling the provider', async () => {
-    const { agent } = build();
+  it('asks for an owner with HORSE_FORM block when creating a horse without ownerId', async () => {
+    const { agent, data } = build();
+    respond([{ functionCall: { name: 'demo_create_scenario', args: modelArgs } }]);
     await expect(agent.chat(actor, { ...request, ownerId: undefined })).resolves.toMatchObject({
       status: 'NEEDS_INPUT',
+      uiBlocks: expect.arrayContaining([expect.objectContaining({ type: 'HORSE_FORM' })]),
     });
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(data.issuePermit).not.toHaveBeenCalled();
+  });
+  it('allows demo_set_time without requiring ownerId and returns TIME_TRAVEL block', async () => {
+    const { agent } = build();
+    respond([{ functionCall: { name: 'demo_set_time', args: { mode: 'OFFSET_DAYS', days: 15 } } }]);
+    await expect(
+      agent.chat(actor, { ...request, message: 'Tua +15 ngày', ownerId: undefined }),
+    ).resolves.toMatchObject({
+      status: 'TOOL_CALL',
+      tool: { name: 'demo_set_time', args: { mode: 'OFFSET_DAYS', days: 15 } },
+      uiBlocks: expect.arrayContaining([expect.objectContaining({ type: 'TIME_TRAVEL' })]),
+    });
   });
   it.each([
     [{ functionCall: { name: 'delete_database', args: {} } }],

@@ -2,12 +2,10 @@ import { DemoAgentService } from './demo-agent.service';
 import { CurrentUser, CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { CreateDemoScenarioDto, DemoChatDto } from './demo-data.dto';
 import { Body, Controller, Get, Param, ParseUUIDPipe, Post, UseGuards } from '@nestjs/common';
-import { Roles } from '../common/decorators/roles.decorator';
 import { DemoDataGuard } from './demo-data.guard';
 import { DemoDataService } from './demo-data.service';
 
 @Controller('demo-data')
-@Roles('CLUB_MANAGER')
 @UseGuards(DemoDataGuard)
 export class DemoDataController {
   constructor(
