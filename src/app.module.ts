@@ -1,3 +1,4 @@
+import { DemoDataModule } from './demo-data/demo-data.module';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -46,6 +47,7 @@ import { SimulatorModule } from './simulator/simulator.module';
       skipIf: () => process.env.NODE_ENV === 'test',
     }),
     PrismaModule,
+    DemoDataModule,
     HealthModule,
     MailModule,
     BusinessMailModule,
