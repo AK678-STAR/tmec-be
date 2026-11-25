@@ -116,7 +116,11 @@ export function normalizeDemoTimeArgs(input: unknown): DemoTimeArgs {
   }
   const value = input as Record<string, unknown>;
   if (Object.keys(value).some((key) => !['mode', 'days', 'date', 'reason'].includes(key))) {
-    throw apiError(HttpStatus.BAD_REQUEST, 'DEMO_INPUT_INVALID', 'Tham số thời gian ngoài phạm vi.');
+    throw apiError(
+      HttpStatus.BAD_REQUEST,
+      'DEMO_INPUT_INVALID',
+      'Tham số thời gian ngoài phạm vi.',
+    );
   }
   if (!['REAL', 'OFFSET_DAYS', 'EXACT_DATE'].includes(String(value.mode))) {
     throw apiError(HttpStatus.BAD_REQUEST, 'DEMO_INPUT_INVALID', 'Chế độ thời gian không hợp lệ.');
@@ -137,7 +141,11 @@ export function normalizeDemoTimeArgs(input: unknown): DemoTimeArgs {
   }
   const date = typeof value.date === 'string' ? value.date.trim() : '';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    throw apiError(HttpStatus.BAD_REQUEST, 'DEMO_INPUT_INVALID', 'Ngày tua phải theo dạng YYYY-MM-DD.');
+    throw apiError(
+      HttpStatus.BAD_REQUEST,
+      'DEMO_INPUT_INVALID',
+      'Ngày tua phải theo dạng YYYY-MM-DD.',
+    );
   }
   return { mode, date, reason };
 }

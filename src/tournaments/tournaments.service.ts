@@ -116,7 +116,7 @@ export class TournamentsService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly notifications: NotificationsService,
-  ) { }
+  ) {}
 
   /**
    * Lấy danh sách giải đua với bộ lọc, tìm kiếm và phân trang
@@ -225,10 +225,10 @@ export class TournamentsService {
 
     const registrationWhere: Prisma.TournamentRegistrationWhereInput | undefined = isOwner
       ? {
-        horse: {
-          ownerId: user.userId,
-        },
-      }
+          horse: {
+            ownerId: user.userId,
+          },
+        }
       : undefined;
 
     const tournament = await this.prisma.tournament.findUnique({
@@ -271,9 +271,9 @@ export class TournamentsService {
         ...r,
         result: r.result
           ? {
-            ...r.result,
-            prizeMoneyWon: Number(r.result.prizeMoneyWon),
-          }
+              ...r.result,
+              prizeMoneyWon: Number(r.result.prizeMoneyWon),
+            }
           : null,
       })),
     };
@@ -821,14 +821,14 @@ export class TournamentsService {
 
     const checks: Array<{
       key:
-      | 'STATUS'
-      | 'AGE'
-      | 'WEIGHT'
-      | 'SAME_DAY_RACE'
-      | 'MEDICAL_LOCK'
-      | 'DEBT_IMPOUND'
-      | 'WITHDRAWAL_PERIOD'
-      | 'TRAINING_FITNESS';
+        | 'STATUS'
+        | 'AGE'
+        | 'WEIGHT'
+        | 'SAME_DAY_RACE'
+        | 'MEDICAL_LOCK'
+        | 'DEBT_IMPOUND'
+        | 'WITHDRAWAL_PERIOD'
+        | 'TRAINING_FITNESS';
       label: string;
       passed: boolean;
       details?: string;
@@ -952,18 +952,18 @@ export class TournamentsService {
     // 5. Thời gian ngưng thuốc thú y (Withdrawal Period)
     const medicalRecords = this.prisma.medicalRecord?.findMany
       ? await this.prisma.medicalRecord.findMany({
-        where: {
-          horseId,
-          status: { not: 'DRAFT' },
-          createdAt: { gte: new Date(effectiveNow().getTime() - 90 * 86400000) },
-        },
-        select: {
-          examinationDate: true,
-          prescriptions: true,
-          prescriptionDetails: true,
-        },
-        orderBy: { examinationDate: 'desc' },
-      })
+          where: {
+            horseId,
+            status: { not: 'DRAFT' },
+            createdAt: { gte: new Date(effectiveNow().getTime() - 90 * 86400000) },
+          },
+          select: {
+            examinationDate: true,
+            prescriptions: true,
+            prescriptionDetails: true,
+          },
+          orderBy: { examinationDate: 'desc' },
+        })
       : [];
 
     const withdrawalViolations: string[] = [];

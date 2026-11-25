@@ -21,13 +21,9 @@ describe('demo-clock', () => {
   it('scopes effectiveNow() per request via demoClockMiddleware in development', () => {
     process.env.NODE_ENV = 'development';
     let capturedInside: Date | null = null;
-    demoClockMiddleware(
-      { headers: { 'x-demo-date': '2030-05-10' } } as any,
-      {} as any,
-      () => {
-        capturedInside = effectiveNow();
-      },
-    );
+    demoClockMiddleware({ headers: { 'x-demo-date': '2030-05-10' } } as any, {} as any, () => {
+      capturedInside = effectiveNow();
+    });
     expect(capturedInside).toBeInstanceOf(Date);
     expect((capturedInside as unknown as Date).getUTCFullYear()).toBe(2030);
     // Outside middleware scope, effectiveNow() falls back to real server year

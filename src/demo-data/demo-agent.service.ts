@@ -17,14 +17,12 @@ export class DemoAgentService {
   constructor(
     private readonly config: ConfigService,
     private readonly data: DemoDataService,
-  ) { }
+  ) {}
 
   async chat(actor: CurrentUserPayload, dto: DemoChatDto) {
     if (dto.completed) {
       const receipt = await this.data.getReceipt(actor, dto.generationId);
-      const nextRoles: AgentUiBlock['roles'] extends never
-        ? never
-        : Array<'CLUB_MANAGER' | 'HEAD_TRAINER' | 'VETERINARIAN' | 'GROOM' | 'HORSE_OWNER'> =
+      const nextRoles: Extract<AgentUiBlock, { type: 'QUICK_SWITCH' }>['roles'] =
         receipt.scenario === 'ADMISSION_PENDING'
           ? ['CLUB_MANAGER', 'VETERINARIAN', 'HEAD_TRAINER']
           : ['CLUB_MANAGER', 'HEAD_TRAINER', 'HORSE_OWNER'];
@@ -112,12 +110,12 @@ export class DemoAgentService {
                     parametersJsonSchema:
                       name === 'demo_create_scenario'
                         ? {
-                          ...schema,
-                          properties: {
-                            ...schema.properties,
-                            ownerId: { type: 'string', enum: ['selected-owner'] },
-                          },
-                        }
+                            ...schema,
+                            properties: {
+                              ...schema.properties,
+                              ownerId: { type: 'string', enum: ['selected-owner'] },
+                            },
+                          }
                         : schema,
                   })),
               },
