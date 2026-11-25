@@ -25,6 +25,9 @@ describe('ShiftRostersService (SC-4.01)', () => {
     id: 'shift-1',
     code: 'SHIFT_MORNING',
     name: 'Ca Sáng',
+    startTime: '06:00',
+    endTime: '14:00',
+    isOvernight: false,
     isActive: true,
   };
 
@@ -47,8 +50,12 @@ describe('ShiftRostersService (SC-4.01)', () => {
     zone: sampleZone,
   };
 
+  afterEach(() => jest.useRealTimers());
   beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-10-18T00:00:00Z'));
     prisma = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      dailyCareTask: { findMany: jest.fn().mockResolvedValue([]) },
       $transaction: jest.fn((cb) => cb(prisma)),
       shiftCatalog: {
         findUnique: jest.fn().mockResolvedValue(sampleShift),
@@ -57,12 +64,14 @@ describe('ShiftRostersService (SC-4.01)', () => {
         findUnique: jest.fn().mockResolvedValue(sampleZone),
       },
       user: {
+        count: jest.fn(async ({ where }) => where.id.in.length),
         findMany: jest
           .fn()
           .mockResolvedValue([{ id: 'groom-1', role: Role.GROOM, status: UserStatus.ACTIVE }]),
       },
       shiftRoster: {
         findMany: jest.fn().mockResolvedValue([sampleRoster]),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(sampleRoster),
         findUnique: jest.fn().mockResolvedValue(null),
         findFirst: jest.fn().mockResolvedValue(null),
         deleteMany: jest.fn().mockResolvedValue({ count: 1 }),

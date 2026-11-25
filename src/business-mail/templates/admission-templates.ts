@@ -11,6 +11,7 @@ export interface AdmissionMailLike {
   declaredMicrochip?: string | null;
   scannedMicrochip?: string | null;
   appointmentDate?: Date | string | null;
+  appointmentEndDate?: Date | string | null;
   appointmentNotes?: string | null;
   rejectionReason?: string | null;
   admittedAt?: Date | string | null;
@@ -81,7 +82,8 @@ export function admissionAppointmentScheduled(
     { label: 'Chủ sở hữu', value: owner.fullName },
     { label: 'Tên chiến mã', value: horse.name },
     { label: 'Mã hồ sơ tiếp nhận', value: admission.admissionCode },
-    { label: 'Thời gian hẹn', value: fmtDateTime(admission.appointmentDate) },
+    { label: 'Bắt đầu (giờ CLB)', value: fmtDateTime(admission.appointmentDate) },
+    { label: 'Kết thúc (giờ CLB)', value: fmtDateTime(admission.appointmentEndDate) },
     { label: 'Địa điểm tiếp đón', value: 'Trạm kiểm định Cổng A — CLB Đua Ngựa EquiFlow' },
     {
       label: 'Hướng dẫn chuẩn bị',
@@ -93,6 +95,25 @@ export function admissionAppointmentScheduled(
       value: admission.appointmentNotes || 'Đến trước giờ hẹn 15 phút để làm thủ tục tiếp nhận.',
     },
     { label: 'Tra cứu thông tin', value: `${linkBase()}/horses` },
+  ]);
+}
+
+export function admissionCapacityDeferred(
+  admission: AdmissionMailLike,
+  horse: HorseMailLike,
+  owner: OwnerMailLike,
+): BusinessMailContent {
+  return renderMail(`[EquiFlow] Hoãn thẩm định hồ sơ ${admission.admissionCode} do hết chuồng`, [
+    { label: 'Chủ ngựa', value: owner.fullName },
+    { label: 'Ngựa', value: horse.name },
+    { label: 'Hồ sơ', value: admission.admissionCode },
+    { label: 'Lịch hẹn cũ', value: fmtDateTime(admission.appointmentDate) },
+    {
+      label: 'Thông báo',
+      value:
+        'CLB hiện đã hết chuồng trống nên chưa thể tiến hành thẩm định tiếp nhận. Hồ sơ của bạn được giữ lại, không bị từ chối. Quản lý sẽ liên hệ để thống nhất lịch hẹn mới khi có chuồng phù hợp.',
+    },
+    { label: 'Theo dõi hồ sơ', value: `${linkBase()}/horses` },
   ]);
 }
 

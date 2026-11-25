@@ -1,3 +1,5 @@
+import { onDutyGrooms, rosterDay } from '../shift-rosters/groom-zones';
+import { assertReceivingGroom, lockCareAssignments } from '../stalls/groom-care.rules';
 import { stallMoveCompleted } from '../business-mail/templates/health-templates';
 import { taskAssigned, taskRejected } from '../business-mail/templates/violation-templates';
 import {
@@ -361,6 +363,7 @@ export class DailyTasksService {
         startTime: r.shift?.startTime || '05:00',
         endTime: r.shift?.endTime || '13:00',
         isOvernight: Boolean(r.shift?.isOvernight),
+        dutyTypes: r.dutyTypes,
       })),
     );
     const lockedHorses = new Set(scheduleHorses.filter((h) => h.isLocked).map((h) => h.id));
@@ -706,28 +709,11 @@ export class DailyTasksService {
     const isOnlyMine = query.onlyMine === true || currentUser.role === Role.GROOM;
 
     if (isOnlyMine && currentUser.userId) {
-      const myRosters = await this.prisma.shiftRoster.findMany({
-        where: {
-          date: dayDate,
-          groomUserId: currentUser.userId,
-        },
-        select: { zoneId: true },
-      });
-      const myZoneIds = myRosters.map((r) => r.zoneId);
-
-      const groomOrConditions: any[] = [{ completedById: currentUser.userId }];
-      if (myZoneIds.length > 0) {
-        groomOrConditions.push({ stallZoneId: { in: myZoneIds } });
-      }
-
-      if (query.zoneId) {
-        where.stallZoneId = query.zoneId;
-        if (!myZoneIds.includes(query.zoneId)) {
-          where.OR = [{ completedById: currentUser.userId }];
-        }
-      } else {
-        where.OR = groomOrConditions;
-      }
+      where.OR = [
+        { assignedGroomUserId: currentUser.userId },
+        { completedById: currentUser.userId },
+      ];
+      if (query.zoneId) where.stallZoneId = query.zoneId;
     } else if (query.zoneId) {
       where.stallZoneId = query.zoneId;
     }
@@ -766,6 +752,46 @@ export class DailyTasksService {
    * TASK F4-05-BE: Xác nhận hoàn thành công việc
    * Ghi nhận timestamp, groomId và thiết lập cửa sổ hoàn tác 15 phút.
    */
+  private async assertTaskGroom(tx: any, task: any, actor: CurrentUserPayload) {
+    if (actor.role !== Role.GROOM) return;
+    if (task.assignedGroomUserId !== actor.userId)
+      throw apiError(
+        HttpStatus.FORBIDDEN,
+        'TASK_NOT_ASSIGNED_TO_YOU',
+        'Chỉ Groom được phân công mới được xác nhận công việc.',
+      );
+    if (task.isCompleted && task.completedById === actor.userId) return;
+    const roster =
+      task.stallZoneId &&
+      (await onDutyGrooms(tx, task.stallZoneId)).find(
+        (r) =>
+          r.groomUserId === actor.userId &&
+          r.shiftId === task.shiftId &&
+          r.date.getTime() === new Date(task.date).getTime(),
+      );
+    const duty = task.taskType === DailyTaskType.CLEANING ? 'CLEANING' : 'HORSE_CARE';
+    if (!roster || !roster.dutyTypes.includes(duty))
+      throw apiError(
+        HttpStatus.FORBIDDEN,
+        'GROOM_NOT_ON_DUTY',
+        'Công việc phải thuộc đúng ca đang trực và nhiệm vụ được giao.',
+      );
+    const allocation = await tx.stallAllocation.findFirst({
+      where: {
+        horseId: task.horseId,
+        isActive: true,
+        stallId: task.stallId,
+        stall: { zoneId: task.stallZoneId },
+      },
+    });
+    if (!allocation)
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'TASK_STALL_OUTDATED',
+        'Ngựa đã đổi ô chuồng. Vui lòng tải lại danh sách công việc.',
+      );
+  }
+
   async completeTask(id: string, dto: CompleteDailyTaskDto, currentUser: CurrentUserPayload) {
     const task = await this.prisma.dailyCareTask.findUnique({
       where: { id },
@@ -776,9 +802,8 @@ export class DailyTasksService {
       throw new NotFoundException('Không tìm thấy công việc chăm sóc.');
     }
 
-    if (task.isCompleted) {
-      return task; // Đã xong rồi, trả về idempotent
-    }
+    await this.assertTaskGroom(this.prisma, task, currentUser);
+    if (task.isCompleted) return task;
 
     if (task.cancelledAt) {
       throw apiError(HttpStatus.BAD_REQUEST, 'TASK_CANCELLED', 'Công việc chăm sóc này đã bị hủy.');
@@ -797,43 +822,6 @@ export class DailyTasksService {
           'Công việc y tế này đã bị dừng do Bác sĩ thú y đã kết thúc điều trị hoặc thay đổi đơn thuốc.',
       );
     }
-    // #1: Groom chỉ làm việc ở khu mình trực trong ngày của việc đó.
-    // shortcut: việc chưa gắn khu / ngày (dữ liệu cũ) thì chưa kiểm được khu nên cho qua.
-    if (currentUser.role === Role.GROOM && task.date && task.stallZoneId) {
-      const hasZoneRoster = await this.prisma.shiftRoster?.findFirst?.({
-        where: {
-          date: task.date,
-          zoneId: task.stallZoneId,
-          groomUserId: currentUser.userId,
-        },
-        select: { id: true },
-      });
-
-      if (!hasZoneRoster) {
-        throw apiError(
-          HttpStatus.FORBIDDEN,
-          'TASK_NOT_ASSIGNED_TO_YOU',
-          'Bạn chỉ hoàn thành được công việc chăm sóc ở khu mình trực trong ngày đó.',
-        );
-      }
-    }
-
-    if (
-      task.taskCode?.startsWith(STALL_HANDOVER_PREFIX) &&
-      currentUser.role === Role.GROOM &&
-      task.assignedGroomUserId !== currentUser.userId
-    ) {
-      throw apiError(
-        HttpStatus.FORBIDDEN,
-        'TASK_NOT_ASSIGNED_TO_YOU',
-        'Chỉ nhân viên được phân công mới xác nhận bàn giao.',
-      );
-    }
-
-    if (task.isCompleted) {
-      return task; // Đã xong rồi, trả về idempotent
-    }
-
     const workoutId = task.taskCode?.startsWith(WORKOUT_PREP_PREFIX)
       ? task.taskCode.slice(WORKOUT_PREP_PREFIX.length)
       : null;
@@ -888,12 +876,14 @@ export class DailyTasksService {
 
     // Bọc cập nhật Task và Trừ kho trong cùng một transaction để đảm bảo toàn vẹn dữ liệu (H-42, H-25)
     const runInTx = async (tx: any) => {
+      await lockCareAssignments(tx);
       await tx.$queryRaw`SELECT "id" FROM "Horse" WHERE "id" = ${task.horseId} FOR UPDATE`;
       const current = await tx.dailyCareTask.findUnique({
         where: { id },
         include: { horse: true },
       });
       if (!current) throw new NotFoundException('Không tìm thấy công việc chăm sóc.');
+      await this.assertTaskGroom(tx, current, currentUser);
       if (current.isCompleted) return current;
       if (current.cancelledAt)
         throw apiError(
@@ -1255,15 +1245,22 @@ export class DailyTasksService {
     }
 
     const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    const todayDate = new Date(`${todayStr}T00:00:00.000Z`);
+    const todayStr = rosterDay(now).toISOString().slice(0, 10);
 
     const taskCode = `ADHOC-${todayStr.replace(/-/g, '')}-${Date.now().toString().slice(-6)}`;
 
-    const task = await this.prisma.dailyCareTask.create({
+    const task = await this.prisma.$transaction(async tx => {
+      await lockCareAssignments(tx);
+      if (!targetGroomId || !stallZoneId || !stallId) throw apiError(HttpStatus.BAD_REQUEST, 'GROOM_REQUIRED', 'Chọn Groom và ô chuồng cho công việc phát sinh.');
+      const active = await tx.stallAllocation.findFirst({ where: { horseId: dto.horseId, stallId, isActive: true } });
+      if (!active) throw apiError(HttpStatus.CONFLICT, 'TASK_STALL_OUTDATED', 'Ngựa đã đổi ô chuồng. Vui lòng tải lại.');
+      const scheduled = new Date(`${todayStr}T${dto.scheduledTime || '14:00'}:00+07:00`);
+      const roster = await assertReceivingGroom(tx, stallZoneId, targetGroomId, dto.horseId, scheduled, dto.taskType === DailyTaskType.CLEANING ? 'CLEANING' : 'HORSE_CARE');
+      return tx.dailyCareTask.create({
       data: {
         taskCode,
-        date: todayDate,
+        date: roster.date,
+        shiftId: roster.shiftId,
         horseId: dto.horseId,
         stallZoneId,
         stallId,
@@ -1275,6 +1272,7 @@ export class DailyTasksService {
         isCompleted: false,
       },
       include: TASK_DETAIL_INCLUDE,
+    });
     });
 
     if (targetGroomId) {

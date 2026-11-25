@@ -1,3 +1,5 @@
+import { assertRosterSlot } from './roster-validation';
+import { lockCareAssignments } from '../stalls/groom-care.rules';
 import { HttpStatus, Injectable, Optional } from '@nestjs/common';
 import { Prisma, Role, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -480,8 +482,26 @@ export class ShiftRostersService {
       orderBy: [{ date: 'asc' }, { shift: { sortOrder: 'asc' } }],
     });
 
+    const work = await this.prisma.dailyCareTask.findMany({
+      where: {
+        assignedGroomUserId: currentUser.userId,
+        cancelledAt: null,
+        date: where?.date as any,
+      },
+      select: { date: true, shiftId: true, horseId: true },
+    });
     return rosters.map((r) => {
-      const assignedHorses = r.zone.stalls.flatMap((s) => s.allocations.map((a) => a.horse));
+      const ids = new Set(
+        work
+          .filter((t) => t.shiftId === r.shiftId && t.date.getTime() === r.date.getTime())
+          .map((t) => t.horseId),
+      );
+      const assignedHorses = r.zone.stalls.flatMap((s) =>
+        s.allocations
+          .filter((a) => ids.has(a.horseId))
+          .map((a) => ({ ...a.horse, stallId: s.id, stallCode: s.code })),
+      );
+
       return {
         id: r.id,
         date: r.date,
@@ -492,6 +512,7 @@ export class ShiftRostersService {
           name: r.zone.name,
         },
         notes: r.notes,
+        dutyTypes: r.dutyTypes,
         assignedHorsesCount: assignedHorses.length,
         assignedHorses,
       };
@@ -601,7 +622,9 @@ export class ShiftRostersService {
 
     // Thực hiện trong transaction
     await this.prisma.$transaction(async (tx) => {
+      await lockCareAssignments(tx);
       for (const tDate of targetDates) {
+        await assertRosterSlot(tx, tDate, dto.shiftId, dto.zoneId, uniqueGroomIds);
         // Xóa phân công cũ của ô này (tDate, shiftId, zoneId)
         await tx.shiftRoster.deleteMany({
           where: {
@@ -619,6 +642,7 @@ export class ShiftRostersService {
               shiftId: dto.shiftId,
               zoneId: dto.zoneId,
               groomUserId: gId,
+              dutyTypes: dto.dutyTypes ?? ['CLEANING', 'HORSE_CARE'],
               notes: dto.notes?.trim() || null,
               createdById: currentUser.userId,
             })),
@@ -668,8 +692,11 @@ export class ShiftRostersService {
       throw apiError(HttpStatus.NOT_FOUND, 'ROSTER_NOT_FOUND', 'Bản ghi phân ca không tồn tại.');
     }
 
-    await this.prisma.shiftRoster.delete({
-      where: { id },
+    await this.prisma.$transaction(async (tx) => {
+      await lockCareAssignments(tx);
+      const current = await tx.shiftRoster.findUniqueOrThrow({ where: { id } });
+      await assertRosterSlot(tx, current.date, current.shiftId, current.zoneId, []);
+      await tx.shiftRoster.delete({ where: { id } });
     });
 
     await this.auditService.record(
@@ -745,6 +772,13 @@ export class ShiftRostersService {
     const syncTargets: Array<{ date: Date; zoneId?: string }> = [];
 
     await this.prisma.$transaction(async (tx) => {
+      await lockCareAssignments(tx);
+      if (dto.overwrite) {
+        const rows = await tx.shiftRoster.findMany({
+          where: { date: { gte: targetMonday, lte: targetSunday } },
+        });
+        for (const row of rows) await assertRosterSlot(tx, row.date, row.shiftId, row.zoneId, []);
+      }
       // Nếu chọn ghi đè: xóa toàn bộ phân ca của tuần đích
       if (dto.overwrite) {
         await tx.shiftRoster.deleteMany({
@@ -783,6 +817,7 @@ export class ShiftRostersService {
             'Không thể sao chép ca trực vì nhân viên đã được phân công ở khu chuồng khác trong cùng ca.',
           );
         }
+        await assertRosterSlot(tx, newDate, s.shiftId, s.zoneId, [s.groomUserId]);
         if (!dto.overwrite) syncTargets.push({ date: newDate, zoneId: s.zoneId });
 
         await tx.shiftRoster.create({
@@ -792,6 +827,7 @@ export class ShiftRostersService {
             zoneId: s.zoneId,
             groomUserId: s.groomUserId,
             notes: s.notes,
+            dutyTypes: s.dutyTypes,
             createdById: currentUser.userId,
           },
         });
