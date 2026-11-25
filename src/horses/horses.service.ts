@@ -2230,6 +2230,11 @@ export function trainerHorseScope(
   withUnclaimed = false,
 ): Prisma.HorseWhereInput {
   const live = { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] };
-  const mine: Prisma.HorseWhereInput = { trainingPlans: { some: { trainerUserId, status: live } } };
+  const mine: Prisma.HorseWhereInput = {
+    OR: [
+      { assignedTrainerId: trainerUserId },
+      { trainingPlans: { some: { trainerUserId, status: live } } },
+    ],
+  };
   return withUnclaimed ? { OR: [mine, { trainingPlans: { none: { status: live } } }] } : mine;
 }

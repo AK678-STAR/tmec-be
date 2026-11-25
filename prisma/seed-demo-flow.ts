@@ -279,6 +279,7 @@ async function main() {
   await prisma.dailyCareTask.deleteMany({ where: { OR: [demoHorseFilter, demoPrefixedFilter] } });
   await prisma.trainingPlan.deleteMany({ where: { OR: [demoHorseFilter, demoPrefixedFilter] } });
   await prisma.stallAllocation.deleteMany({ where: { OR: [demoHorseFilter, demoPrefixedFilter] } });
+  await prisma.medicalLock.deleteMany({ where: { OR: [demoHorseFilter, demoPrefixedFilter] } });
   await prisma.horseHandoverRequest.deleteMany({});
 
   await prisma.horse.deleteMany({
@@ -439,14 +440,25 @@ async function main() {
     return plan;
   }
 
-  // --- 3.1. HLV TUẤN (trainer@gmail.com, Barn A): ĐÚNG 8 CHIẾN MÃ (8/8 ĐẦY TẢI) ---
-  console.log('  -> Tạo ĐÚNG 8 chiến mã tại Barn A cho HLV Tuấn để đạt trần 8/8 (phục vụ test ngoại lệ quá tải)...');
+  // --- 3.1. HLV TUẤN (trainer@gmail.com, Barn A): ĐÚNG 8 CHIẾN MÃ (8/8 TẢI THỰC TẾ) ---
+  console.log('  -> Tạo ĐÚNG 8 chiến mã tại Barn A cho HLV Tuấn theo cơ cấu sống động thực tế (5 Active, 1 Draft, 1 Chờ giáo án, 1 Khóa y tế)...');
   const horseNamesA = [
     'Phong Lôi', 'Tuyết Ảnh', 'Lôi Chấn', 'Dạ Nguyệt',
     'Lão Tướng', 'Huyền Vũ', 'Thần Phong', 'Hắc Báo',
   ];
   for (let i = 1; i <= 8; i++) {
     const avatarUrl = `/images/horses/horse-${String(i).padStart(2, '0')}.jpg`;
+    const isMedical = i === 8;
+    const isWaitingPlan = i === 7;
+    const isDraft = i === 6;
+    const isActive = i <= 5;
+
+    const horseStatus = isMedical
+      ? HorseStatus.INJURED
+      : isWaitingPlan
+        ? HorseStatus.RESTING
+        : HorseStatus.IN_TRAINING;
+
     const h = await prisma.horse.create({
       data: {
         horseCode: `HR-DEMO-A0${i}`,
@@ -459,7 +471,8 @@ async function main() {
         weightKg: 470 + i * 5,
         microchip: `98500000100${i}`,
         microchipRfid: `98500000100${i}`,
-        status: HorseStatus.IN_TRAINING,
+        status: horseStatus,
+        isMedicalLocked: isMedical,
         assignedTrainerId: trainerA.id,
         trainerAssignmentStatus: 'ASSIGNED',
         ownerId: owner.id,
@@ -480,16 +493,73 @@ async function main() {
       },
     });
 
-    await createLivePlanWithWorkouts({
-      horseId: h.id,
-      trainerUserId: trainerA.id,
-      planCode: `GA-DEMO-A0${i}`,
-      phaseName: `Giáo án Thể lực & Tốc độ A${i}`,
-      objective: 'Tăng cường sức bền và tốc độ nước rút 1200m.',
-      baseScore: 8.5 + (i % 3) * 0.2,
-      trackSurface: TrackSurface.TURF,
-      isLoadSpike: i === 1,
-    });
+    if (isActive) {
+      await createLivePlanWithWorkouts({
+        horseId: h.id,
+        trainerUserId: trainerA.id,
+        planCode: `GA-DEMO-A0${i}`,
+        phaseName: `Giáo án Thể lực & Tốc độ A${i}`,
+        objective: 'Tăng cường sức bền và tốc độ nước rút 1200m.',
+        baseScore: 8.5 + (i % 3) * 0.2,
+        trackSurface: TrackSurface.TURF,
+        isLoadSpike: i === 1,
+      });
+    } else if (isDraft) {
+      // 1 Chiến mã có giáo án DRAFT (chờ kích hoạt)
+      const startDate = new Date(Date.now() + 2 * 24 * 3600 * 1000);
+      const endDate = new Date(Date.now() + 32 * 24 * 3600 * 1000);
+      await prisma.trainingPlan.create({
+        data: {
+          horseId: h.id,
+          trainerUserId: trainerA.id,
+          planCode: `GA-DEMO-A0${i}`,
+          phaseName: `Giáo án Thể lực & Bứt tốc Mùa Thu`,
+          objective: 'Rèn luyện khả năng tăng tốc 400m cuối và hồi phục nhịp tim.',
+          status: PlanStatus.DRAFT,
+          startDate,
+          endDate,
+          trackSurface: TrackSurface.TURF,
+          phases: [
+            {
+              id: `GA-DEMO-A0${i}-PH1`,
+              name: 'Giai đoạn 1: Nền tảng',
+              type: 'BASE',
+              startDate: startDate.toISOString().slice(0, 10),
+              endDate: new Date(Date.now() + 16 * 24 * 3600 * 1000).toISOString().slice(0, 10),
+              sessionsPerWeek: 3,
+              maxWeeklyDistance: 6000,
+              surface: TrackSurface.TURF,
+            },
+          ],
+        },
+      });
+    } else if (isWaitingPlan) {
+      // 1 Chiến mã mới tiếp nhận, chờ lập giáo án (SLA 3 ngày)
+      await prisma.horseHandoverRequest.create({
+        data: {
+          horseId: h.id,
+          fromManagerId: manager.id,
+          toTrainerId: trainerA.id,
+          status: 'ACCEPTED',
+          token: `token-accepted-a07-${Date.now()}`,
+          expiresAt: new Date(Date.now() + 48 * 3600 * 1000),
+          acceptedAt: new Date(Date.now() - 3600 * 1000),
+          planDeadlineAt: new Date(Date.now() + 3 * 24 * 3600 * 1000),
+        },
+      });
+    } else if (isMedical) {
+      // 1 Chiến mã bị khóa y tế
+      await prisma.medicalLock.create({
+        data: {
+          horseId: h.id,
+          lockCode: `KH-DEMO-01`,
+          lockedAt: new Date(Date.now() - 2 * 24 * 3600 * 1000),
+          expectedRestDays: 14,
+          recheckDate: new Date(Date.now() + 12 * 24 * 3600 * 1000),
+          lockReason: 'Chấn thương gân chân trước bên phải cấp độ 2 sau bài tập nặng',
+        },
+      });
+    }
   }
 
   // --- 3.2. HLV QUÂN (trainer.quan@gmail.com, Barn A): 2 CHIẾN MÃ (2/8, CÒN 6 CHỖ TRỐNG ĐỂ DEMO HAPPY CASE) ---

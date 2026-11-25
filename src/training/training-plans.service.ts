@@ -1392,11 +1392,15 @@ export class TrainingPlansService {
    */
   async getAssignableHorses(user: CurrentUserPayload) {
     await this.common.sweepOverdue();
+    const whereCondition: Prisma.HorseWhereInput = {
+      deletedAt: null,
+      status: { not: HorseStatus.RETIRED },
+    };
+    if (user.role === UserRole.HEAD_TRAINER) {
+      whereCondition.assignedTrainerId = user.userId;
+    }
     const horses = await this.prisma.horse.findMany({
-      where: {
-        deletedAt: null,
-        status: { not: HorseStatus.RETIRED },
-      },
+      where: whereCondition,
       select: {
         id: true,
         name: true,
@@ -1538,17 +1542,27 @@ export class TrainingPlansService {
               badge = `HLV ${h.assignedTrainer?.fullName || 'khác'} phụ trách`;
               explanation = `Chiến mã đã được Quản lý phân công cho HLV ${h.assignedTrainer?.fullName || 'khác'}.`;
             } else if (h.assignedTrainerId === user.userId) {
-              if (h.trainerAssignmentStatus === 'PENDING_ACCEPTANCE') {
+              if (h.trainerAssignmentStatus === 'PENDING_ACCEPTANCE' || (h.trainerAssignmentStatus as string) === 'PENDING') {
                 planState = 'READY';
                 canAssign = false;
                 badge = 'Chờ bạn tiếp nhận';
                 explanation = 'Chiến mã đang chờ bạn xác nhận tiếp nhận trước khi lập giáo án.';
-              } else if (h.trainerAssignmentStatus === 'ASSIGNED') {
+              } else if (h.trainerAssignmentStatus === 'ASSIGNED' || (h.trainerAssignmentStatus as string) === 'ACCEPTED') {
+                planState = 'READY';
+                canAssign = true;
+                badge = 'Đã phân công cho bạn';
+                explanation = 'Chiến mã sẵn sàng để bạn lập giáo án mới.';
+              } else {
                 planState = 'READY';
                 canAssign = true;
                 badge = 'Đã phân công cho bạn';
                 explanation = 'Chiến mã sẵn sàng để bạn lập giáo án mới.';
               }
+            } else {
+              planState = 'READY';
+              canAssign = false;
+              badge = 'Chưa phân công HLV';
+              explanation = 'Chiến mã chưa được phân công cho bạn.';
             }
           }
         }
