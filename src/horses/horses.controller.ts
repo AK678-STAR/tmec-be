@@ -28,6 +28,8 @@ import { DeleteHorseDto } from './dto/delete-horse.dto';
 import { RestoreHorseDto } from './dto/restore-horse.dto';
 import { QueryDeletedHorseDto } from './dto/query-deleted-horse.dto';
 import {
+  ApproveAdmissionDto,
+  ReviewAdmissionHealthDto,
   CancelAdmissionDto,
   InspectAdmissionDto,
   QueryAdmissionDto,
@@ -74,15 +76,55 @@ export class HorsesController {
   @Get('admissions')
   @Roles(...ALL_STAFF_ROLES)
   @ApiOperation({ summary: 'Danh sách hồ sơ tiếp nhận ngựa (ADM-02, ADM-04) - Chỉ Staff' })
-  async listAdmissions(@Query() query: QueryAdmissionDto) {
-    return this.horsesService.listAdmissions(query);
+  async listAdmissions(@Query() query: QueryAdmissionDto, @CurrentUser() user: CurrentUserPayload) {
+    return this.horsesService.listAdmissions(query, user);
   }
 
   @Get('admissions/:id/history')
   @Roles(...ALL_STAFF_ROLES)
   @ApiOperation({ summary: 'Lịch sử các bước của hồ sơ tiếp nhận (ADM-02) - Chỉ Staff' })
-  async getAdmissionHistory(@Param('id') id: string) {
-    return this.horsesService.getAdmissionHistory(id);
+  async getAdmissionHistory(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
+    return this.horsesService.getAdmissionHistory(id, user);
+  }
+
+  @Get('admissions/capacity')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.VETERINARIAN)
+  admissionCapacity() {
+    return this.horsesService.admissionCapacity();
+  }
+
+  @Get('admissions/placement')
+  @Roles(UserRole.CLUB_MANAGER)
+  admissionPlacement(
+    @Query('stallId') stallId?: string,
+    @Query('allocationId') allocationId?: string,
+  ) {
+    return this.horsesService.admissionPlacement(stallId, allocationId);
+  }
+
+  @Post('admissions/:id/health-review')
+  @Roles(UserRole.VETERINARIAN)
+  reviewHealth(
+    @Param('id') id: string,
+    @Body() dto: ReviewAdmissionHealthDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.horsesService.inspectAdmission(
+      id,
+      {
+        isHealthEligible: dto.isHealthEligible,
+        healthCheckNotes: dto.healthCheckNotes,
+        finalizeHealth: true,
+      },
+      user,
+      dto.reason,
+    );
+  }
+
+  @Post('admissions/:id/defer-capacity')
+  @Roles(UserRole.CLUB_MANAGER)
+  deferAdmissionForCapacity(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
+    return this.horsesService.deferAdmissionForCapacity(id, user);
   }
 
   @Post('admissions/:id/schedule')
@@ -114,8 +156,12 @@ export class HorsesController {
   @Post('admissions/:id/approve')
   @Roles(UserRole.CLUB_MANAGER)
   @ApiOperation({ summary: 'Phê duyệt tiếp nhận ngựa vào CLB (ADM-02) - Chỉ Club Manager' })
-  async approveAdmission(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
-    return this.horsesService.approveAdmission(id, user);
+  async approveAdmission(
+    @Param('id') id: string,
+    @Body() dto: ApproveAdmissionDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.horsesService.approveAdmission(id, user, dto);
   }
 
   @Post('admissions/:id/reject')

@@ -110,6 +110,7 @@ export function assertValidInspectTransition(status: AdmissionStatus): void {
 }
 
 export interface InspectFieldPayload {
+  finalizeHealth?: boolean;
   scannedMicrochip?: string;
   legalVerified?: boolean;
   legalDocumentsNote?: string;
@@ -128,6 +129,7 @@ export interface InspectFieldPayload {
 export function assertInspectFieldRoles(role: string, dto: InspectFieldPayload): void {
   if (role === UserRole.CLUB_MANAGER) {
     if (
+      dto.finalizeHealth !== undefined ||
       dto.isHealthEligible !== undefined ||
       dto.healthCheckNotes !== undefined ||
       dto.veterinarianUserId !== undefined

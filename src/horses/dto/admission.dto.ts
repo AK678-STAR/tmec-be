@@ -5,6 +5,7 @@ import {
   IsInt,
   IsNotEmpty,
   IsString,
+  IsUUID,
   Length,
   Max,
   Min,
@@ -24,6 +25,21 @@ export class ScheduleAdmissionDto {
   @IsDateString({}, { message: 'Thời gian hẹn phải đúng định dạng ISO 8601.' })
   appointmentDate: string;
 
+  @ApiPropertyOptional({ description: 'Giờ kết thúc cuộc hẹn chung, mặc định sau 60 phút' })
+  @ValidateIf((_obj, val) => val !== undefined)
+  @IsDateString()
+  appointmentEndDate?: string;
+
+  @ApiPropertyOptional({ description: 'Quản lý phụ trách; mặc định người đặt hẹn' })
+  @ValidateIf((_obj, val) => val !== undefined)
+  @IsUUID()
+  managerUserId?: string;
+
+  @ApiPropertyOptional({ description: 'Bác sĩ cùng tham gia thẩm định' })
+  @ValidateIf((_obj, val) => val !== undefined)
+  @IsUUID()
+  veterinarianUserId?: string;
+
   @ApiPropertyOptional({ description: 'Hướng dẫn tiếp đón (Cổng A, liên hệ bảo vệ…)' })
   @ValidateIf((_obj, val) => val !== undefined)
   @IsString({ message: 'appointmentNotes must be a string.' })
@@ -32,6 +48,12 @@ export class ScheduleAdmissionDto {
 
 /** PATCH /horses/admissions/:id/inspect — CM cập nhật chip/pháp lý, VET cập nhật y tế. */
 export class InspectAdmissionDto {
+  @ApiPropertyOptional({
+    description: 'Xác nhận chốt kết luận, không thể sửa trực tiếp sau khi lưu',
+  })
+  @ValidateIf((_obj, val) => val !== undefined)
+  @IsBoolean()
+  finalizeHealth?: boolean;
   @ApiPropertyOptional({ description: 'Số vi mạch thực tế quét bằng máy đọc (CM)' })
   @ValidateIf((_obj, val) => val !== undefined)
   @IsString({ message: 'scannedMicrochip must be a string.' })
@@ -69,6 +91,18 @@ export class InspectAdmissionDto {
 }
 
 /** POST /horses/admissions/:id/reject */
+export class ReviewAdmissionHealthDto {
+  @IsBoolean() isHealthEligible: boolean;
+  @IsString() @Length(2, 2000) healthCheckNotes: string;
+  @IsString() @Length(10, 500) reason: string;
+}
+
+export class ApproveAdmissionDto {
+  @IsUUID() stallId: string;
+  @IsUUID() assignedGroomUserId: string;
+  @IsUUID() receivingGroomUserId: string;
+}
+
 export class RejectAdmissionDto {
   @ApiProperty({
     description: 'Lý do từ chối (bắt buộc, 10–500 ký tự)',

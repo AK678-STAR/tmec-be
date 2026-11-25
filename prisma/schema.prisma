@@ -295,6 +295,8 @@ model User {
   badDebtReason        String?
 
   horsesOwned              Horse[]                  @relation("OwnerHorses")
+  admissionAppointments    HorseAdmissionRecord[]    @relation("AdmissionAppointments")
+  staffWorkItems           StaffWorkItem[]
   horsesDeleted            Horse[]                  @relation("HorseDeletedBy")
   stallAllocations         StallAllocation[]        @relation("GroomStalls")
   trainingPlansCreated     TrainingPlan[]           @relation("TrainerPlans")
@@ -1253,6 +1255,7 @@ model ShiftCatalog {
 }
 
 model ShiftRoster {
+  dutyTypes   String[] @default(["CLEANING", "HORSE_CARE"])
   id          String       @id @default(uuid())
   date        DateTime     @db.Date
   shiftId     String
@@ -1472,9 +1475,29 @@ model HorseTransferRequest {
 // ADM-01 (SPEC-EQUIFLOW-HORSE-ADMISSION-V2 §4): TIẾP NHẬN & THẨM ĐỊNH NGỰA
 // -------------------------------------------------------------
 
-/// Hồ sơ tiếp nhận ngựa: chủ ngựa đăng ký -> xếp lịch -> thẩm định (chip/pháp lý/y tế) -> CM quyết định.
-/// horseId KHÔNG unique (nhiều hồ sơ / đăng ký lại sau REJECTED); ADM-code unique mỗi lần tạo.
+/// Công việc có giờ cụ thể do Quản lý phân công ngoài các lịch nghiệp vụ có sẵn.
+model StaffWorkItem {
+  id String @id @default(uuid())
+  title String
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  startsAt DateTime
+  endsAt DateTime
+  location String?
+  notes String?
+  status String @default("PENDING")
+  createdById String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, startsAt])
+}
+
+/// Hồ sơ tiếp nhận: đăng ký -> hẹn chung -> chip/pháp lý/y tế -> quyết định.
+/// horseId không unique: có thể đăng ký lại sau khi bị từ chối.
 model HorseAdmissionRecord {
+  healthFinalizedAt DateTime?
+  healthReviews AdmissionHealthReview[]
   id           String   @id @default(uuid())
   admissionCode String  @unique // ADM-YYYY-NNN
   horseId      String
@@ -1485,6 +1508,10 @@ model HorseAdmissionRecord {
 
   // §1 Lịch hẹn thẩm định (CM)
   appointmentDate    DateTime?
+  appointmentEndDate DateTime?
+  managerUserId      String?
+  manager            User? @relation("AdmissionAppointments", fields: [managerUserId], references: [id], onDelete: SetNull)
+  capacityDeferredAt DateTime?
   appointmentNotes   String?
 
   // §2 Pháp lý & vi mạch (CM)
@@ -1514,11 +1541,26 @@ model HorseAdmissionRecord {
   updatedAt    DateTime @updatedAt
 
   @@index([status, admittedAt])
+  @@index([managerUserId, appointmentDate])
+  @@index([veterinarianUserId, appointmentDate])
   @@index([horseId])
   @@index([ownerId])
 }
 
 /// Nhật ký lịch sử tiếp nhận (audit trail): ai đổi trạng thái, khi nào, lý do gì (§8 spec).
+model AdmissionHealthReview {
+  id String @id @default(uuid())
+  admissionId String
+  admission HorseAdmissionRecord @relation(fields: [admissionId], references: [id], onDelete: Restrict)
+  veterinarianUserId String
+  veterinarianName String
+  isHealthEligible Boolean
+  notes String
+  reason String?
+  createdAt DateTime @default(now())
+  @@index([admissionId, createdAt])
+}
+
 model AdmissionHistoryLog {
   id          String  @id @default(uuid())
   admissionId String
