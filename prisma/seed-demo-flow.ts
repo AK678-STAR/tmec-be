@@ -3,6 +3,7 @@ import {
   Role,
   UserStatus,
   HorseStatus,
+  AdmissionStatus,
   StallStatus,
   PlanStatus,
   WorkoutStatus,
@@ -146,6 +147,19 @@ async function main() {
       role: Role.HORSE_OWNER,
       status: UserStatus.ACTIVE,
       phoneNumber: '0905000001',
+    },
+  });
+
+  const vet = await prisma.user.upsert({
+    where: { email: 'vet@gmail.com' },
+    update: { passwordHash, status: UserStatus.ACTIVE, fullName: 'BS. Hoàng Thị Mai' },
+    create: {
+      email: 'vet@gmail.com',
+      passwordHash,
+      fullName: 'BS. Hoàng Thị Mai',
+      role: Role.VETERINARIAN,
+      status: UserStatus.ACTIVE,
+      phoneNumber: '0903115999',
     },
   });
 
@@ -312,6 +326,7 @@ async function main() {
   const groom1Horses: { horse: any; stall: any }[] = [];
   const groom2Horses: { horse: any; stall: any }[] = [];
   const groom3Horses: { horse: any; stall: any }[] = [];
+  const groom4Horses: { horse: any; stall: any }[] = [];
 
   // --- Helper tạo giáo án đang hoạt động kèm phases và các buổi tập thực tế ---
   async function createLivePlanWithWorkouts(params: {
@@ -685,11 +700,11 @@ async function main() {
       data: {
         stallId: stallC.id,
         horseId: h.id,
-        assignedGroomUserId: groom3.id,
+        assignedGroomUserId: groom4.id,
         isActive: true,
       },
     });
-    groom3Horses.push({ horse: h, stall: stallC });
+    groom4Horses.push({ horse: h, stall: stallC });
 
     await createLivePlanWithWorkouts({
       horseId: h.id,
@@ -858,8 +873,98 @@ async function main() {
     data: {
       stallId: stallsB[7].id, // Chuồng B-08
       horseId: demoHorse4.id,
-      assignedGroomUserId: groom3.id,
+      assignedGroomUserId: groom4.id,
       isActive: true,
+    },
+  });
+  groom4Horses.push({ horse: demoHorse4, stall: stallsB[7] });
+
+  // --- Khởi tạo 2 hồ sơ tiếp nhận chiến mã (HorseAdmissionRecord) phục vụ Màn 3 ---
+  console.log('📋 Tạo 2 hồ sơ tiếp nhận chiến mã (HorseAdmissionRecord) phục vụ Màn 3...');
+
+  // 1. Chiến mã "Ánh Dương" - Sẵn sàng thẩm định & phê duyệt nhập chuồng (APPOINTED)
+  const admHorse1 = await prisma.horse.upsert({
+    where: { horseCode: 'HR-ADM-001' },
+    update: {
+      name: 'Ánh Dương',
+      avatarUrl: '/images/horses/horse-07.jpg',
+      status: HorseStatus.PENDING_ADMISSION,
+      microchip: '985000008001',
+      microchipRfid: '985000008001',
+      ownerId: owner.id,
+    },
+    create: {
+      horseCode: 'HR-ADM-001',
+      name: 'Ánh Dương',
+      avatarUrl: '/images/horses/horse-07.jpg',
+      breed: 'Thoroughbred',
+      gender: 'FEMALE',
+      color: 'Chestnut',
+      dob: new Date('2022-03-15'),
+      weightKg: 465.0,
+      microchip: '985000008001',
+      microchipRfid: '985000008001',
+      status: HorseStatus.PENDING_ADMISSION,
+      ownerId: owner.id,
+    },
+  });
+
+  await prisma.horseAdmissionRecord.deleteMany({ where: { admissionCode: 'ADM-2026-001' } });
+  await prisma.horseAdmissionRecord.create({
+    data: {
+      admissionCode: 'ADM-2026-001',
+      horseId: admHorse1.id,
+      ownerId: owner.id,
+      status: AdmissionStatus.INSPECTION_IN_PROGRESS,
+      appointmentDate: new Date(Date.now() + 24 * 3600 * 1000),
+      appointmentNotes: 'Điểm tiếp nhận kiểm dịch Cổng A. Chủ ngựa mang theo bản gốc giấy tờ gia phả và sổ tiêm chủng.',
+      declaredMicrochip: '985000008001',
+      scannedMicrochip: '985000008001',
+      microchipVerified: true,
+      legalVerified: true,
+      legalDocumentsNote: 'Chứng nhận nguồn gốc giống Thoroughbred & hồ sơ kiểm dịch đã xác thực hợp lệ.',
+      veterinarianUserId: vet.id,
+      isHealthEligible: true,
+      healthCheckNotes: 'Đạt chuẩn kiểm dịch: Không có triệu chứng truyền nhiễm, tim phổi nhịp đều, cơ bắp phát triển tốt.',
+    },
+  });
+
+  // 2. Chiến mã "Hải Đăng" - Đơn mới chờ xếp lịch (PENDING_VERIFICATION)
+  const admHorse2 = await prisma.horse.upsert({
+    where: { horseCode: 'HR-ADM-002' },
+    update: {
+      name: 'Hải Đăng',
+      avatarUrl: '/images/horses/horse-08.jpg',
+      status: HorseStatus.PENDING_ADMISSION,
+      microchip: '985000008002',
+      microchipRfid: '985000008002',
+      ownerId: owner.id,
+    },
+    create: {
+      horseCode: 'HR-ADM-002',
+      name: 'Hải Đăng',
+      avatarUrl: '/images/horses/horse-08.jpg',
+      breed: 'Quarter Horse',
+      gender: 'MALE',
+      color: 'Bay',
+      dob: new Date('2022-06-20'),
+      weightKg: 480.0,
+      microchip: '985000008002',
+      microchipRfid: '985000008002',
+      status: HorseStatus.PENDING_ADMISSION,
+      ownerId: owner.id,
+    },
+  });
+
+  await prisma.horseAdmissionRecord.deleteMany({ where: { admissionCode: 'ADM-2026-002' } });
+  await prisma.horseAdmissionRecord.create({
+    data: {
+      admissionCode: 'ADM-2026-002',
+      horseId: admHorse2.id,
+      ownerId: owner.id,
+      status: AdmissionStatus.PENDING_VERIFICATION,
+      declaredMicrochip: '985000008002',
+      legalDocumentsNote: 'Đơn đăng ký mới trực tuyến từ Chủ ngựa Robert Sterling.',
     },
   });
 
@@ -888,8 +993,8 @@ async function main() {
   const groomProfiles = [
     { user: groom, horses: groom1Horses, zone: zoneA, shiftNotes: 'Trực chính phân khu Barn A (Ô A-01 đến A-04, 4/6 ô)' },
     { user: groom2, horses: groom2Horses, zone: zoneA, shiftNotes: 'Trực hỗ trợ phân khu Barn A (Ô A-05 đến A-10, 6/6 ô đầy tải)' },
-    { user: groom4, horses: [], zone: zoneA, shiftNotes: 'Trực dự phòng phân khu Barn A (Sẵn sàng nhận việc, 0/6 ô)' },
-    { user: groom3, horses: groom3Horses, zone: zoneB, shiftNotes: 'Trực chính phân khu Barn B (Ô B-01 đến B-03, 3/6 ô)' },
+    { user: groom3, horses: groom3Horses, zone: zoneB, shiftNotes: 'Trực chính phân khu Barn B (Ô B-01 đến B-04, 4/6 ô)' },
+    { user: groom4, horses: groom4Horses, zone: zoneB, shiftNotes: 'Trực chính phân khu Barn B (Ô B-05 đến B-08, 4/6 ô)' },
   ];
 
   for (const gp of groomProfiles) {
@@ -1095,8 +1200,8 @@ async function main() {
   console.log('   - Huấn luyện viên: trainer3@gmail.com (Phạm Quốc Trung)');
   console.log(`   - Groom 1 (Barn A, 4/6 ô):  groom@gmail.com    (Trần Thị Mai)
    - Groom 2 (Barn A, 6/6 ô):  groom2@gmail.com   (Hoàng Văn Phúc)
-   - Groom 3 (Barn B, 3/6 ô):  groom3@gmail.com   (Đỗ Thị Mai)
-   - Groom 4 (Barn A, 0/6 ô):  groom4@gmail.com   (Lê Quốc Tuấn)`);
+   - Groom 3 (Barn B, 4/6 ô):  groom3@gmail.com   (Đỗ Thị Mai)
+   - Groom 4 (Barn B, 4/6 ô):  groom4@gmail.com   (Lê Quốc Tuấn)`);
   console.log('---------------------------------------------------------------------');
 }
 
