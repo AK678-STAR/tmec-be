@@ -954,31 +954,40 @@ export class HorsesService {
     } = query;
 
     const where: Prisma.HorseWhereInput = { deletedAt: null };
+    const andFilters: Prisma.HorseWhereInput[] = [];
 
     if (user.role === UserRole.HORSE_OWNER) {
       where.ownerId = user.userId;
     } else if (user.role === UserRole.GROOM) {
-      where.OR = [
-        { stallAllocations: { some: { isActive: true, assignedGroomUserId: user.userId } } },
-        {
-          dailyCareTasks: {
-            some: { date: rosterDay(), assignedGroomUserId: user.userId, cancelledAt: null },
+      andFilters.push({
+        OR: [
+          { stallAllocations: { some: { isActive: true, assignedGroomUserId: user.userId } } },
+          {
+            dailyCareTasks: {
+              some: { date: rosterDay(), assignedGroomUserId: user.userId, cancelledAt: null },
+            },
           },
-        },
-      ];
+        ],
+      });
     } else if (user.role === UserRole.HEAD_TRAINER) {
-      where.AND = [trainerHorseScope(user.userId, query.assignable === 'true')];
+      andFilters.push(trainerHorseScope(user.userId, query.assignable === 'true'));
     }
 
     if (search && search.trim()) {
       const q = search.trim();
-      where.OR = [
-        { name: { contains: q, mode: 'insensitive' } },
-        { horseCode: { contains: q, mode: 'insensitive' } },
-        { microchip: { contains: q, mode: 'insensitive' } },
-        { microchipRfid: { contains: q, mode: 'insensitive' } },
-        { breed: { contains: q, mode: 'insensitive' } },
-      ];
+      andFilters.push({
+        OR: [
+          { name: { contains: q, mode: 'insensitive' } },
+          { horseCode: { contains: q, mode: 'insensitive' } },
+          { microchip: { contains: q, mode: 'insensitive' } },
+          { microchipRfid: { contains: q, mode: 'insensitive' } },
+          { breed: { contains: q, mode: 'insensitive' } },
+        ],
+      });
+    }
+
+    if (andFilters.length > 0) {
+      where.AND = andFilters;
     }
 
     if (status && status !== 'ALL') {

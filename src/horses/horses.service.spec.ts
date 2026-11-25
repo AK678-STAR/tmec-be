@@ -1066,6 +1066,32 @@ describe('HorsesService', () => {
         }),
       );
     });
+
+    it('should preserve GROOM assigned-only scope even when search query is provided', async () => {
+      prisma.horse.findMany.mockResolvedValue([]);
+      prisma.horse.count.mockResolvedValue(0);
+
+      await service.findAll({ search: 'Thunder' }, mockGroom);
+
+      const callWhere = prisma.horse.findMany.mock.calls[0][0].where;
+      expect(Array.isArray(callWhere.AND)).toBe(true);
+      expect(callWhere.AND).toHaveLength(2);
+      expect(callWhere.AND[0].OR).toEqual([
+        { stallAllocations: { some: { isActive: true, assignedGroomUserId: mockGroom.userId } } },
+        {
+          dailyCareTasks: {
+            some: {
+              date: expect.any(Date),
+              assignedGroomUserId: mockGroom.userId,
+              cancelledAt: null,
+            },
+          },
+        },
+      ]);
+      expect(callWhere.AND[1].OR).toEqual(
+        expect.arrayContaining([{ name: { contains: 'Thunder', mode: 'insensitive' } }]),
+      );
+    });
   });
 
   describe('findOne - ownership isolation', () => {

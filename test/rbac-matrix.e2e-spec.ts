@@ -158,12 +158,26 @@ describe('5-Role Parameterized Matrix: Scope & Permission Enforcement (RULE-RBAC
         expect(lastFindManyWhere?.ownerId).toBeUndefined();
         expect(lastFindManyWhere?.stallAllocations).toBeUndefined();
       } else if (expectedScope === 'ASSIGNED_ONLY') {
-        const some = lastFindManyWhere?.stallAllocations?.some;
-        expect(some?.stall?.zoneId?.in || some?.assignedGroomUserId).toBeTruthy();
-        if (some?.stall?.zoneId?.in) {
-          expect(some.stall.zoneId.in).toEqual(['zone-a']);
+        const orBranches: any[] =
+          lastFindManyWhere?.OR ??
+          lastFindManyWhere?.AND?.find((c: any) => Array.isArray(c.OR))?.OR ??
+          [];
+        const allocSome =
+          lastFindManyWhere?.stallAllocations?.some ??
+          orBranches.find((b) => b?.stallAllocations?.some)?.stallAllocations?.some;
+        const careSome = orBranches.find((b) => b?.dailyCareTasks?.some)?.dailyCareTasks?.some;
+        expect(
+          allocSome?.stall?.zoneId?.in ||
+            allocSome?.assignedGroomUserId ||
+            careSome?.assignedGroomUserId,
+        ).toBeTruthy();
+        if (allocSome?.stall?.zoneId?.in) {
+          expect(allocSome.stall.zoneId.in).toEqual(['zone-a']);
         } else {
-          expect(some.assignedGroomUserId).toBe('u-groom');
+          expect(allocSome?.assignedGroomUserId).toBe('u-groom');
+          if (careSome) {
+            expect(careSome.assignedGroomUserId).toBe('u-groom');
+          }
         }
       } else if (expectedScope === 'OWNED_ONLY') {
         expect(lastFindManyWhere?.ownerId).toBe('u-owner');
