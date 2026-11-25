@@ -1,11 +1,14 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import * as crypto from 'crypto';
 import {
   AdmissionStatus,
+  HandoverStatus,
   HorseCatalogType,
   HorseStatus,
   PlanStatus,
   Prisma,
   Role,
+  TrainerAssignmentStatus,
   UserStatus,
 } from '@prisma/client';
 import { apiError } from '../common/exceptions/api-error';
@@ -14,6 +17,8 @@ import { CurrentUserPayload } from '../common/decorators/current-user.decorator'
 import { CreateHorseDto } from './dto/create-horse.dto';
 import { UpdateHorseDto } from './dto/update-horse.dto';
 import { QueryHorseDto } from './dto/query-horse.dto';
+import { AssignHorseTrainerDto, HandoverAction, RespondHandoverDto } from './dto/handover.dto';
+import { MAX_HORSES_PER_TRAINER } from '../training/training-rules';
 import { PrismaService } from '../prisma/prisma.service';
 import { groomZoneIds, horsesInZones } from '../shift-rosters/groom-zones';
 import { AuditService } from '../audit/audit.service';
@@ -864,6 +869,7 @@ export class HorsesService {
         take: limit,
         include: {
           owner: { select: USER_SAFE_SELECT },
+          assignedTrainer: { select: USER_SAFE_SELECT },
           stallAllocations: {
             where: { isActive: true },
             include: { stall: true, assignedGroom: { select: USER_SAFE_SELECT } },
@@ -932,6 +938,7 @@ export class HorsesService {
       where: { id, deletedAt: null },
       include: {
         owner: { select: USER_SAFE_SELECT },
+        assignedTrainer: { select: USER_SAFE_SELECT },
         stallAllocations: {
           where: { isActive: true },
           include: { stall: true, assignedGroom: { select: USER_SAFE_SELECT } },
@@ -940,6 +947,14 @@ export class HorsesService {
           where: { isLocked: true },
           include: { veterinarian: { select: USER_SAFE_SELECT } },
           take: 1,
+        },
+        handoverRequests: {
+          take: 5,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            toTrainer: { select: USER_SAFE_SELECT },
+            fromManager: { select: USER_SAFE_SELECT },
+          },
         },
       },
     });
@@ -1789,10 +1804,425 @@ export class HorsesService {
 
     return updated;
   }
+
+  // =========================================================================
+  // HANDOVER & TRAINER ASSIGNMENT (BR-BARN-SOVEREIGNTY, SLA-HANDOVER-48H)
+  // =========================================================================
+
+  /**
+   * Quản lý phân công HLV phụ trách chiến mã (bắt buộc cùng Barn, kiểm tra trần 8 con).
+   * Tạo yêu cầu bàn giao kèm Token SLA 48 giờ và gửi email cho HLV.
+   */
+  async assignTrainer(horseId: string, dto: AssignHorseTrainerDto, manager: CurrentUserPayload) {
+    const horse = await this.prisma.horse.findUnique({
+      where: { id: horseId, deletedAt: null },
+      include: {
+        stallAllocations: {
+          where: { isActive: true },
+          take: 1,
+          include: {
+            stall: {
+              include: { zoneRef: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!horse) {
+      throw apiError(HttpStatus.NOT_FOUND, 'HORSE_NOT_FOUND', 'Chiến mã không tồn tại.');
+    }
+    if (horse.status === HorseStatus.RETIRED) {
+      throw apiError(HttpStatus.BAD_REQUEST, 'HORSE_RETIRED', 'Ngựa đã ngừng quản lý.');
+    }
+
+    const activeAllocation = horse.stallAllocations[0];
+    if (!activeAllocation || !activeAllocation.stall) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'HORSE_NOT_IN_STALL',
+        'Chiến mã chưa được xếp ô chuồng. Vui lòng xếp ô chuồng thuộc Khu chuồng (Barn) trước khi phân công HLV.',
+      );
+    }
+
+    const horseBarnId = activeAllocation.stall.zoneId;
+
+    const trainer = await this.prisma.user.findUnique({
+      where: { id: dto.trainerUserId },
+      include: { assignedBarn: true },
+    });
+
+    if (
+      !trainer ||
+      trainer.status !== UserStatus.ACTIVE ||
+      trainer.role !== Role.HEAD_TRAINER
+    ) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'INVALID_TRAINER',
+        'Huấn luyện viên không hợp lệ hoặc đang không hoạt động.',
+      );
+    }
+
+    if (!trainer.assignedBarnId) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'TRAINER_NO_BARN',
+        `Huấn luyện viên ${trainer.fullName} chưa được phân công phụ trách Khu chuồng (Barn) nào.`,
+      );
+    }
+
+    if (horseBarnId && trainer.assignedBarnId !== horseBarnId) {
+      const barnName = activeAllocation.stall.zoneRef?.name || activeAllocation.stall.zone;
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'BARN_MISMATCH',
+        `Chiến mã đang ở ${barnName}. HLV ${trainer.fullName} phụ trách ${trainer.assignedBarn?.name || 'khu chuồng khác'}. HLV chỉ được nhận chiến mã trong cùng Khu chuồng.`,
+      );
+    }
+
+    // Kiểm tra định mức tối đa 8 chiến mã của HLV
+    const currentAssignedCount = await this.prisma.horse.count({
+      where: {
+        assignedTrainerId: trainer.id,
+        trainerAssignmentStatus: {
+          in: [TrainerAssignmentStatus.ASSIGNED, TrainerAssignmentStatus.PENDING_ACCEPTANCE],
+        },
+        deletedAt: null,
+        id: { not: horse.id },
+      },
+    });
+
+    if (currentAssignedCount >= MAX_HORSES_PER_TRAINER) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'TRAINER_CAPACITY_EXCEEDED',
+        `Huấn luyện viên ${trainer.fullName} đã đạt định mức tối đa ${MAX_HORSES_PER_TRAINER} chiến mã đồng thời.`,
+      );
+    }
+
+    // Hủy các yêu cầu PENDING cũ của ngựa này nếu có
+    await this.prisma.horseHandoverRequest.updateMany({
+      where: { horseId: horse.id, status: HandoverStatus.PENDING },
+      data: { status: HandoverStatus.CANCELLED },
+    });
+
+    const token = crypto.randomBytes(24).toString('hex');
+    const expiresAt = new Date(Date.now() + 48 * 3600 * 1000); // 48 giờ SLA
+
+    const handover = await this.prisma.$transaction(async (tx) => {
+      const req = await tx.horseHandoverRequest.create({
+        data: {
+          horseId: horse.id,
+          fromManagerId: manager.userId,
+          toTrainerId: trainer.id,
+          status: HandoverStatus.PENDING,
+          token,
+          notes: dto.notes?.trim() || null,
+          expiresAt,
+        },
+      });
+
+      await tx.horse.update({
+        where: { id: horse.id },
+        data: {
+          assignedTrainerId: trainer.id,
+          trainerAssignmentStatus: TrainerAssignmentStatus.PENDING_ACCEPTANCE,
+          trainerAssignedAt: new Date(),
+          trainerResponseDeadline: expiresAt,
+          trainerRespondedAt: null,
+          trainerDeclineReason: null,
+        },
+      });
+
+      await this.auditService.record(
+        { id: manager.userId, name: manager.fullName || manager.email },
+        'HORSE_TRAINER_ASSIGNED',
+        `Quản lý phân công chiến mã ${horse.name} (${horse.horseCode}) cho HLV ${trainer.fullName}. Hạn phản hồi: 48 giờ`,
+        horse.id,
+        {
+          entityName: 'Horse',
+          newValues: {
+            assignedTrainerId: trainer.id,
+            trainerAssignmentStatus: TrainerAssignmentStatus.PENDING_ACCEPTANCE,
+            expiresAt,
+          },
+        },
+        tx,
+      );
+
+      return req;
+    });
+
+    const appUrl = process.env.APP_URL || 'http://localhost:5173';
+    const confirmLink = `${appUrl}/handovers/${token}`;
+
+    await this.safeSendMail({
+      eventCode: 'HORSE_HANDOVER_ASSIGNED',
+      recipients: [
+        {
+          userId: trainer.id,
+          body: {
+            subject: `[TMEC] Thông báo phân công chiến mã: ${horse.name} (${horse.horseCode})`,
+            text: `Kính gửi HLV ${trainer.fullName},\n\nQuản lý đã phân công chiến mã ${horse.name} (${horse.horseCode}) tại ô chuồng ${activeAllocation.stall.code} cho bạn phụ trách.\n\nVui lòng truy cập đường dẫn sau để xác nhận tiếp nhận trong vòng 48 giờ:\n${confirmLink}\n\nTrân trọng,\nTMEC System`,
+            html: `<p>Kính gửi HLV <strong>${trainer.fullName}</strong>,</p><p>Quản lý đã phân công chiến mã <strong>${horse.name}</strong> (${horse.horseCode}) tại ô chuồng <strong>${activeAllocation.stall.code}</strong> cho bạn phụ trách.</p><p>Thời hạn tiếp nhận: <strong>48 giờ</strong> (trước ${expiresAt.toLocaleString('vi-VN')}).</p><p><a href="${confirmLink}" style="display:inline-block;padding:10px 20px;background:#16a34a;color:#fff;text-decoration:none;border-radius:6px;font-weight:bold;">TIẾP NHẬN CHIẾN MÃ</a></p><p>Trân trọng,<br>TMEC Equine System</p>`,
+            refId: handover.id,
+            milestone: 'handover-assigned',
+          },
+        },
+      ],
+    });
+
+    return {
+      success: true,
+      handoverId: handover.id,
+      token,
+      expiresAt,
+      message: `Đã phân công chiến mã ${horse.name} cho HLV ${trainer.fullName} và gửi email xác nhận.`,
+    };
+  }
+
+  /**
+   * HLV xác nhận tiếp nhận hoặc từ chối chiến mã qua Token (SLA 48h).
+   * Khi Tiếp nhận: tính hạn lập giáo án theo SLA Lũy tiến (3 ngày + (N-1)*2 ngày).
+   */
+  async respondHandover(dto: RespondHandoverDto, currentUser?: CurrentUserPayload) {
+    const req = await this.prisma.horseHandoverRequest.findUnique({
+      where: { token: dto.token },
+      include: {
+        horse: true,
+        toTrainer: true,
+        fromManager: true,
+      },
+    });
+
+    if (!req) {
+      throw apiError(HttpStatus.NOT_FOUND, 'HANDOVER_NOT_FOUND', 'Yêu cầu phân công không tồn tại.');
+    }
+
+    if (req.status !== HandoverStatus.PENDING) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'HANDOVER_ALREADY_PROCESSED',
+        `Yêu cầu phân công này đã được xử lý (trạng thái: ${req.status}).`,
+      );
+    }
+
+    if (
+      currentUser &&
+      currentUser.role === UserRole.HEAD_TRAINER &&
+      currentUser.userId !== req.toTrainerId
+    ) {
+      throw apiError(
+        HttpStatus.FORBIDDEN,
+        'FORBIDDEN',
+        'Bạn không phải là Huấn luyện viên được phân công chiến mã này.',
+      );
+    }
+
+    if (req.expiresAt < new Date()) {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.horseHandoverRequest.update({
+          where: { id: req.id },
+          data: { status: HandoverStatus.EXPIRED },
+        });
+        await tx.horse.update({
+          where: { id: req.horseId },
+          data: {
+            trainerAssignmentStatus: TrainerAssignmentStatus.DECLINED,
+            trainerDeclineReason: 'Hết hạn phản hồi 48h',
+            trainerRespondedAt: new Date(),
+          },
+        });
+      });
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'HANDOVER_EXPIRED',
+        'Yêu cầu phân công đã hết hạn phản hồi (48 giờ).',
+      );
+    }
+
+    if (dto.action === HandoverAction.ACCEPT) {
+      // Đếm số ngựa đã ACCEPT của HLV này mà chưa có giáo án ACTIVE
+      const waitingCount = await this.prisma.horse.count({
+        where: {
+          assignedTrainerId: req.toTrainerId,
+          trainerAssignmentStatus: TrainerAssignmentStatus.ASSIGNED,
+          deletedAt: null,
+          trainingPlans: { none: { status: PlanStatus.ACTIVE } },
+          id: { not: req.horseId },
+        },
+      });
+
+      // SLA Lũy tiến: 3 ngày cho con đầu tiên, +2 ngày cho mỗi con chờ tiếp theo
+      const days = 3 + waitingCount * 2;
+      const planDeadlineAt = new Date(Date.now() + days * 24 * 3600 * 1000);
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.horseHandoverRequest.update({
+          where: { id: req.id },
+          data: {
+            status: HandoverStatus.ACCEPTED,
+            acceptedAt: new Date(),
+            planDeadlineAt,
+          },
+        });
+
+        await tx.horse.update({
+          where: { id: req.horseId },
+          data: {
+            trainerAssignmentStatus: TrainerAssignmentStatus.ASSIGNED,
+            trainerRespondedAt: new Date(),
+            trainerDeclineReason: null,
+          },
+        });
+
+        await this.auditService.record(
+          { id: req.toTrainerId, name: req.toTrainer.fullName },
+          'HORSE_HANDOVER_ACCEPTED',
+          `HLV ${req.toTrainer.fullName} đã tiếp nhận chiến mã ${req.horse.name}. Hạn lập giáo án: ${days} ngày`,
+          req.horseId,
+          {
+            entityName: 'HorseHandoverRequest',
+            newValues: { status: HandoverStatus.ACCEPTED, days, planDeadlineAt },
+          },
+          tx,
+        );
+      });
+
+      return {
+        success: true,
+        action: HandoverAction.ACCEPT,
+        message: `Đã tiếp nhận chiến mã ${req.horse.name}. Hạn lập giáo án hoàn thành: ${days} ngày.`,
+        days,
+        planDeadlineAt,
+      };
+    } else {
+      const declineReason = dto.declineReason?.trim() || 'HLV từ chối tiếp nhận chiến mã';
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.horseHandoverRequest.update({
+          where: { id: req.id },
+          data: {
+            status: HandoverStatus.REJECTED,
+            notes: declineReason,
+          },
+        });
+
+        await tx.horse.update({
+          where: { id: req.horseId },
+          data: {
+            trainerAssignmentStatus: TrainerAssignmentStatus.DECLINED,
+            trainerDeclineReason: declineReason,
+            trainerRespondedAt: new Date(),
+          },
+        });
+
+        await this.auditService.record(
+          { id: req.toTrainerId, name: req.toTrainer.fullName },
+          'HORSE_HANDOVER_REJECTED',
+          `HLV ${req.toTrainer.fullName} từ chối tiếp nhận chiến mã ${req.horse.name}. Lý do: ${declineReason}`,
+          req.horseId,
+          {
+            entityName: 'HorseHandoverRequest',
+            newValues: { status: HandoverStatus.REJECTED, declineReason },
+          },
+          tx,
+        );
+      });
+
+      // Thông báo cho Quản lý
+      await this.safeSendMail({
+        eventCode: 'HORSE_HANDOVER_REJECTED',
+        recipients: [
+          {
+            userId: req.fromManagerId,
+            body: {
+              subject: `[TMEC Cảnh báo] HLV từ chối tiếp nhận chiến mã: ${req.horse.name}`,
+              text: `HLV ${req.toTrainer.fullName} đã từ chối tiếp nhận chiến mã ${req.horse.name} (${req.horse.horseCode}).\nLý do: ${declineReason}\nVui lòng truy cập hệ thống để phân công lại.`,
+              refId: req.id,
+              milestone: 'handover-rejected',
+            },
+          },
+        ],
+      });
+
+      return {
+        success: true,
+        action: HandoverAction.REJECT,
+        message: `Đã từ chối tiếp nhận chiến mã ${req.horse.name}.`,
+      };
+    }
+  }
+
+  /**
+   * Lấy danh sách yêu cầu phân công đang chờ HLV phản hồi (PENDING, < 48h).
+   */
+  async getPendingHandovers(user: CurrentUserPayload) {
+    return this.prisma.horseHandoverRequest.findMany({
+      where: {
+        toTrainerId: user.userId,
+        status: HandoverStatus.PENDING,
+      },
+      include: {
+        horse: {
+          select: {
+            id: true,
+            name: true,
+            horseCode: true,
+            avatarUrl: true,
+            breed: true,
+            gender: true,
+            color: true,
+            stallAllocations: {
+              where: { isActive: true },
+              take: 1,
+              include: { stall: true },
+            },
+          },
+        },
+        fromManager: {
+          select: { id: true, fullName: true, email: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /**
+   * Lấy danh sách chiến mã HLV đã tiếp nhận (ASSIGNED) nhưng chưa có giáo án Đang áp dụng (ACTIVE).
+   */
+  async getMyWaitingHorses(user: CurrentUserPayload) {
+    return this.prisma.horse.findMany({
+      where: {
+        assignedTrainerId: user.userId,
+        trainerAssignmentStatus: TrainerAssignmentStatus.ASSIGNED,
+        deletedAt: null,
+        trainingPlans: { none: { status: PlanStatus.ACTIVE } },
+      },
+      include: {
+        handoverRequests: {
+          where: { status: HandoverStatus.ACCEPTED },
+          orderBy: { acceptedAt: 'desc' },
+          take: 1,
+        },
+        trainingPlans: {
+          where: { status: PlanStatus.DRAFT },
+          take: 1,
+        },
+        stallAllocations: {
+          where: { isActive: true },
+          take: 1,
+          include: { stall: true },
+        },
+      },
+      orderBy: { name: 'asc' },
+    });
+  }
 }
 
 /**
- * Ngựa HLV được xem: ngựa có giáo án Nháp/Đang áp dụng của HLV.
+ * Ngựa HLV được xem: ngựa có giáo án Nháp/Đang áp dụng của HLV HOẶC được gán trực tiếp.
  * withUnclaimed: thêm ngựa chưa có HLV nào phụ trách (chỉ dùng khi chọn ngựa cho giáo án mới).
  */
 export function trainerHorseScope(

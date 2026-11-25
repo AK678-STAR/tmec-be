@@ -1,6 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { DailyTaskType, HorseStatus, InvoiceStatus, Prisma, Role } from '@prisma/client';
+import {
+  DailyTaskType,
+  HandoverStatus,
+  HorseStatus,
+  InvoiceStatus,
+  PlanStatus,
+  Prisma,
+  Role,
+  TrainerAssignmentStatus,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { BusinessMailService } from './business-mail.service';
 import { dueDay, dueSoon, overdue3, overdue7 } from './templates/billing-templates';
@@ -37,7 +46,12 @@ export class BusinessMailScheduler {
   @Cron('0 7 * * *', { name: 'business-mail.reminders', timeZone: 'Asia/Ho_Chi_Minh' })
   async remind(): Promise<void> {
     // Separate sweeps: a failed invoice query must not suppress care alerts or delivery retries.
-    for (const work of [() => this.invoices(), () => this.tasks(), () => this.mail.retryFailed()]) {
+    for (const work of [
+      () => this.invoices(),
+      () => this.tasks(),
+      () => this.handovers(),
+      () => this.mail.retryFailed(),
+    ]) {
       await this.safely(work);
     }
   }
@@ -272,5 +286,96 @@ export class BusinessMailScheduler {
         body: { ...content, milestone: 'repeat-overdue', refId: task.id },
       })),
     });
+  }
+
+  /**
+   * Quét SLA 48h cho yêu cầu phân công chiến mã & SLA Lũy tiến cho lập giáo án
+   */
+  async handovers(): Promise<void> {
+    const now = new Date();
+
+    // 1. Quét yêu cầu phân công quá hạn 48h chưa phản hồi
+    const expiredHandovers = await this.prisma.horseHandoverRequest.findMany({
+      where: {
+        status: HandoverStatus.PENDING,
+        expiresAt: { lt: now },
+      },
+      include: {
+        horse: true,
+        toTrainer: true,
+        fromManager: true,
+      },
+    });
+
+    for (const req of expiredHandovers) {
+      await this.safely(async () => {
+        await this.prisma.$transaction(async (tx) => {
+          await tx.horseHandoverRequest.update({
+            where: { id: req.id },
+            data: { status: HandoverStatus.EXPIRED },
+          });
+          await tx.horse.update({
+            where: { id: req.horseId },
+            data: {
+              trainerAssignmentStatus: TrainerAssignmentStatus.DECLINED,
+              trainerDeclineReason: 'Hết hạn phản hồi 48h (Hệ thống tự động hủy)',
+              trainerRespondedAt: now,
+            },
+          });
+        });
+
+        // Báo cáo Quản lý
+        await this.mail.emit({
+          eventCode: 'HORSE_HANDOVER_EXPIRED',
+          recipients: [
+            {
+              userId: req.fromManagerId,
+              body: {
+                subject: `[TMEC Cảnh báo] Quá hạn 48h: HLV chưa tiếp nhận chiến mã ${req.horse.name}`,
+                text: `Yêu cầu phân công chiến mã ${req.horse.name} (${req.horse.horseCode}) cho HLV ${req.toTrainer.fullName} đã hết hạn 48 giờ mà chưa được xác nhận.\nHệ thống đã tự động hủy yêu cầu. Vui lòng phân công lại.`,
+                milestone: 'handover-expired',
+                refId: req.id,
+              },
+            },
+          ],
+        });
+      });
+    }
+
+    // 2. Quét chiến mã đã tiếp nhận (ACCEPTED) nhưng quá hạn SLA Lũy tiến (planDeadlineAt) mà chưa có giáo án ACTIVE
+    const overduePlans = await this.prisma.horseHandoverRequest.findMany({
+      where: {
+        status: HandoverStatus.ACCEPTED,
+        planDeadlineAt: { lt: now },
+        horse: {
+          trainingPlans: { none: { status: PlanStatus.ACTIVE } },
+          deletedAt: null,
+        },
+      },
+      include: {
+        horse: true,
+        toTrainer: true,
+        fromManager: true,
+      },
+    });
+
+    for (const req of overduePlans) {
+      await this.safely(async () => {
+        // Cảnh báo HLV và Quản lý
+        const recipients = [req.toTrainerId, req.fromManagerId];
+        await this.mail.emit({
+          eventCode: 'PLAN_SLA_OVERDUE',
+          recipients: recipients.map((userId) => ({
+            userId,
+            body: {
+              subject: `[TMEC Cảnh báo KPI] Quá hạn lập giáo án cho chiến mã ${req.horse.name}`,
+              text: `Chiến mã ${req.horse.name} (${req.horse.horseCode}) đã được tiếp nhận ngày ${req.acceptedAt?.toLocaleDateString('vi-VN')} nhưng quá hạn hoàn thành giáo án (${req.planDeadlineAt?.toLocaleDateString('vi-VN')}) mà chưa kích hoạt giáo án.\nVui lòng hoàn tất và kích hoạt giáo án ngay.`,
+              milestone: 'plan-overdue',
+              refId: req.id,
+            },
+          })),
+        });
+      });
+    }
   }
 }

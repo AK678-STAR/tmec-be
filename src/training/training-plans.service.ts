@@ -466,7 +466,52 @@ export class TrainingPlansService {
             'Chỉ kích hoạt được giáo án đang ở Nháp.',
           );
         }
-        await this.assertCanActivate(tx, plan, horse, dto);
+
+        // Tịnh tiến đồng bộ lịch tập nếu có effectiveStartDate
+        if (dto.effectiveStartDate) {
+          const targetStartDate = new Date(dto.effectiveStartDate);
+          const shiftMs = targetStartDate.getTime() - plan.startDate.getTime();
+
+          if (shiftMs !== 0) {
+            await this.assertCanActivate(tx, plan, horse, dto);
+
+            const newPlanStartDate = targetStartDate;
+            const newPlanEndDate = new Date(plan.endDate.getTime() + shiftMs);
+
+            const currentPhases = phasesOf(plan);
+            const shiftedPhases = currentPhases.map((phase) => ({
+              ...phase,
+              startDate: new Date(new Date(phase.startDate).getTime() + shiftMs).toISOString(),
+              endDate: new Date(new Date(phase.endDate).getTime() + shiftMs).toISOString(),
+            }));
+
+            await tx.trainingPlan.update({
+              where: { id: plan.id },
+              data: {
+                startDate: newPlanStartDate,
+                endDate: newPlanEndDate,
+                phases: shiftedPhases,
+              },
+            });
+
+            const sessions = await tx.workoutSession.findMany({
+              where: { trainingPlanId: plan.id },
+              select: { id: true, scheduledDate: true },
+            });
+
+            for (const session of sessions) {
+              const newDate = new Date(session.scheduledDate.getTime() + shiftMs);
+              await tx.workoutSession.update({
+                where: { id: session.id },
+                data: { scheduledDate: newDate },
+              });
+            }
+          } else {
+            await this.assertCanActivate(tx, plan, horse, dto);
+          }
+        } else {
+          await this.assertCanActivate(tx, plan, horse, dto);
+        }
         if (horse!.status === HorseStatus.RESTING) {
           await tx.horse.update({
             where: { id: horse!.id },
@@ -1364,6 +1409,15 @@ export class TrainingPlansService {
         isMedicalLocked: true,
         isDebtImpounded: true,
         avatarUrl: true,
+        assignedTrainerId: true,
+        trainerAssignmentStatus: true,
+        assignedTrainer: { select: { id: true, fullName: true } },
+        handoverRequests: {
+          where: { status: 'ACCEPTED' },
+          orderBy: { acceptedAt: 'desc' },
+          take: 1,
+          select: { planDeadlineAt: true, acceptedAt: true },
+        },
         owner: { select: { id: true, fullName: true } },
         stallAllocations: {
           where: { isActive: true },
@@ -1476,6 +1530,29 @@ export class TrainingPlansService {
           }
         }
 
+        if (!h.isMedicalLocked && !h.isDebtImpounded && !activePlan && !draftPlan) {
+          if (user.role === UserRole.HEAD_TRAINER) {
+            if (h.assignedTrainerId && h.assignedTrainerId !== user.userId) {
+              planState = 'ACTIVE_OTHER';
+              canAssign = false;
+              badge = `HLV ${h.assignedTrainer?.fullName || 'khác'} phụ trách`;
+              explanation = `Chiến mã đã được Quản lý phân công cho HLV ${h.assignedTrainer?.fullName || 'khác'}.`;
+            } else if (h.assignedTrainerId === user.userId) {
+              if (h.trainerAssignmentStatus === 'PENDING_ACCEPTANCE') {
+                planState = 'READY';
+                canAssign = false;
+                badge = 'Chờ bạn tiếp nhận';
+                explanation = 'Chiến mã đang chờ bạn xác nhận tiếp nhận trước khi lập giáo án.';
+              } else if (h.trainerAssignmentStatus === 'ASSIGNED') {
+                planState = 'READY';
+                canAssign = true;
+                badge = 'Đã phân công cho bạn';
+                explanation = 'Chiến mã sẵn sàng để bạn lập giáo án mới.';
+              }
+            }
+          }
+        }
+
         let activeCooldown: {
           remainingHours: number;
           trainerUserId: string;
@@ -1531,6 +1608,9 @@ export class TrainingPlansService {
           canAssign,
           badge,
           explanation,
+          assignedTrainer: h.assignedTrainer ?? null,
+          trainerAssignmentStatus: h.trainerAssignmentStatus,
+          planDeadlineAt: h.handoverRequests[0]?.planDeadlineAt ?? null,
           activePlan: activePlanInfo,
           activeCooldown,
           existingPlanId: activePlan?.id || draftPlan?.id || null,

@@ -6,6 +6,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  Patch,
   Post,
   Put,
 } from '@nestjs/common';
@@ -15,6 +16,7 @@ import { RequirePermission } from '../common/decorators/require-permission.decor
 import { toPublicUser } from '../users/public-user';
 import { AccountAction, AccountsService } from './accounts.service';
 import {
+  AssignTrainerBarnDto,
   InviteAccountDto,
   ReasonDto,
   UpdateAccountDto,
@@ -37,11 +39,38 @@ export class AccountsController {
     return { accounts: users.map(toPublicUser) };
   }
 
+  @Get('barn-staffing')
+  @ApiOperation({ summary: 'Lấy danh sách định mức nhân sự HLV của tất cả các Barn' })
+  async getBarnStaffing() {
+    return { barns: await this.accounts.getBarnStaffing() };
+  }
+
   @Post()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Mời nhân viên (tạo tài khoản INVITED + gửi mã mời qua email)' })
   async invite(@CurrentUser() user: CurrentUserPayload, @Body() dto: InviteAccountDto) {
     return { account: toPublicUser(await this.accounts.invite(actorOf(user), dto)) };
+  }
+
+  @Patch(':id/assigned-barn')
+  @ApiOperation({ summary: 'Điều chuyển Khu chuồng cho Huấn luyện viên trưởng' })
+  async assignTrainerBarn(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param('id') id: string,
+    @Body() dto: AssignTrainerBarnDto,
+  ) {
+    return this.accounts.assignTrainerBarn(actorOf(user), id, dto);
+  }
+
+  @Post(':id/assign-barn')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Điều chuyển Khu chuồng cho Huấn luyện viên trưởng (POST alias)' })
+  async assignTrainerBarnPost(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param('id') id: string,
+    @Body() dto: AssignTrainerBarnDto,
+  ) {
+    return this.accounts.assignTrainerBarn(actorOf(user), id, dto);
   }
 
   @Get(':id')

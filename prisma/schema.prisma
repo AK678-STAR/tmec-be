@@ -105,6 +105,13 @@ enum TrackSurface {
   SYNTHETIC
 }
 
+enum TrainerAssignmentStatus {
+  UNASSIGNED
+  PENDING_ACCEPTANCE
+  ASSIGNED
+  DECLINED
+}
+
 // Q14 = A (Flow 2 §4.1): Nháp -> Đang áp dụng -> Hoàn thành / Đã hủy.
 enum PlanStatus {
   DRAFT
@@ -337,6 +344,12 @@ model User {
   complaintsFiled          Complaint[]              @relation("ComplaintReporter")
   complaintsRaised         Complaint[]              @relation("ComplaintSubject")
 
+  assignedBarnId          String?
+  assignedBarn            StallZone?               @relation("TrainerAssignedBarn", fields: [assignedBarnId], references: [id], onDelete: SetNull)
+  horsesAssignedAsTrainer Horse[]                  @relation("TrainerAssignedHorses")
+  sentHandovers           HorseHandoverRequest[]   @relation("ManagerHandovers")
+  receivedHandovers       HorseHandoverRequest[]   @relation("TrainerHandovers")
+
   @@index([email])
   @@index([role])
   @@index([status])
@@ -532,6 +545,13 @@ model Horse {
   debtImpoundReason String?
   ownerId           String?
   owner             User?         @relation("OwnerHorses", fields: [ownerId], references: [id], onDelete: SetNull)
+  assignedTrainerId         String?
+  assignedTrainer           User?                    @relation("TrainerAssignedHorses", fields: [assignedTrainerId], references: [id], onDelete: SetNull)
+  trainerAssignmentStatus   TrainerAssignmentStatus  @default(UNASSIGNED)
+  trainerAssignedAt         DateTime?
+  trainerResponseDeadline   DateTime?
+  trainerRespondedAt        DateTime?
+  trainerDeclineReason      String?
   retireReason      RetireReason?
   deletedAt         DateTime?
   deletedById       String?
@@ -555,6 +575,7 @@ model Horse {
   financialInvoices       FinancialInvoice[]
   transferRequests        HorseTransferRequest[]
   admissionRecords        HorseAdmissionRecord[]
+  handoverRequests        HorseHandoverRequest[]
 
   @@index([horseCode])
   @@index([microchip])
@@ -585,6 +606,7 @@ model StallZone {
   incidents       IncidentReport[] @relation("ZoneIncidents")
   stockBalances   StockBalance[]
   restockRequests RestockRequest[]
+  assignedTrainers User[]                   @relation("TrainerAssignedBarn")
 }
 
 model Stall {
@@ -1532,3 +1554,34 @@ model AdmissionHistoryLog {
 
   @@index([admissionId, createdAt])
 }
+
+enum HandoverStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  CANCELLED
+}
+
+model HorseHandoverRequest {
+  id             String         @id @default(uuid())
+  horseId        String
+  horse          Horse          @relation(fields: [horseId], references: [id], onDelete: Cascade)
+  fromManagerId  String
+  fromManager    User           @relation("ManagerHandovers", fields: [fromManagerId], references: [id], onDelete: Restrict)
+  toTrainerId    String
+  toTrainer      User           @relation("TrainerHandovers", fields: [toTrainerId], references: [id], onDelete: Restrict)
+  status         HandoverStatus @default(PENDING)
+  token          String         @unique
+  notes          String?
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  planDeadlineAt DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([horseId, status])
+  @@index([toTrainerId, status])
+  @@index([token])
+}
+

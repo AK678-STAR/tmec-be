@@ -19,9 +19,10 @@ import { apiError } from '../common/exceptions/api-error';
 import { EMAIL_RE, normEmail, str } from '../common/utils/input';
 import { fullNameError } from '../common/utils/name';
 import { normalizePermissions, PERMISSIONS, ROLE_LABEL, ROLES } from '../users/permissions';
-import { permissionsOf } from '../users/public-user';
-import { InviteAccountDto, ReasonDto, UpdateAccountDto } from './dto/accounts.dto';
+import { permissionsOf, toPublicUser } from '../users/public-user';
+import { AssignTrainerBarnDto, InviteAccountDto, ReasonDto, UpdateAccountDto } from './dto/accounts.dto';
 import { NotificationsService } from '../notifications/notifications.service';
+import { MAX_HORSES_PER_TRAINER, MAX_TRAINERS_PER_BARN } from '../training/training-rules';
 
 export type AccountAction = 'approve' | 'decline' | 'lock' | 'unlock' | 'deactivate' | 'reactivate';
 
@@ -46,11 +47,11 @@ export class AccountsService {
   ) {}
 
   list(): Promise<User[]> {
-    return this.prisma.user.findMany({ orderBy: { createdAt: 'asc' } });
+    return this.prisma.user.findMany({ include: { assignedBarn: true }, orderBy: { createdAt: 'asc' } });
   }
 
   async find(id: string): Promise<User> {
-    const user = await this.prisma.user.findUnique({ where: { id } });
+    const user = await this.prisma.user.findUnique({ where: { id }, include: { assignedBarn: true } });
     if (!user) throw apiError(HttpStatus.NOT_FOUND, 'NOT_FOUND', 'Account not found');
     return user;
   }
@@ -69,8 +70,44 @@ export class AccountsService {
       throw apiError(HttpStatus.CONFLICT, 'EMAIL_TAKEN', 'Email taken');
     }
 
+    if (role === Role.HEAD_TRAINER) {
+      if (!dto.assignedBarnId) {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'BARN_REQUIRED',
+          'Vui lòng chọn Khu chuồng phụ trách cho Huấn luyện viên trưởng.',
+        );
+      }
+      const barn = await this.prisma.stallZone.findUnique({ where: { id: dto.assignedBarnId } });
+      if (!barn) {
+        throw apiError(HttpStatus.NOT_FOUND, 'BARN_NOT_FOUND', 'Khu chuồng không tồn tại.');
+      }
+      const countTrainers = await this.prisma.user.count({
+        where: {
+          assignedBarnId: dto.assignedBarnId,
+          role: Role.HEAD_TRAINER,
+          status: { notIn: [UserStatus.LOCKED, UserStatus.REJECTED] },
+        },
+      });
+      if (countTrainers >= MAX_TRAINERS_PER_BARN) {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'BARN_TRAINER_CAPACITY_EXCEEDED',
+          `Khu chuồng này đã đủ tối đa ${MAX_TRAINERS_PER_BARN} Huấn luyện viên phụ trách.`,
+        );
+      }
+    }
+
     const user = await this.prisma.user.create({
-      data: { fullName, email, role, status: UserStatus.INVITED, invitedBy: actor.name },
+      data: {
+        fullName,
+        email,
+        role,
+        assignedBarnId: role === Role.HEAD_TRAINER ? dto.assignedBarnId : null,
+        status: UserStatus.INVITED,
+        invitedBy: actor.name,
+      },
+      include: { assignedBarn: true },
     });
     await this.otp.issue(email, OtpPurpose.INVITE, true);
     await this.audit.record(
@@ -527,5 +564,191 @@ export class AccountsService {
       shifts,
       plans,
     };
+  }
+
+  /** Lấy danh sách định mức nhân sự HLV của tất cả các Barn. */
+  async getBarnStaffing() {
+    const zones = await this.prisma.stallZone.findMany({
+      where: { isActive: true },
+      orderBy: { sortOrder: 'asc' },
+      include: {
+        assignedTrainers: {
+          where: {
+            role: Role.HEAD_TRAINER,
+            status: { notIn: [UserStatus.LOCKED, UserStatus.REJECTED] },
+          },
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            role: true,
+            status: true,
+          },
+        },
+      },
+    });
+
+    return zones.map((z) => ({
+      id: z.id,
+      code: z.code,
+      name: z.name,
+      trainersCount: z.assignedTrainers.length,
+      maxTrainers: MAX_TRAINERS_PER_BARN,
+      isFull: z.assignedTrainers.length >= MAX_TRAINERS_PER_BARN,
+      trainers: z.assignedTrainers,
+    }));
+  }
+
+  /** Điều chuyển Khu chuồng cho HLV (kèm xử lý bàn giao nếu HLV đang có ngựa). */
+  async assignTrainerBarn(actor: AuditActor, trainerId: string, dto: AssignTrainerBarnDto) {
+    const trainer = await this.find(trainerId);
+    if (trainer.role !== Role.HEAD_TRAINER) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'NOT_A_TRAINER',
+        'Chỉ có thể phân công Khu chuồng cho Huấn luyện viên trưởng.',
+      );
+    }
+
+    const targetBarn = await this.prisma.stallZone.findUnique({
+      where: { id: dto.targetBarnId },
+    });
+    if (!targetBarn) {
+      throw apiError(HttpStatus.NOT_FOUND, 'BARN_NOT_FOUND', 'Khu chuồng đích không tồn tại.');
+    }
+
+    if (trainer.assignedBarnId === dto.targetBarnId) {
+      return { trainer: toPublicUser(trainer), message: 'Huấn luyện viên đã ở khu chuồng này.' };
+    }
+
+    // Kiểm tra trần 2 HLV ở Barn đích
+    const countInTarget = await this.prisma.user.count({
+      where: {
+        assignedBarnId: dto.targetBarnId,
+        role: Role.HEAD_TRAINER,
+        id: { not: trainerId },
+        status: { notIn: [UserStatus.LOCKED, UserStatus.REJECTED] },
+      },
+    });
+    if (countInTarget >= MAX_TRAINERS_PER_BARN) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'BARN_TRAINER_CAPACITY_EXCEEDED',
+        `Khu chuồng ${targetBarn.name} đã đủ tối đa ${MAX_TRAINERS_PER_BARN} Huấn luyện viên phụ trách.`,
+      );
+    }
+
+    // Đếm số ngựa hiện tại HLV đang phụ trách (giáo án Active hoặc Draft)
+    const activeOrDraftPlans = await this.prisma.trainingPlan.findMany({
+      where: {
+        trainerUserId: trainerId,
+        status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] },
+        horse: { deletedAt: null },
+      },
+      include: { horse: true },
+    });
+
+    if (activeOrDraftPlans.length > 0) {
+      if (!dto.handoverTrainerId) {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'HANDOVER_TRAINER_REQUIRED',
+          `Huấn luyện viên đang phụ trách ${activeOrDraftPlans.length} chiến mã. Vui lòng chọn Huấn luyện viên đồng nghiệp trong cùng khu chuồng để bàn giao trước khi chuyển khu.`,
+        );
+      }
+
+      if (dto.handoverTrainerId === trainerId) {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'CANNOT_HANDOVER_TO_SELF',
+          'Không thể tự bàn giao cho chính mình.',
+        );
+      }
+
+      const handoverTrainer = await this.find(dto.handoverTrainerId);
+      if (handoverTrainer.role !== Role.HEAD_TRAINER) {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'INVALID_HANDOVER_RECIPIENT',
+          'Người nhận bàn giao phải là Huấn luyện viên trưởng.',
+        );
+      }
+
+      if (handoverTrainer.assignedBarnId !== trainer.assignedBarnId) {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'TRAINER_NOT_IN_SAME_BARN',
+          'Huấn luyện viên nhận bàn giao phải cùng phụ trách trong khu chuồng hiện tại.',
+        );
+      }
+
+      // Kiểm tra sức chứa của HLV nhận bàn giao (tối đa 8 con)
+      const recipientPlanCount = await this.prisma.trainingPlan.count({
+        where: {
+          trainerUserId: dto.handoverTrainerId,
+          status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] },
+          horse: { deletedAt: null },
+        },
+      });
+
+      if (recipientPlanCount + activeOrDraftPlans.length > MAX_HORSES_PER_TRAINER) {
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'HANDOVER_TRAINER_CAPACITY_EXCEEDED',
+          `Huấn luyện viên ${handoverTrainer.fullName} không đủ sức chứa tiếp nhận (cần ${activeOrDraftPlans.length} chỗ, chỉ còn ${MAX_HORSES_PER_TRAINER - recipientPlanCount} chỗ trống).`,
+        );
+      }
+
+      // Thực hiện bàn giao và đổi Barn trong transaction
+      await this.prisma.$transaction(async (tx) => {
+        // Cập nhật người phụ trách của toàn bộ giáo án
+        await tx.trainingPlan.updateMany({
+          where: { id: { in: activeOrDraftPlans.map((p) => p.id) } },
+          data: { trainerUserId: dto.handoverTrainerId },
+        });
+
+        // Cập nhật assignedTrainerId trên bảng Horse (nếu có)
+        await tx.horse.updateMany({
+          where: { id: { in: activeOrDraftPlans.map((p) => p.horseId) } },
+          data: {
+            assignedTrainerId: dto.handoverTrainerId,
+            trainerAssignmentStatus: 'ASSIGNED',
+            trainerAssignedAt: new Date(),
+          },
+        });
+
+        // Chuyển Barn cho HLV cũ
+        await tx.user.update({
+          where: { id: trainerId },
+          data: { assignedBarnId: dto.targetBarnId },
+        });
+
+        await this.audit.record(
+          actor,
+          'TRAINER_BARN_REASSIGNED_WITH_HANDOVER',
+          `Đã chuyển HLV ${trainer.fullName} sang khu ${targetBarn.name} và bàn giao ${activeOrDraftPlans.length} chiến mã sang HLV ${handoverTrainer.fullName}`,
+          trainerId,
+          { entityName: 'User', newValues: { assignedBarnId: dto.targetBarnId } },
+          tx,
+        );
+      });
+    } else {
+      // HLV có 0 con ngựa -> đổi Barn tức thì
+      await this.prisma.user.update({
+        where: { id: trainerId },
+        data: { assignedBarnId: dto.targetBarnId },
+      });
+
+      await this.audit.record(
+        actor,
+        'TRAINER_BARN_REASSIGNED',
+        `Đã chuyển HLV ${trainer.fullName} sang khu ${targetBarn.name}`,
+        trainerId,
+        { entityName: 'User', newValues: { assignedBarnId: dto.targetBarnId } },
+      );
+    }
+
+    const updated = await this.find(trainerId);
+    return { trainer: toPublicUser(updated), message: `Đã chuyển sang khu ${targetBarn.name} thành công.` };
   }
 }

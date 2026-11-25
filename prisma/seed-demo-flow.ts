@@ -178,6 +178,41 @@ async function main() {
     },
   });
 
+  // Gán Barn cho các HLV theo định mức tối đa 2 HLV / Barn (BR-BARN-STAFFING-LIMIT):
+  // Barn A: HLV Tuấn & HLV Quân
+  // Barn B: HLV Nam & HLV Trung
+  await prisma.user.update({
+    where: { id: trainerA.id },
+    data: { assignedBarnId: zoneA.id },
+  });
+  await prisma.user.update({
+    where: { id: trainerB.id },
+    data: { assignedBarnId: zoneB.id },
+  });
+  await prisma.user.update({
+    where: { id: trainerC.id },
+    data: { assignedBarnId: zoneB.id },
+  });
+
+  const trainerQuan = await prisma.user.upsert({
+    where: { email: 'trainer.quan@gmail.com' },
+    update: {
+      passwordHash,
+      status: UserStatus.ACTIVE,
+      fullName: 'Trần Minh Quân',
+      assignedBarnId: zoneA.id,
+    },
+    create: {
+      email: 'trainer.quan@gmail.com',
+      passwordHash,
+      fullName: 'Trần Minh Quân',
+      role: Role.HEAD_TRAINER,
+      status: UserStatus.ACTIVE,
+      phoneNumber: '0902000004',
+      assignedBarnId: zoneA.id,
+    },
+  });
+
   // Reset tạm thời row và col để tránh conflict unique constraint khi sắp xếp lại theo lưới 4x3
   await prisma.stall.updateMany({
     where: { zoneId: { in: [zoneA.id, zoneB.id] } },
