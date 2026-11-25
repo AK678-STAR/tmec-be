@@ -45,6 +45,14 @@ export class AccountsController {
     return { barns: await this.accounts.getBarnStaffing() };
   }
 
+  @Get('orphaned-horses')
+  @ApiOperation({
+    summary: 'Lấy danh sách các chiến mã đang ở trong ô chuồng nhưng chưa có HLV phụ trách',
+  })
+  async getOrphanedHorses() {
+    return { items: await this.accounts.getOrphanedHorses() };
+  }
+
   @Post()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Mời nhân viên (tạo tài khoản INVITED + gửi mã mời qua email)' })

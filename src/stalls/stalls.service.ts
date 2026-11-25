@@ -57,6 +57,15 @@ const STALL_INCLUDE = {
           isMedicalLocked: true,
           isDebtImpounded: true,
           debtImpoundReason: true,
+          assignedTrainerId: true,
+          trainerAssignmentStatus: true,
+          assignedTrainer: {
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+            },
+          },
           owner: {
             select: {
               id: true,

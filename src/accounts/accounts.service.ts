@@ -20,7 +20,12 @@ import { EMAIL_RE, normEmail, str } from '../common/utils/input';
 import { fullNameError } from '../common/utils/name';
 import { normalizePermissions, PERMISSIONS, ROLE_LABEL, ROLES } from '../users/permissions';
 import { permissionsOf, toPublicUser } from '../users/public-user';
-import { AssignTrainerBarnDto, InviteAccountDto, ReasonDto, UpdateAccountDto } from './dto/accounts.dto';
+import {
+  AssignTrainerBarnDto,
+  InviteAccountDto,
+  ReasonDto,
+  UpdateAccountDto,
+} from './dto/accounts.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { MAX_HORSES_PER_TRAINER, MAX_TRAINERS_PER_BARN } from '../training/training-rules';
 
@@ -47,11 +52,17 @@ export class AccountsService {
   ) {}
 
   list(): Promise<User[]> {
-    return this.prisma.user.findMany({ include: { assignedBarn: true }, orderBy: { createdAt: 'asc' } });
+    return this.prisma.user.findMany({
+      include: { assignedBarn: true },
+      orderBy: { createdAt: 'asc' },
+    });
   }
 
   async find(id: string): Promise<User> {
-    const user = await this.prisma.user.findUnique({ where: { id }, include: { assignedBarn: true } });
+    const user = await this.prisma.user.findUnique({
+      where: { id },
+      include: { assignedBarn: true },
+    });
     if (!user) throw apiError(HttpStatus.NOT_FOUND, 'NOT_FOUND', 'Account not found');
     return user;
   }
@@ -566,7 +577,7 @@ export class AccountsService {
     };
   }
 
-  /** Lấy danh sách định mức nhân sự HLV của tất cả các Barn. */
+  /** Lấy danh sách định mức nhân sự HLV của tất cả các Barn kèm tải hiện tại của từng HLV. */
   async getBarnStaffing() {
     const zones = await this.prisma.stallZone.findMany({
       where: { isActive: true },
@@ -588,6 +599,20 @@ export class AccountsService {
       },
     });
 
+    const trainerIds = zones.flatMap((z) => z.assignedTrainers.map((t) => t.id));
+    const horseCounts = await this.prisma.horse.groupBy({
+      by: ['assignedTrainerId'],
+      where: {
+        assignedTrainerId: { in: trainerIds },
+        deletedAt: null,
+      },
+      _count: { id: true },
+    });
+    const horseCountMap = new Map<string, number>();
+    horseCounts.forEach((hc) => {
+      if (hc.assignedTrainerId) horseCountMap.set(hc.assignedTrainerId, hc._count.id);
+    });
+
     return zones.map((z) => ({
       id: z.id,
       code: z.code,
@@ -595,11 +620,63 @@ export class AccountsService {
       trainersCount: z.assignedTrainers.length,
       maxTrainers: MAX_TRAINERS_PER_BARN,
       isFull: z.assignedTrainers.length >= MAX_TRAINERS_PER_BARN,
-      trainers: z.assignedTrainers,
+      trainers: z.assignedTrainers.map((t) => ({
+        ...t,
+        currentLoad: horseCountMap.get(t.id) ?? 0,
+        maxCapacity: MAX_HORSES_PER_TRAINER,
+      })),
     }));
   }
 
-  /** Điều chuyển Khu chuồng cho HLV (kèm xử lý bàn giao nếu HLV đang có ngựa). */
+  /** Lấy danh sách các chiến mã đang ở trong ô chuồng nhưng chưa có HLV phụ trách (ngựa tồn đọng do điều chuyển hoặc mới vào). */
+  async getOrphanedHorses() {
+    const allocations = await this.prisma.stallAllocation.findMany({
+      where: {
+        isActive: true,
+        horse: {
+          deletedAt: null,
+          OR: [{ assignedTrainerId: null }, { trainerAssignmentStatus: 'UNASSIGNED' }],
+        },
+      },
+      include: {
+        stall: {
+          include: { zoneRef: { select: { id: true, name: true, code: true } } },
+        },
+        horse: {
+          select: {
+            id: true,
+            name: true,
+            horseCode: true,
+            status: true,
+            isMedicalLocked: true,
+            avatarUrl: true,
+            trainingPlans: {
+              where: { status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] } },
+              orderBy: { updatedAt: 'desc' },
+              take: 1,
+              select: { id: true, planCode: true, phaseName: true, status: true },
+            },
+          },
+        },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    return allocations.map((a) => ({
+      horseId: a.horse.id,
+      horseName: a.horse.name,
+      horseCode: a.horse.horseCode,
+      avatarUrl: a.horse.avatarUrl,
+      status: a.horse.status,
+      isMedicalLocked: a.horse.isMedicalLocked,
+      stallCode: a.stall.code,
+      zoneName: a.stall.zoneRef?.name ?? a.stall.zone ?? '',
+      zoneId: a.stall.zoneId,
+      latestPlan: a.horse.trainingPlans[0] ?? null,
+    }));
+  }
+
+  /** Điều chuyển Khu chuồng cho HLV (kèm xử lý bàn giao chia tách thông minh nếu HLV đang có ngựa). */
   async assignTrainerBarn(actor: AuditActor, trainerId: string, dto: AssignTrainerBarnDto) {
     const trainer = await this.find(trainerId);
     if (trainer.role !== Role.HEAD_TRAINER) {
@@ -691,31 +768,61 @@ export class AccountsService {
         },
       });
 
-      if (recipientPlanCount + activeOrDraftPlans.length > MAX_HORSES_PER_TRAINER) {
-        throw apiError(
-          HttpStatus.BAD_REQUEST,
-          'HANDOVER_TRAINER_CAPACITY_EXCEEDED',
-          `Huấn luyện viên ${handoverTrainer.fullName} không đủ sức chứa tiếp nhận (cần ${activeOrDraftPlans.length} chỗ, chỉ còn ${MAX_HORSES_PER_TRAINER - recipientPlanCount} chỗ trống).`,
-        );
-      }
+      const availableSlots = Math.max(0, MAX_HORSES_PER_TRAINER - recipientPlanCount);
+      // Cơ chế Bàn giao Chia tách Thông minh (Smart Split Handover)
+      const toHandoverPlans = activeOrDraftPlans.slice(0, availableSlots);
+      const excessPlans = activeOrDraftPlans.slice(availableSlots);
 
-      // Thực hiện bàn giao và đổi Barn trong transaction
+      // Thực hiện bàn giao chia tách và đổi Barn trong transaction
       await this.prisma.$transaction(async (tx) => {
-        // Cập nhật người phụ trách của toàn bộ giáo án
-        await tx.trainingPlan.updateMany({
-          where: { id: { in: activeOrDraftPlans.map((p) => p.id) } },
-          data: { trainerUserId: dto.handoverTrainerId },
-        });
+        // Nhóm 1: Bàn giao sang HLV nhận (tối đa bằng số slot còn trống)
+        if (toHandoverPlans.length > 0) {
+          const handoverPlanIds = toHandoverPlans.map((p) => p.id);
+          const handoverHorseIds = toHandoverPlans.map((p) => p.horseId);
 
-        // Cập nhật assignedTrainerId trên bảng Horse (nếu có)
-        await tx.horse.updateMany({
-          where: { id: { in: activeOrDraftPlans.map((p) => p.horseId) } },
-          data: {
-            assignedTrainerId: dto.handoverTrainerId,
-            trainerAssignmentStatus: 'ASSIGNED',
-            trainerAssignedAt: new Date(),
-          },
-        });
+          // Cập nhật người phụ trách của giáo án
+          await tx.trainingPlan.updateMany({
+            where: { id: { in: handoverPlanIds } },
+            data: { trainerUserId: dto.handoverTrainerId },
+          });
+
+          // Cập nhật assignedTrainerId trên bảng Horse
+          await tx.horse.updateMany({
+            where: { id: { in: handoverHorseIds } },
+            data: {
+              assignedTrainerId: dto.handoverTrainerId,
+              trainerAssignmentStatus: 'ASSIGNED',
+              trainerAssignedAt: new Date(),
+            },
+          });
+
+          // Đồng bộ các buổi tập từ ngày mai trở đi sang HLV mới (buổi tập hôm nay HLV cũ hoàn thành nốt ca trực)
+          const startOfTomorrow = new Date();
+          startOfTomorrow.setHours(24, 0, 0, 0);
+          if (tx.workoutSession) {
+            await tx.workoutSession.updateMany({
+              where: {
+                trainingPlanId: { in: handoverPlanIds },
+                scheduledDate: { gte: startOfTomorrow },
+                status: WorkoutStatus.SCHEDULED,
+              },
+              data: { assignedStaffUserId: dto.handoverTrainerId },
+            });
+          }
+        }
+
+        // Nhóm 2: Các chiến mã dôi dư (HLV nhận không đủ slot gánh) -> chuyển về Chờ phân công HLV mới
+        if (excessPlans.length > 0) {
+          const excessHorseIds = excessPlans.map((p) => p.horseId);
+          await tx.horse.updateMany({
+            where: { id: { in: excessHorseIds } },
+            data: {
+              assignedTrainerId: null,
+              trainerAssignmentStatus: 'UNASSIGNED',
+              trainerAssignedAt: null,
+            },
+          });
+        }
 
         // Chuyển Barn cho HLV cũ
         await tx.user.update({
@@ -725,13 +832,32 @@ export class AccountsService {
 
         await this.audit.record(
           actor,
-          'TRAINER_BARN_REASSIGNED_WITH_HANDOVER',
-          `Đã chuyển HLV ${trainer.fullName} sang khu ${targetBarn.name} và bàn giao ${activeOrDraftPlans.length} chiến mã sang HLV ${handoverTrainer.fullName}`,
+          'TRAINER_BARN_REASSIGNED_WITH_SMART_HANDOVER',
+          `Đã chuyển HLV ${trainer.fullName} sang khu ${targetBarn.name}. Bàn giao ${toHandoverPlans.length} chiến mã sang HLV ${handoverTrainer.fullName}${excessPlans.length > 0 ? `, ${excessPlans.length} chiến mã dôi dư chuyển về trạng thái Chờ phân công` : ''}.`,
           trainerId,
-          { entityName: 'User', newValues: { assignedBarnId: dto.targetBarnId } },
+          {
+            entityName: 'User',
+            newValues: {
+              assignedBarnId: dto.targetBarnId,
+              handedOverCount: toHandoverPlans.length,
+              excessCount: excessPlans.length,
+            },
+          },
           tx,
         );
       });
+
+      // Bắn thông báo Kênh kép cho HLV tiếp nhận
+      if (this.notifications && toHandoverPlans.length > 0) {
+        await this.notifications.notifyUsers([dto.handoverTrainerId], {
+          type: 'TRAINER_HANDOVER_ASSIGNMENT',
+          category: NotificationCategory.SYSTEM,
+          title: 'Yêu cầu tiếp nhận bàn giao chiến mã',
+          message: `Quản lý đã bàn giao ${toHandoverPlans.length} chiến mã từ HLV ${trainer.fullName} cho bạn. Vui lòng xem giáo án và xác nhận tiếp nhận.`,
+          link: '/dashboard',
+          dedupeKey: `trainer-handover:${dto.handoverTrainerId}:${Date.now()}`,
+        });
+      }
     } else {
       // HLV có 0 con ngựa -> đổi Barn tức thì
       await this.prisma.user.update({
@@ -749,6 +875,9 @@ export class AccountsService {
     }
 
     const updated = await this.find(trainerId);
-    return { trainer: toPublicUser(updated), message: `Đã chuyển sang khu ${targetBarn.name} thành công.` };
+    return {
+      trainer: toPublicUser(updated),
+      message: `Đã chuyển sang khu ${targetBarn.name} thành công.`,
+    };
   }
 }

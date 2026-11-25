@@ -1,5 +1,4 @@
-import { HttpException, HttpStatus } from '@nestjs/common';
-import { HandoverStatus, HorseStatus, Role, TrainerAssignmentStatus, UserStatus } from '@prisma/client';
+import { HandoverStatus, Role, TrainerAssignmentStatus, UserStatus } from '@prisma/client';
 import { HandoverAction } from './dto/handover.dto';
 import { HorsesService } from './horses.service';
 import { AuditService } from '../audit/audit.service';
@@ -20,13 +19,6 @@ describe('HorsesService - Handover & Progressive SLA QA', () => {
     fullName: 'Manager',
     email: 'mgr@tmec.vn',
     role: Role.CLUB_MANAGER,
-  };
-
-  const mockTrainer = {
-    userId: 'trainer-1',
-    fullName: 'HLV Tuấn',
-    email: 'tuan@tmec.vn',
-    role: Role.HEAD_TRAINER,
   };
 
   beforeEach(() => {
@@ -211,7 +203,10 @@ describe('HorsesService - Handover & Progressive SLA QA', () => {
       // Hiện chưa có con nào chờ lập giáo án (waitingCount = 0)
       mockPrisma.horse.count.mockResolvedValue(0);
 
-      const res = await service.respondHandover({ token: 'valid-token', action: HandoverAction.ACCEPT });
+      const res = await service.respondHandover({
+        token: 'valid-token',
+        action: HandoverAction.ACCEPT,
+      });
 
       expect(res.success).toBe(true);
       expect(res.action).toBe(HandoverAction.ACCEPT);
@@ -245,7 +240,10 @@ describe('HorsesService - Handover & Progressive SLA QA', () => {
       // Đã có 1 con chờ lập giáo án (waitingCount = 1) -> 3 + 1*2 = 5 ngày
       mockPrisma.horse.count.mockResolvedValue(1);
 
-      const res = await service.respondHandover({ token: 'valid-token-2', action: HandoverAction.ACCEPT });
+      const res = await service.respondHandover({
+        token: 'valid-token-2',
+        action: HandoverAction.ACCEPT,
+      });
 
       expect(res.success).toBe(true);
       const expectedDeadlineMs = Date.now() + 5 * 24 * 60 * 60 * 1000;
@@ -269,7 +267,10 @@ describe('HorsesService - Handover & Progressive SLA QA', () => {
       // Đã có 2 con chờ lập giáo án (waitingCount = 2) -> 3 + 2*2 = 7 ngày
       mockPrisma.horse.count.mockResolvedValue(2);
 
-      const res = await service.respondHandover({ token: 'valid-token-3', action: HandoverAction.ACCEPT });
+      const res = await service.respondHandover({
+        token: 'valid-token-3',
+        action: HandoverAction.ACCEPT,
+      });
 
       expect(res.success).toBe(true);
       const expectedDeadlineMs = Date.now() + 7 * 24 * 60 * 60 * 1000;

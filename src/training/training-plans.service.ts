@@ -1443,9 +1443,10 @@ export class TrainingPlansService {
 
     const activeOrDraftPlans = await this.prisma.trainingPlan.findMany({
       where: {
-        status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] },
+        status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE, PlanStatus.COMPLETED] },
         horse: { deletedAt: null },
       },
+      orderBy: { updatedAt: 'desc' },
       select: {
         id: true,
         planCode: true,
@@ -1456,6 +1457,7 @@ export class TrainingPlansService {
         trainer: { select: { id: true, fullName: true } },
         startDate: true,
         endDate: true,
+        updatedAt: true,
       },
     });
 
@@ -1471,6 +1473,17 @@ export class TrainingPlansService {
         const plans = horsePlanMap.get(h.id) || [];
         const activePlan = plans.find((p) => p.status === PlanStatus.ACTIVE) || null;
         const draftPlan = plans.find((p) => p.status === PlanStatus.DRAFT) || null;
+        const completedPlans = plans.filter((p) => p.status === PlanStatus.COMPLETED);
+        const lastCompletedPlan = completedPlans[0]
+          ? {
+              id: completedPlans[0].id,
+              planCode: completedPlans[0].planCode ?? '',
+              phaseName: completedPlans[0].phaseName,
+              completedAt: completedPlans[0].endDate
+                ? completedPlans[0].endDate.toISOString()
+                : null,
+            }
+          : null;
 
         let planState:
           | 'READY'
@@ -1542,12 +1555,18 @@ export class TrainingPlansService {
               badge = `HLV ${h.assignedTrainer?.fullName || 'khác'} phụ trách`;
               explanation = `Chiến mã đã được Quản lý phân công cho HLV ${h.assignedTrainer?.fullName || 'khác'}.`;
             } else if (h.assignedTrainerId === user.userId) {
-              if (h.trainerAssignmentStatus === 'PENDING_ACCEPTANCE' || (h.trainerAssignmentStatus as string) === 'PENDING') {
+              if (
+                h.trainerAssignmentStatus === 'PENDING_ACCEPTANCE' ||
+                (h.trainerAssignmentStatus as string) === 'PENDING'
+              ) {
                 planState = 'READY';
                 canAssign = false;
                 badge = 'Chờ bạn tiếp nhận';
                 explanation = 'Chiến mã đang chờ bạn xác nhận tiếp nhận trước khi lập giáo án.';
-              } else if (h.trainerAssignmentStatus === 'ASSIGNED' || (h.trainerAssignmentStatus as string) === 'ACCEPTED') {
+              } else if (
+                h.trainerAssignmentStatus === 'ASSIGNED' ||
+                (h.trainerAssignmentStatus as string) === 'ACCEPTED'
+              ) {
                 planState = 'READY';
                 canAssign = true;
                 badge = 'Đã phân công cho bạn';
@@ -1603,6 +1622,27 @@ export class TrainingPlansService {
         const stallName = stallInfo
           ? `${stallInfo.code} (${stallInfo.zoneRef?.name || stallInfo.zone})`
           : null;
+        const stallCode = stallInfo?.code ?? null;
+        const zoneName =
+          stallInfo?.zoneRef?.name ?? (stallInfo?.zone ? `Barn ${stallInfo.zone}` : null);
+
+        let unplannedCategory: 'NEW_ADMISSION' | 'RESTING_CYCLE' | 'MEDICAL_LOCKED' | null = null;
+        let isSlaExempt = false;
+
+        if (!activePlan && !draftPlan) {
+          if (h.isMedicalLocked || planState === 'MEDICAL_LOCKED') {
+            unplannedCategory = 'MEDICAL_LOCKED';
+            isSlaExempt = true;
+          } else if (lastCompletedPlan) {
+            unplannedCategory = 'RESTING_CYCLE';
+            isSlaExempt = true;
+            badge = 'Nghỉ ngơi hồi phục (Không tính SLA)';
+            explanation = `Chiến mã đã hoàn thành giáo án ${lastCompletedPlan.planCode}, đang trong chu kỳ nghỉ ngơi phục hồi thể lực.`;
+          } else {
+            unplannedCategory = 'NEW_ADMISSION';
+            isSlaExempt = false;
+          }
+        }
 
         return {
           id: h.id,
@@ -1618,6 +1658,8 @@ export class TrainingPlansService {
           avatarUrl: h.avatarUrl,
           ownerName: h.owner?.fullName ?? null,
           stallName,
+          stallCode,
+          zoneName,
           planState,
           canAssign,
           badge,
@@ -1628,6 +1670,9 @@ export class TrainingPlansService {
           activePlan: activePlanInfo,
           activeCooldown,
           existingPlanId: activePlan?.id || draftPlan?.id || null,
+          lastCompletedPlan,
+          unplannedCategory,
+          isSlaExempt,
         };
       }),
     );
@@ -1663,6 +1708,10 @@ export class TrainingPlansService {
     const summary = {
       total: items.length,
       readyCount: items.filter((x) => x.planState === 'READY').length,
+      unplannedCount: items.filter((x) => x.unplannedCategory !== null).length,
+      unplannedNewAdmissionCount: items.filter((x) => x.unplannedCategory === 'NEW_ADMISSION')
+        .length,
+      unplannedRestingCount: items.filter((x) => x.unplannedCategory === 'RESTING_CYCLE').length,
       myActiveCount: items.filter((x) => x.planState === 'ACTIVE_SELF').length,
       myDraftCount: items.filter((x) => x.planState === 'DRAFT_SELF').length,
       otherTrainerCount: items.filter(

@@ -30,7 +30,9 @@ export class AssignTrainerBarnDto {
   @IsString()
   targetBarnId: string;
 
-  @ApiPropertyOptional({ description: 'ID HLV đồng nghiệp trong cùng Barn nhận bàn giao nếu HLV cũ có ngựa' })
+  @ApiPropertyOptional({
+    description: 'ID HLV đồng nghiệp trong cùng Barn nhận bàn giao nếu HLV cũ có ngựa',
+  })
   @IsOptional()
   @IsString()
   handoverTrainerId?: string;

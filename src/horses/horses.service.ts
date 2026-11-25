@@ -1852,11 +1852,7 @@ export class HorsesService {
       include: { assignedBarn: true },
     });
 
-    if (
-      !trainer ||
-      trainer.status !== UserStatus.ACTIVE ||
-      trainer.role !== Role.HEAD_TRAINER
-    ) {
+    if (!trainer || trainer.status !== UserStatus.ACTIVE || trainer.role !== Role.HEAD_TRAINER) {
       throw apiError(
         HttpStatus.BAD_REQUEST,
         'INVALID_TRAINER',
@@ -1997,7 +1993,11 @@ export class HorsesService {
     });
 
     if (!req) {
-      throw apiError(HttpStatus.NOT_FOUND, 'HANDOVER_NOT_FOUND', 'Yêu cầu phân công không tồn tại.');
+      throw apiError(
+        HttpStatus.NOT_FOUND,
+        'HANDOVER_NOT_FOUND',
+        'Yêu cầu phân công không tồn tại.',
+      );
     }
 
     if (req.status !== HandoverStatus.PENDING) {
@@ -2178,6 +2178,31 @@ export class HorsesService {
               where: { isActive: true },
               take: 1,
               include: { stall: true },
+            },
+            trainingPlans: {
+              where: { status: { in: [PlanStatus.ACTIVE, PlanStatus.DRAFT] } },
+              orderBy: { createdAt: 'desc' },
+              take: 1,
+              select: {
+                id: true,
+                planCode: true,
+                phaseName: true,
+                objective: true,
+                targetDistance: true,
+                status: true,
+                workoutSessions: {
+                  where: { scheduledDate: { gte: new Date() } },
+                  orderBy: { scheduledDate: 'asc' },
+                  take: 5,
+                  select: {
+                    id: true,
+                    scheduledDate: true,
+                    workoutType: true,
+                    distanceMeters: true,
+                    status: true,
+                  },
+                },
+              },
             },
           },
         },

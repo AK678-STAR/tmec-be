@@ -1,5 +1,4 @@
-import { HttpStatus } from '@nestjs/common';
-import { HorseStatus, PlanStatus, Role, TrackSurface, UserStatus, WorkoutStatus } from '@prisma/client';
+import { HorseStatus, PlanStatus, Role, UserStatus } from '@prisma/client';
 import { TrainingPlansService } from './training-plans.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -55,7 +54,10 @@ describe('TrainingPlansService - Auto-Shift on Activation QA', () => {
       mockPrisma as unknown as PrismaService,
       mockAudit as unknown as AuditService,
       { next: jest.fn() } as unknown as CounterService,
-      { notifyUsers: jest.fn(), notifyHorse: jest.fn().mockResolvedValue(undefined) } as unknown as NotificationsService,
+      {
+        notifyUsers: jest.fn(),
+        notifyHorse: jest.fn().mockResolvedValue(undefined),
+      } as unknown as NotificationsService,
       {} as unknown as TrainingCommonService,
     );
   });
@@ -114,7 +116,7 @@ describe('TrainingPlansService - Auto-Shift on Activation QA', () => {
       horse,
     }));
 
-    const result = await service.changePlanStatus(
+    await service.changePlanStatus(
       'plan-1',
       {
         status: PlanStatus.ACTIVE,

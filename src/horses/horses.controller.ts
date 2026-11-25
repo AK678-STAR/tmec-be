@@ -161,10 +161,7 @@ export class HorsesController {
 
   @Post('handover/respond')
   @ApiOperation({ summary: 'HLV xác nhận tiếp nhận hoặc từ chối chiến mã qua Token (SLA 48h)' })
-  async respondHandover(
-    @Body() dto: RespondHandoverDto,
-    @CurrentUser() user?: CurrentUserPayload,
-  ) {
+  async respondHandover(@Body() dto: RespondHandoverDto, @CurrentUser() user?: CurrentUserPayload) {
     return this.horsesService.respondHandover(dto, user);
   }
 
