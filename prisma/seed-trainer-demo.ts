@@ -119,7 +119,8 @@ async function main() {
   });
 
   // 3. Huấn luyện viên chính hiện tại: Trần Minh Quân (phụ trách Barn A)
-  console.log('[3/6] Thiết lập Huấn luyện viên chính Trần Minh Quân (Barn A)...');
+  // và Huấn luyện viên phụ Nguyễn Văn Tuấn (để nhận ngựa nền chạy thử)
+  console.log('[3/6] Thiết lập Huấn luyện viên Trần Minh Quân (Barn A) và Nguyễn Văn Tuấn...');
   const trainerQuan = await prisma.user.upsert({
     where: { email: 'trainer.quan@gmail.com' },
     update: {
@@ -139,6 +140,23 @@ async function main() {
     },
   });
 
+  const trainerTuan = await prisma.user.upsert({
+    where: { email: 'trainer@gmail.com' },
+    update: {
+      passwordHash,
+      status: UserStatus.ACTIVE,
+      fullName: 'Nguyễn Văn Tuấn',
+    },
+    create: {
+      email: 'trainer@gmail.com',
+      passwordHash,
+      fullName: 'Nguyễn Văn Tuấn',
+      role: Role.HEAD_TRAINER,
+      status: UserStatus.ACTIVE,
+      phoneNumber: '0902000001',
+    },
+  });
+
   // Đảm bảo Barn C không bị bất kỳ HLV nào phụ trách (để thành Barn trống)
   await prisma.user.updateMany({
     where: { assignedBarnId: barnC.id },
@@ -149,9 +167,21 @@ async function main() {
   await prisma.otpCode.deleteMany({
     where: { email: { in: ['trainer.nam@gmail.com', 'trainer.trong@gmail.com'] } },
   });
-  await prisma.user.deleteMany({
+  const targetUsers = await prisma.user.findMany({
     where: { email: { in: ['trainer.nam@gmail.com', 'trainer.trong@gmail.com'] } },
+    select: { id: true },
   });
+  const targetUserIds = targetUsers.map((u) => u.id);
+  if (targetUserIds.length > 0) {
+    await prisma.horseHandoverRequest.deleteMany({
+      where: {
+        OR: [{ fromManagerId: { in: targetUserIds } }, { toTrainerId: { in: targetUserIds } }],
+      },
+    });
+    await prisma.user.deleteMany({
+      where: { id: { in: targetUserIds } },
+    });
+  }
 
   // 4. Đường chạy huấn luyện (Tracks)
   console.log('[4/6] Khởi tạo hệ thống đường chạy (Cỏ A sức chứa 6, Cỏ B sức chứa 4)...');
@@ -317,12 +347,18 @@ async function main() {
   });
 
   // 6. Tạo 6 bài tập trên Đường chạy Cỏ A lúc 07:00 - 08:00 ngày demo để làm đầy sức chứa 6/6
+  // Chú ý: Gán cho HLV Nguyễn Văn Tuấn (trainerTuan) để không chiếm hạn mức 8 ngựa của HLV Trần Minh Quân
   console.log('[6/6] Tạo 6 buổi tập làm đầy sức chứa Đường chạy Cỏ A (6/6 chỗ lúc 07:00)...');
   for (let i = 1; i <= 6; i++) {
     const bgHorseCode = `HRS-BG-${String(i).padStart(2, '0')}`;
     const bgHorse = await prisma.horse.upsert({
       where: { horseCode: bgHorseCode },
-      update: { name: `Chiến mã chạy thử ${i}`, status: HorseStatus.ACTIVE },
+      update: {
+        name: `Chiến mã chạy thử ${i}`,
+        status: HorseStatus.ACTIVE,
+        assignedTrainerId: trainerTuan.id,
+        trainerAssignmentStatus: TrainerAssignmentStatus.ASSIGNED,
+      },
       create: {
         horseCode: bgHorseCode,
         name: `Chiến mã chạy thử ${i}`,
@@ -335,6 +371,8 @@ async function main() {
         microchipRfid: `RFID-BG-00000${i}`,
         status: HorseStatus.ACTIVE,
         ownerId: owner.id,
+        assignedTrainerId: trainerTuan.id,
+        trainerAssignmentStatus: TrainerAssignmentStatus.ASSIGNED,
       },
     });
 
@@ -345,13 +383,18 @@ async function main() {
       bgPlan = await prisma.trainingPlan.create({
         data: {
           horseId: bgHorse.id,
-          trainerUserId: trainerQuan.id,
+          trainerUserId: trainerTuan.id,
           phaseName: `Giai đoạn nền tảng ${i}`,
           status: PlanStatus.ACTIVE,
           trackSurface: TrackSurface.TURF,
           startDate: new Date(demoDateStr + 'T00:00:00.000Z'),
           endDate: new Date(new Date(demoDateStr).getTime() + 14 * 86400000),
         },
+      });
+    } else {
+      await prisma.trainingPlan.update({
+        where: { id: bgPlan.id },
+        data: { trainerUserId: trainerTuan.id },
       });
     }
 
