@@ -15,7 +15,48 @@ export interface ActorLike {
 export interface HorseLike {
   id: string;
   name: string;
+  status?: string | null;
 }
+
+const HORSE_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: 'Sẵn sàng thi đấu (ACTIVE)',
+  IN_TRAINING: 'Đang huấn luyện (IN_TRAINING)',
+  UNDER_OBSERVATION: 'Đang theo dõi y tế (UNDER_OBSERVATION)',
+  INJURED: 'Đang chấn thương (INJURED)',
+  ISOLATED: 'Đang cách ly y tế (ISOLATED)',
+  RESTING: 'Đang nghỉ ngơi (RESTING)',
+  RETIRED: 'Đã nghỉ hưu / Xuất chuồng (RETIRED)',
+  PENDING_ADMISSION: 'Chờ thẩm định tiếp nhận (PENDING_ADMISSION)',
+  REJECTED: 'Từ chối tiếp nhận (REJECTED)',
+};
+
+const INCIDENT_STATUS_LABELS: Record<string, string> = {
+  REPORTED: 'Mới ghi nhận — chờ xác minh (REPORTED)',
+  OPEN: 'Đang mở (OPEN)',
+  CONFIRMED: 'Bác sĩ đã xác nhận (CONFIRMED)',
+  UNDER_TREATMENT: 'Đang điều trị (UNDER_TREATMENT)',
+  MONITORING: 'Đang theo dõi hồi phục (MONITORING)',
+  RESOLVED: 'Đã hồi phục (RESOLVED)',
+  CLOSED: 'Đã đóng hồ sơ (CLOSED)',
+};
+
+const LOCK_TYPE_LABELS: Record<string, string> = {
+  TRAINING_LOCK: 'Khóa huấn luyện (TRAINING_LOCK)',
+  EXERCISE_LOCK: 'Khóa vận động / bài tập (EXERCISE_LOCK)',
+  RACING_LOCK: 'Khóa thi đấu (RACING_LOCK)',
+  ISOLATION_LOCK: 'Khóa cách ly (ISOLATION_LOCK)',
+  MEDICATION_LOCK: 'Khóa đang dùng thuốc (MEDICATION_LOCK)',
+  ICING_LOCK: 'Khóa chườm lạnh / hồi phục (ICING_LOCK)',
+  MEDICAL_LOCK: 'Khóa y tế tổng quát (MEDICAL_LOCK)',
+  DEBT_IMPOUND: 'Khóa công nợ quá hạn (DEBT_IMPOUND)',
+};
+
+const formatHorseStatus = (status?: string | null) =>
+  status ? HORSE_STATUS_LABELS[status] || status : null;
+
+const formatIncidentStatus = (status: string) => INCIDENT_STATUS_LABELS[status] || status;
+
+const formatLockType = (type: string) => LOCK_TYPE_LABELS[type] || type;
 
 const fmtDate = (d: Date | string | null | undefined) =>
   d
@@ -95,8 +136,9 @@ export function incidentConfirmed(
   return renderMail(`Kết luận y tế đã xác nhận — ${horse.name}`, [
     { label: 'Mã sự cố', value: incident.incidentNumber },
     { label: 'Ngựa', value: horse.name },
+    { label: 'Tình trạng ngựa', value: formatHorseStatus(horse.status) },
     { label: 'Bác sĩ xác nhận', value: reviewer.name },
-    { label: 'Trạng thái', value: incident.status },
+    { label: 'Trạng thái sự cố', value: formatIncidentStatus(incident.status) },
     { label: 'Kết luận / hướng dẫn', value: incident.vetNotes || 'Xem hồ sơ y tế' },
     { label: 'Hạn chế áp dụng', value: restrictions || 'Không có hạn chế mới' },
     { label: 'Xem hồ sơ y tế', value: `${linkBase()}/medical` },
@@ -121,7 +163,8 @@ export function lockChanged(
         : 'Gỡ khóa y tế';
   const rows = [
     { label: 'Ngựa', value: horse.name },
-    { label: 'Loại khóa', value: lock.type },
+    { label: 'Tình trạng ngựa', value: formatHorseStatus(horse.status) },
+    { label: 'Loại khóa', value: formatLockType(lock.type) },
     { label: 'Lý do', value: lock.reason || null },
     { label: 'Thời điểm hết hiệu lực', value: fmtDate(lock.expiresAt) },
     { label: 'Người thực hiện', value: actor.name },
@@ -185,5 +228,40 @@ export function prizeWon(
       value: result.settledAt ? 'Đã xác nhận (settled)' : 'Đã công bố — chờ chốt kỳ',
     },
     { label: 'Xem báo cáo tài chính', value: `${linkBase()}/financial-reports` },
+  ]);
+}
+
+/** Thông báo kê đơn / cập nhật đơn thuốc gửi Chủ ngựa & Groom. */
+export function prescriptionIssued(
+  horse: HorseLike,
+  rx: { med: string; dose: string; perDay: number; days: number; start: string },
+  vet: ActorLike,
+  isUpdate = false,
+): BusinessMailContent {
+  const title = isUpdate ? `Cập nhật đơn thuốc — ${horse.name}` : `Đơn thuốc mới — ${horse.name}`;
+  return renderMail(title, [
+    { label: 'Ngựa', value: horse.name },
+    { label: 'Tình trạng ngựa', value: formatHorseStatus(horse.status) },
+    { label: 'Thuốc kê đơn', value: rx.med },
+    { label: 'Liều lượng', value: `${rx.dose} (${rx.perDay} lần/ngày × ${rx.days} ngày)` },
+    { label: 'Ngày bắt đầu', value: rx.start },
+    { label: 'Bác sĩ chỉ định', value: vet.name },
+    { label: 'Xem hồ sơ y tế', value: `${linkBase()}/medical` },
+  ]);
+}
+
+/** Thông báo đăng ký thi đấu gửi Chủ ngựa. */
+export function raceRegistered(
+  horse: HorseLike,
+  tournament: { name: string; startDate?: Date | string | null },
+  actor: ActorLike,
+): BusinessMailContent {
+  return renderMail(`Đăng ký thi đấu thành công — ${horse.name}`, [
+    { label: 'Ngựa', value: horse.name },
+    { label: 'Tình trạng ngựa', value: formatHorseStatus(horse.status) },
+    { label: 'Giải đấu', value: tournament.name },
+    { label: 'Ngày khởi tranh', value: fmtDate(tournament.startDate) },
+    { label: 'Người thực hiện', value: actor.name },
+    { label: 'Xem lịch thi đấu', value: `${linkBase()}/races` },
   ]);
 }

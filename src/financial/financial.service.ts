@@ -37,7 +37,7 @@ export interface FinancialActor {
 const CLUB_OFFSET_MS = 7 * 3600000;
 export const TRAINING_MONTHLY_RATE = 4_000_000;
 export const MEDICAL_MONTHLY_PACKAGE_FEE = 1_000_000;
-export const MEDICAL_EXAM_FEE = 1_000_000;
+export const MEDICAL_EXAM_FEE = 3_000_000;
 export const PREVENTIVE_CARE_FEE = 1_000_000;
 
 const INVOICE_ALLOWED_TRANSITIONS: Record<InvoiceStatus, InvoiceStatus[]> = {
