@@ -43,7 +43,12 @@ export function invoiceIssued(
     { label: 'Phí y tế', value: inv.medicalFee ? fmtVnd(inv.medicalFee) : null },
     { label: 'Phí huấn luyện', value: inv.trainingFee ? fmtVnd(inv.trainingFee) : null },
     { label: 'Cấn trừ tiền thưởng', value: inv.prizeCredit ? fmtVnd(inv.prizeCredit) : null },
-    { label: 'Số tiền cần thanh toán', value: fmtVnd(inv.netAmount) },
+    inv.netAmount < 0
+      ? {
+          label: 'Số tiền thực nhận (CLB chi trả)',
+          value: `+${fmtVnd(Math.abs(inv.netAmount))}`,
+        }
+      : { label: 'Số tiền cần thanh toán', value: fmtVnd(inv.netAmount) },
     { label: 'Hạn thanh toán', value: fmtDate(inv.dueAt) },
     { label: 'Xem hóa đơn', value: `${linkBase()}/financial-reports` },
   ]);

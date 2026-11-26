@@ -1,5 +1,6 @@
 import { MedicalLifecycleService } from './medical-lifecycle.service';
 import { renderMail, linkBase } from '../business-mail/templates/html';
+import { prescriptionIssued } from '../business-mail/templates/health-templates';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { apiError } from '../common/exceptions/api-error';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
@@ -1903,7 +1904,7 @@ export class MedicalRecordsService {
   ) {
     const horse = await this.prisma.horse.findUnique({
       where: { id: horseId },
-      select: { name: true },
+      select: { name: true, status: true },
     });
     const horseName = horse?.name ?? '';
     const vet = actor.fullName || actor.email;
@@ -1930,6 +1931,15 @@ export class MedicalRecordsService {
         },
         link: `/medical/records/${recordId}`,
         senderName: actor.fullName,
+        email: {
+          eventCode: type,
+          body: prescriptionIssued(
+            { id: horseId, name: horseName, status: horse?.status },
+            rx,
+            { name: vet },
+            type === 'PRESCRIPTION_UPDATED',
+          ),
+        },
       },
       actor.userId,
     );

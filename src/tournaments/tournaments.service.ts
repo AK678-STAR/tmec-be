@@ -1,4 +1,4 @@
-import { prizeWon } from '../business-mail/templates/health-templates';
+import { prizeWon, raceRegistered } from '../business-mail/templates/health-templates';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
   HorseStatus,
@@ -1249,6 +1249,19 @@ export class TournamentsService {
           message: `Ngựa ${horse.name} của bạn đã được đăng ký tham gia giải đua ${tournament.name}.`,
           link: `/races`,
           params: { horseName: horse.name, tournamentName: tournament.name },
+          email: {
+            eventCode: 'RACE_REGISTRATION',
+            body: raceRegistered(
+              { id: horse.id, name: horse.name, status: horse.status },
+              { name: tournament.name, startDate: tournament.raceDate },
+              {
+                name:
+                  (actor as { fullName?: string; name?: string }).fullName ||
+                  (actor as { name?: string }).name ||
+                  'CLB EquiFlow',
+              },
+            ),
+          },
         },
         actor.id,
       );
