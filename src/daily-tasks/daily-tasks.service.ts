@@ -15,7 +15,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CompleteDailyTaskDto, QueryDailyTasksDto } from './dto/daily-task.dto';
-import { CreateAdHocTaskDto } from './dto/create-ad-hoc-task.dto';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { InventoryService } from '../inventory/inventory.service';
 import {
@@ -1208,105 +1207,6 @@ export class DailyTasksService {
       });
     }
     return updated;
-  }
-
-  /** Quản lý tạo công việc phát sinh đột xuất cho chiến mã (Ad-hoc Care Task) */
-  async createAdHocTask(dto: CreateAdHocTaskDto, user: CurrentUserPayload) {
-    const horse = await this.prisma.horse.findUnique({
-      where: { id: dto.horseId, deletedAt: null },
-      include: {
-        stallAllocations: {
-          where: { isActive: true },
-          include: { stall: true },
-        },
-      },
-    });
-    if (!horse) {
-      throw apiError(HttpStatus.NOT_FOUND, 'HORSE_NOT_FOUND', 'Không tìm thấy chiến mã.');
-    }
-    const allocation = horse.stallAllocations[0];
-    const stallZoneId = allocation?.stall?.zoneId || null;
-    const stallId = allocation?.stall?.id || null;
-
-    let targetGroomId = dto.assignedGroomUserId;
-    if (!targetGroomId) {
-      targetGroomId = allocation?.assignedGroomUserId || undefined;
-    }
-
-    if (targetGroomId) {
-      const groom = await this.prisma.user.findUnique({ where: { id: targetGroomId } });
-      if (!groom || groom.role !== Role.GROOM || groom.status !== 'ACTIVE') {
-        throw apiError(
-          HttpStatus.BAD_REQUEST,
-          'INVALID_GROOM',
-          'Groom được chọn không hợp lệ hoặc đang không hoạt động.',
-        );
-      }
-    }
-
-    const now = new Date();
-    const todayStr = rosterDay(now).toISOString().slice(0, 10);
-
-    const taskCode = `ADHOC-${todayStr.replace(/-/g, '')}-${Date.now().toString().slice(-6)}`;
-
-    const task = await this.prisma.$transaction(async (tx) => {
-      await lockCareAssignments(tx);
-      if (!targetGroomId || !stallZoneId || !stallId)
-        throw apiError(
-          HttpStatus.BAD_REQUEST,
-          'GROOM_REQUIRED',
-          'Chọn Groom và ô chuồng cho công việc phát sinh.',
-        );
-      const active = await tx.stallAllocation.findFirst({
-        where: { horseId: dto.horseId, stallId, isActive: true },
-      });
-      if (!active)
-        throw apiError(
-          HttpStatus.CONFLICT,
-          'TASK_STALL_OUTDATED',
-          'Ngựa đã đổi ô chuồng. Vui lòng tải lại.',
-        );
-      const scheduled = new Date(`${todayStr}T${dto.scheduledTime || '14:00'}:00+07:00`);
-      const roster = await assertReceivingGroom(
-        tx,
-        stallZoneId,
-        targetGroomId,
-        dto.horseId,
-        scheduled,
-        dto.taskType === DailyTaskType.CLEANING ? 'CLEANING' : 'HORSE_CARE',
-      );
-      return tx.dailyCareTask.create({
-        data: {
-          taskCode,
-          date: roster.date,
-          shiftId: roster.shiftId,
-          horseId: dto.horseId,
-          stallZoneId,
-          stallId,
-          taskType: dto.taskType,
-          title: dto.title,
-          scheduledTime: dto.scheduledTime || '14:00',
-          assignedGroomUserId: targetGroomId || null,
-          description: dto.description || null,
-          isCompleted: false,
-        },
-        include: TASK_DETAIL_INCLUDE,
-      });
-    });
-
-    if (targetGroomId) {
-      await this.publishAssignment(task);
-    }
-
-    await this.auditService.record(
-      { id: user.userId, name: user.fullName || user.email } as any,
-      'CREATE_ADHOC_CARE_TASK',
-      `Tạo việc phát sinh: ${dto.title} cho chiến mã ${horse.name}`,
-      task.id,
-      { entityName: 'DailyCareTask', newValues: { ...dto, taskCode } },
-    );
-
-    return task;
   }
 }
 

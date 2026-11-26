@@ -281,46 +281,78 @@ async function main() {
     stallsB.push(s);
   }
 
+  // Khởi tạo 4 sân tập thể lực chuẩn đạt chuẩn cho CLB
+  console.log('  -> Khởi tạo 4 sân tập thể lực chuẩn cho CLB (Cỏ A, Cỏ B, Cát, Tổng hợp)...');
+  const tracksData = [
+    { code: 'TRK-TURF-A', name: 'Đường chạy cỏ A (Chính)', surface: 'TURF', capacity: 6, isActive: true },
+    { code: 'TRK-TURF-B', name: 'Đường chạy cỏ B (Phụ)', surface: 'TURF', capacity: 4, isActive: true },
+    { code: 'TRK-DIRT-01', name: 'Đường chạy cát chính', surface: 'DIRT', capacity: 8, isActive: true },
+    { code: 'TRK-SYN-01', name: 'Đường chạy tổng hợp All-weather', surface: 'SYNTHETIC', capacity: 6, isActive: true },
+  ];
+  for (const t of tracksData) {
+    await prisma.trainingTrack.upsert({
+      where: { code: t.code },
+      update: { name: t.name, surface: t.surface, capacity: t.capacity, isActive: t.isActive },
+      create: { code: t.code, name: t.name, surface: t.surface, capacity: t.capacity, isActive: t.isActive },
+    });
+  }
+
   // =========================================================================
   // 3. THIẾT LẬP TẢI CỦA CÁC HUẤN LUYỆN VIÊN (ĐẠT CHUẨN 8/8 & TRẦN 2 HLV/BARN)
   // =========================================================================
   console.log('⚖️ [3/5] Thiết lập định mức tải đạt chuẩn (HLV Tuấn 8/8, HLV Quân 2/8, HLV Nam 4/8, HLV Trung 3/8)...');
 
-  // Reset các ngựa demo cũ nếu có (xóa sạch các liên kết phụ thuộc trước khi xóa ngựa)
-  const demoHorseFilter = { horse: { horseCode: { in: ['HRS-DEMO-01', 'HRS-DEMO-02', 'HRS-DEMO-03', 'HRS-DEMO-04'] } } };
-  const demoPrefixedFilter = { horse: { horseCode: { startsWith: 'HR-DEMO-' } } };
-  await prisma.workoutSession.deleteMany({ where: { OR: [demoHorseFilter, demoPrefixedFilter] } });
-  await prisma.dailyCareTask.deleteMany({ where: { OR: [demoHorseFilter, demoPrefixedFilter] } });
-  await prisma.trainingPlan.deleteMany({ where: { OR: [demoHorseFilter, demoPrefixedFilter] } });
-  await prisma.stallAllocation.deleteMany({ where: { OR: [demoHorseFilter, demoPrefixedFilter] } });
-  await prisma.medicalLock.deleteMany({ where: { OR: [demoHorseFilter, demoPrefixedFilter] } });
+  // DỌN SẠCH TRIỆT ĐỂ (HARD CLEANUP) TOÀN BỘ CHIẾN MÃ CŨ ĐỂ KHÔNG SÓT NGỰA RÁC TỒN ĐỌNG
+  console.log('  -> Dọn sạch toàn bộ liên kết chiến mã cũ để thiết lập database vừa đủ...');
+  await prisma.workoutSession.deleteMany({});
+  await prisma.dailyCareTask.deleteMany({});
+  await prisma.dailyGroomingLog.deleteMany({});
+  await prisma.trainingPlan.deleteMany({});
+  await prisma.stallAllocation.deleteMany({});
+  await prisma.medicalLock.deleteMany({});
+  try {
+    await prisma.injuryLog.deleteMany({});
+    await prisma.medicalRecord.deleteMany({});
+    await prisma.preventiveSchedule.deleteMany({});
+    await prisma.nutritionPlan.deleteMany({});
+  } catch {}
   await prisma.horseHandoverRequest.deleteMany({});
+  try {
+    await prisma.admissionHealthReview.deleteMany({});
+    await prisma.admissionHistoryLog.deleteMany({});
+  } catch {}
+  await prisma.horseAdmissionRecord.deleteMany({});
+  try {
+    await prisma.incidentReport.deleteMany({});
+    await prisma.trainerReview.deleteMany({});
+    await prisma.horseTransferRequest.deleteMany({});
+    await prisma.tournamentResult.deleteMany({});
+    await prisma.tournamentRegistration.deleteMany({});
+    await prisma.financialInvoice.deleteMany({});
+  } catch {}
 
-  await prisma.horse.deleteMany({
-    where: {
-      OR: [
-        { horseCode: { in: ['HRS-DEMO-01', 'HRS-DEMO-02', 'HRS-DEMO-03', 'HRS-DEMO-04'] } },
-        { horseCode: { startsWith: 'HR-DEMO-' } },
-      ],
-    },
-  });
+  // Xóa toàn bộ ngựa cũ trong DB
+  await prisma.horse.deleteMany({});
 
-  // Dọn dẹp triệt để các giáo án ACTIVE/DRAFT cũ từ seed.ts của các HLV
-  await prisma.trainingPlan.updateMany({
-    where: {
-      trainerUserId: { in: [trainerA.id, trainerB.id, trainerC.id, trainerQuan.id] },
-      status: { in: [PlanStatus.ACTIVE, PlanStatus.DRAFT] },
-    },
-    data: { status: PlanStatus.COMPLETED },
-  });
-
-  // Gỡ toàn bộ phân bổ chuồng cũ của các groom để đảm bảo định mức chuẩn
-  await prisma.stallAllocation.updateMany({
-    where: {
-      assignedGroomUserId: { in: [groom.id, groom2.id, groom3.id, groom4.id] },
-    },
-    data: { assignedGroomUserId: null },
-  });
+  // Đảm bảo có Breed & Color Catalog
+  const breeds = ['Thoroughbred', 'Arabian', 'Quarter Horse', 'Warmblood'];
+  for (const b of breeds) {
+    const existing = await prisma.horseCatalogItem.findFirst({ where: { type: 'BREED', name: b } });
+    if (!existing) {
+      await prisma.horseCatalogItem.create({
+        data: { type: 'BREED', name: b, code: b.toUpperCase().replace(/\s+/g, '_') },
+      });
+    }
+  }
+  const colors = ['Bay', 'Chestnut', 'Black', 'White', 'Grey'];
+  for (const c of colors) {
+    const existing = await prisma.horseCatalogItem.findFirst({ where: { type: 'COLOR', name: c } });
+    if (!existing) {
+      await prisma.horseCatalogItem.create({
+        data: { type: 'COLOR', name: c, code: c.toUpperCase() },
+      });
+    }
+  }
 
   // Mảng theo dõi chiến mã của mỗi Groom
   const groom1Horses: { horse: any; stall: any }[] = [];
@@ -800,9 +832,9 @@ async function main() {
   await prisma.stallAllocation.deleteMany({ where: { horseId: demoHorse2.id } });
   await prisma.stallAllocation.create({
     data: {
-      stallId: stallsA[11].id, // Chuồng A-12 (Barn A)
+      stallId: stallsB[7].id, // Chuồng B-08 (Barn B) - Chiến mã tồn đọng thứ 2
       horseId: demoHorse2.id,
-      assignedGroomUserId: groom.id,
+      assignedGroomUserId: groom4.id,
       isActive: true,
     },
   });
@@ -871,13 +903,45 @@ async function main() {
   await prisma.stallAllocation.deleteMany({ where: { horseId: demoHorse4.id } });
   await prisma.stallAllocation.create({
     data: {
-      stallId: stallsB[7].id, // Chuồng B-08
+      stallId: stallsB[8].id, // Chuồng B-09 (Barn B)
       horseId: demoHorse4.id,
       assignedGroomUserId: groom4.id,
       isActive: true,
     },
   });
-  groom4Horses.push({ horse: demoHorse4, stall: stallsB[7] });
+  groom4Horses.push({ horse: demoHorse4, stall: stallsB[8] });
+
+  // --- KHỞI TẠO 2 YÊU CẦU BÀN GIAO (HORSE HANDOVER REQUEST) PHỤC VỤ KIỂM THỬ SLA ---
+  console.log('📬 Khởi tạo 2 yêu cầu bàn giao phục vụ test SLA (1 an toàn ~36h, 1 khẩn cấp <12h)...');
+  await prisma.horseHandoverRequest.deleteMany({
+    where: { token: { in: ['token-pending-safe-sla-01', 'token-pending-urgent-sla-02'] } },
+  });
+
+  // Yêu cầu 1: An toàn (~36h còn lại) cho HLV Quân
+  await prisma.horseHandoverRequest.create({
+    data: {
+      horseId: demoHorse1.id,
+      fromManagerId: manager.id,
+      toTrainerId: trainerQuan.id,
+      status: 'PENDING',
+      token: 'token-pending-safe-sla-01',
+      expiresAt: new Date(Date.now() + 36 * 3600 * 1000),
+      notes: 'Phân công chiến mã Bạch Long Mã cho HLV Quân tiếp nhận (SLA 48h bình thường).',
+    },
+  });
+
+  // Yêu cầu 2: Khẩn cấp (<12h còn lại) cho HLV Nam
+  await prisma.horseHandoverRequest.create({
+    data: {
+      horseId: demoHorse2.id,
+      fromManagerId: manager.id,
+      toTrainerId: trainerB.id,
+      status: 'PENDING',
+      token: 'token-pending-urgent-sla-02',
+      expiresAt: new Date(Date.now() + 8 * 3600 * 1000),
+      notes: 'CẢNH BÁO KHẨN CẤP: Yêu cầu bàn giao chiến mã Xích Thố sắp hết hạn sau 8 giờ nữa.',
+    },
+  });
 
   // --- Khởi tạo 2 hồ sơ tiếp nhận chiến mã (HorseAdmissionRecord) phục vụ Màn 3 ---
   console.log('📋 Tạo 2 hồ sơ tiếp nhận chiến mã (HorseAdmissionRecord) phục vụ Màn 3...');

@@ -646,14 +646,8 @@ export class TrainingPlansService {
     });
 
     if (dto.status === PlanStatus.CANCELLED) {
-      if (result.status === PlanStatus.DRAFT && user.role === UserRole.HEAD_TRAINER) {
-        await this.recordHorseCooldown(
-          result.horseId,
-          result.trainerUserId,
-          dto.reason || 'Huấn luyện viên tự hủy giáo án nháp',
-          'PLAN_CANCELLED_COOLDOWN',
-        );
-      }
+      // Theo chỉ đạo người dùng (V39): Hủy hoặc xóa bản nháp KHÔNG áp dụng cooldown 48h,
+      // chiến mã lập tức quay về trạng thái sẵn sàng để HLV tạo lại được ngay.
       const isManagerCancel =
         user.role === UserRole.CLUB_MANAGER && result.trainerUserId !== user.userId;
       if (isManagerCancel) {
@@ -1163,15 +1157,8 @@ export class TrainingPlansService {
       );
     }
 
-    // Nếu HLV tự xóa bản nháp của mình, áp dụng cooldown 48h
-    if (user.role === UserRole.HEAD_TRAINER && plan.trainerUserId === user.userId) {
-      await this.recordHorseCooldown(
-        plan.horseId,
-        plan.trainerUserId,
-        'Huấn luyện viên tự xóa bản nháp giáo án',
-        'DELETE_PLAN_COOLDOWN',
-      );
-    }
+    // Theo quyết định người dùng (V39): HLV tự xóa bản nháp của mình KHÔNG áp dụng cooldown 48h,
+    // chiến mã lập tức quay về trạng thái Sẵn sàng lập giáo án để HLV tạo lại được ngay.
 
     await this.prisma.$transaction([
       this.prisma.workoutSession.deleteMany({ where: { trainingPlanId: id } }),

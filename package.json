@@ -6,7 +6,7 @@
   "private": true,
   "license": "UNLICENSED",
   "prisma": {
-    "seed": "ts-node prisma/seed.ts"
+    "seed": "ts-node prisma/seed-demo-flow.ts"
   },
   "scripts": {
     "build": "nest build",
@@ -30,7 +30,8 @@
     "test:migrations": "node scripts/verify-migration-chain.cjs",
     "test:migrations:check": "node scripts/verify-migration-chain.cjs --verify-already-migrated",
     "test:migrations:unit": "node scripts/verify-migration-chain.spec.cjs",
-    "db:seed": "ts-node prisma/seed.ts",
+    "db:seed": "ts-node prisma/seed-demo-flow.ts",
+    "db:seed:legacy": "ts-node prisma/seed.ts",
     "db:seed:manual-qa": "ts-node prisma/seed-manual-qa.ts",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
