@@ -248,6 +248,41 @@ describe('TrainingService (Flow 2 & RULE-MED-01)', () => {
       );
       expect('code' in shortPreRace && shortPreRace.code).toBe('INVALID_PHASE');
       expect('message' in shortPreRace && shortPreRace.message).toContain('tối thiểu 3 ngày');
+
+      // Microcycle (< 14 days): 8-day plan with 2 phases of 4 days (BASE + SPEED) -> accepted
+      const okMicrocycle = validatePhases(
+        [
+          { ...base, name: 'Giai đoạn 1', startDate: '2026-11-01', endDate: '2026-11-04' },
+          {
+            ...base,
+            name: 'Giai đoạn 2',
+            type: 'SPEED',
+            startDate: '2026-11-05',
+            endDate: '2026-11-08',
+          },
+        ],
+        '2026-11-01',
+        '2026-11-08',
+      );
+      expect('phases' in okMicrocycle && okMicrocycle.phases.length).toBe(2);
+
+      // Microcycle (< 14 days): phase under 3 days -> rejected
+      const shortMicrocycle = validatePhases(
+        [
+          { ...base, name: 'Giai đoạn 1', startDate: '2026-11-01', endDate: '2026-11-02' },
+          {
+            ...base,
+            name: 'Giai đoạn 2',
+            type: 'SPEED',
+            startDate: '2026-11-03',
+            endDate: '2026-11-08',
+          },
+        ],
+        '2026-11-01',
+        '2026-11-08',
+      );
+      expect('code' in shortMicrocycle && shortMicrocycle.code).toBe('INVALID_PHASE');
+      expect('message' in shortMicrocycle && shortMicrocycle.message).toContain('tối thiểu 3 ngày');
     });
 
     it('workout load = km × reps × intensity factor', () => {

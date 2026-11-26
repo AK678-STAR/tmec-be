@@ -117,6 +117,7 @@ describe('permissions', () => {
       isBadDebtFlagged: false,
       badDebtFlaggedAt: null,
       badDebtReason: null,
+      assignedBarnId: null,
     });
     expect(publicUser).not.toHaveProperty('passwordHash');
     expect(publicUser).not.toHaveProperty('verificationCode');

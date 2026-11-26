@@ -71,6 +71,14 @@ export class ChangePlanStatusDto {
   @IsBoolean()
   moveHorseToTraining?: boolean;
 
+  @ApiPropertyOptional({
+    description:
+      'Kích hoạt: ngày bắt đầu thực tế (ISO 8601). Nếu khác startDate cũ, tự động tịnh tiến đồng bộ toàn bộ phase và workoutSession.',
+  })
+  @IsOptional()
+  @IsISO8601({}, { message: 'Ngày bắt đầu thực tế không hợp lệ.' })
+  effectiveStartDate?: string;
+
   @ApiPropertyOptional({ description: 'Kích hoạt: đã trao đổi với VET (ngựa ở trạng thái y tế)' })
   @IsOptional()
   @IsBoolean()

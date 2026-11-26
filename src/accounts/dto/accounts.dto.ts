@@ -18,6 +18,24 @@ export class InviteAccountDto {
   })
   @IsString()
   role: string;
+
+  @ApiPropertyOptional({ description: 'Khu chuồng phụ trách (bắt buộc khi role = HEAD_TRAINER)' })
+  @IsOptional()
+  @IsString()
+  assignedBarnId?: string;
+}
+
+export class AssignTrainerBarnDto {
+  @ApiProperty({ description: 'ID khu chuồng đích cần chuyển đến' })
+  @IsString()
+  targetBarnId: string;
+
+  @ApiPropertyOptional({
+    description: 'ID HLV đồng nghiệp trong cùng Barn nhận bàn giao nếu HLV cũ có ngựa',
+  })
+  @IsOptional()
+  @IsString()
+  handoverTrainerId?: string;
 }
 
 export class UpdateAccountDto {

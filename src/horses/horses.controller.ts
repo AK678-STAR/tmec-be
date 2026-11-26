@@ -36,6 +36,7 @@ import {
   RejectAdmissionDto,
   ScheduleAdmissionDto,
 } from './dto/admission.dto';
+import { AssignHorseTrainerDto, RespondHandoverDto } from './dto/handover.dto';
 
 const ALL_STAFF_ROLES = [
   UserRole.CLUB_MANAGER,
@@ -187,6 +188,30 @@ export class HorsesController {
   }
 
   // =========================================================================
+  // HANDOVER & TRAINER ASSIGNMENT (BR-BARN-SOVEREIGNTY, SLA-HANDOVER-48H)
+  // =========================================================================
+
+  @Get('handover/pending')
+  @Roles(UserRole.HEAD_TRAINER, UserRole.CLUB_MANAGER)
+  @ApiOperation({ summary: 'Lấy danh sách yêu cầu phân công đang chờ HLV phản hồi (SLA 48h)' })
+  async getPendingHandovers(@CurrentUser() user: CurrentUserPayload) {
+    return this.horsesService.getPendingHandovers(user);
+  }
+
+  @Get('handover/my-waiting-horses')
+  @Roles(UserRole.HEAD_TRAINER, UserRole.CLUB_MANAGER)
+  @ApiOperation({ summary: 'Danh sách chiến mã đã tiếp nhận chờ lập giáo án (SLA Lũy tiến)' })
+  async getMyWaitingHorses(@CurrentUser() user: CurrentUserPayload) {
+    return this.horsesService.getMyWaitingHorses(user);
+  }
+
+  @Post('handover/respond')
+  @ApiOperation({ summary: 'HLV xác nhận tiếp nhận hoặc từ chối chiến mã qua Token (SLA 48h)' })
+  async respondHandover(@Body() dto: RespondHandoverDto, @CurrentUser() user?: CurrentUserPayload) {
+    return this.horsesService.respondHandover(dto, user);
+  }
+
+  // =========================================================================
   // CÁC ROUTE ĐỊNH DANH NGỰA DÙNG ':id'
   // =========================================================================
 
@@ -268,5 +293,16 @@ export class HorsesController {
       throw apiError(HttpStatus.FORBIDDEN, 'FORBIDDEN', 'Not allowed');
     }
     return this.lifecycle.changeStatus(id, dto, user);
+  }
+
+  @Post(':id/assign-trainer')
+  @Roles(UserRole.CLUB_MANAGER)
+  @ApiOperation({ summary: 'Quản lý phân công HLV phụ trách chiến mã (cùng Barn, SLA 48h)' })
+  async assignTrainer(
+    @Param('id') id: string,
+    @Body() dto: AssignHorseTrainerDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.horsesService.assignTrainer(id, dto, user);
   }
 }

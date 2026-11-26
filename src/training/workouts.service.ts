@@ -1804,12 +1804,24 @@ export class WorkoutsService {
       SYNTHETIC: 'Sân tổng hợp All-weather (Synthetic)',
     };
 
+    let allTracks: any[] = [];
+    if (this.prisma.trainingTrack?.findMany) {
+      allTracks = await this.prisma.trainingTrack.findMany({
+        where: { isActive: true },
+      });
+    }
+
+    const getSurfaceMaxCapacity = (s: string) => {
+      const surfaceTracks = allTracks.filter((t: any) => t.surface === s);
+      return surfaceTracks.length > 0 ? Math.max(...surfaceTracks.map((t: any) => t.capacity)) : 6;
+    };
+
     if (!dateStr || !timeStr) {
       return surfaces.map((s) => ({
         surface: s,
         surfaceName: surfaceNames[s],
         currentCount: 0,
-        maxCapacity: TRACK_MAX_LIGHT_HORSES,
+        maxCapacity: getSurfaceMaxCapacity(s),
         isAvailable: true,
         status: 'EMPTY',
         statusText: 'Sẵn sàng xếp lịch',
@@ -1826,7 +1838,7 @@ export class WorkoutsService {
         surface: s,
         surfaceName: surfaceNames[s],
         currentCount: 0,
-        maxCapacity: TRACK_MAX_LIGHT_HORSES,
+        maxCapacity: getSurfaceMaxCapacity(s),
         isAvailable: true,
         status: 'EMPTY',
         statusText: 'Sẵn sàng xếp lịch',
@@ -1838,7 +1850,6 @@ export class WorkoutsService {
     const targetDur = workoutDurationMinutes(workoutType);
     const targetEnd = targetStart + targetDur * 60 * 1000;
     const isTargetHeavy = isHeavy(workoutType, 'MEDIUM');
-    const targetCapacity = isTargetHeavy ? 1 : TRACK_MAX_LIGHT_HORSES;
 
     const maxPreWindow = 120 * 60 * 1000;
     const live = { status: { not: WorkoutStatus.CANCELLED } };
@@ -1891,18 +1902,20 @@ export class WorkoutsService {
         };
       });
 
+      const maxTrackCapacity = getSurfaceMaxCapacity(s);
+      const targetCapacity = isTargetHeavy ? 1 : maxTrackCapacity;
       const hasHeavyOnTrack = activeHorses.some((h) => h.isHeavy);
       const count = activeHorses.length;
 
       let isAvailable = true;
       let status: 'EMPTY' | 'AVAILABLE' | 'FULL' | 'HEAVY_OCCUPIED' = 'EMPTY';
-      let statusText = 'Đang trống hoàn toàn (0/3)';
+      let statusText = `Đang trống hoàn toàn (0/${targetCapacity})`;
 
       if (count === 0) {
         status = 'EMPTY';
         statusText = isTargetHeavy
           ? 'Đang trống (Đạt chuẩn chạy tốc độ độc quyền)'
-          : `Đang trống (0/${TRACK_MAX_LIGHT_HORSES} chiến mã)`;
+          : `Đang trống (0/${targetCapacity} chiến mã)`;
         isAvailable = true;
       } else if (hasHeavyOnTrack) {
         status = 'HEAVY_OCCUPIED';
@@ -1913,13 +1926,13 @@ export class WorkoutsService {
         status = 'HEAVY_OCCUPIED';
         statusText = `Đang có ${count} ngựa tập nhẹ. Bài tập tốc độ (${workoutType}) yêu cầu độc quyền đường chạy`;
         isAvailable = false;
-      } else if (count >= TRACK_MAX_LIGHT_HORSES) {
+      } else if (count >= targetCapacity) {
         status = 'FULL';
-        statusText = `Đã đạt sức chứa tối đa (${count}/${TRACK_MAX_LIGHT_HORSES} chiến mã)`;
+        statusText = `Đã đạt sức chứa tối đa (${count}/${targetCapacity} chiến mã)`;
         isAvailable = false;
       } else {
         status = 'AVAILABLE';
-        statusText = `Đang có ${count}/${TRACK_MAX_LIGHT_HORSES} chiến mã (Còn ${TRACK_MAX_LIGHT_HORSES - count} chỗ an toàn)`;
+        statusText = `Đang có ${count}/${targetCapacity} chiến mã (Còn ${targetCapacity - count} chỗ an toàn)`;
         isAvailable = true;
       }
 

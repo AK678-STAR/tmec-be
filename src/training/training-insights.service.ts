@@ -179,10 +179,30 @@ export class TrainingInsightsService {
         avatarUrl: true,
         breed: true,
         gender: true,
+        owner: {
+          select: { fullName: true, phoneNumber: true },
+        },
         stallAllocations: {
           where: { isActive: true },
           take: 1,
           select: { stall: { select: { code: true } } },
+        },
+        medicalLocks: {
+          where: { isLocked: true },
+          take: 1,
+          select: { lockReason: true, recheckDate: true },
+        },
+        handoverRequests: {
+          where: { status: { in: ['PENDING', 'ACCEPTED'] } },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: {
+            status: true,
+            token: true,
+            expiresAt: true,
+            planDeadlineAt: true,
+            fromManager: { select: { fullName: true } },
+          },
         },
       },
       orderBy: { name: 'asc' },
@@ -292,6 +312,15 @@ export class TrainingInsightsService {
           breed: (horse as any).breed ?? null,
           gender: (horse as any).gender ?? null,
           stallCode,
+          ownerName: (horse as any).owner?.fullName ?? null,
+          ownerPhone: (horse as any).owner?.phoneNumber ?? null,
+          fromManagerName: (horse as any).handoverRequests?.[0]?.fromManager?.fullName ?? null,
+          medicalLockReason: (horse as any).medicalLocks?.[0]?.lockReason ?? null,
+          medicalLockRecheckDate: (horse as any).medicalLocks?.[0]?.recheckDate ?? null,
+          handoverStatus: (horse as any).handoverRequests?.[0]?.status ?? null,
+          handoverToken: (horse as any).handoverRequests?.[0]?.token ?? null,
+          handoverExpiresAt: (horse as any).handoverRequests?.[0]?.expiresAt ?? null,
+          planDeadlineAt: (horse as any).handoverRequests?.[0]?.planDeadlineAt ?? null,
         },
         plan: plan
           ? {
