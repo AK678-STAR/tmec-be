@@ -31,6 +31,8 @@ export interface PublicUser {
   permissionsChangedAt: Date | null;
   permissionsChangedBy: string | null;
   notify: NotifyMap;
+  assignedBarnId: string | null;
+  assignedBarn?: { id: string; name: string; code: string } | null;
 }
 
 // Cột permissions = null nghĩa là dùng mặc định của vai trò.
@@ -73,5 +75,13 @@ export function toPublicUser(user: User): PublicUser {
     permissionsChangedAt: user.permissionsChangedAt ?? null,
     permissionsChangedBy: user.permissionsChangedBy ?? null,
     notify: notifyOf(user),
+    assignedBarnId: (user as any).assignedBarnId ?? null,
+    assignedBarn: (user as any).assignedBarn
+      ? {
+          id: (user as any).assignedBarn.id,
+          name: (user as any).assignedBarn.name,
+          code: (user as any).assignedBarn.code,
+        }
+      : null,
   };
 }

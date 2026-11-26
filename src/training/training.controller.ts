@@ -110,9 +110,12 @@ export class TrainingController {
   @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.VETERINARIAN, UserRole.GROOM)
   listTracks(
     @Query('includeInactive') includeInactive: string,
+    @Query('date') date: string,
+    @Query('time') time: string,
+    @Query('workoutType') workoutType: string,
     @CurrentUser() user: CurrentUserPayload,
   ) {
-    return this.tracks.list(includeInactive === 'true', user);
+    return this.tracks.list(includeInactive === 'true', user, date, time, workoutType);
   }
 
   @Post('tracks')

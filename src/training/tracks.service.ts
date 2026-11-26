@@ -9,6 +9,7 @@ import { AuditService } from '../audit/audit.service';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { CreateTrainingTrackDto, UpdateTrainingTrackDto } from './dto/training-track.dto';
 import { lockWorkoutSchedule, WorkoutAvailabilityService } from './workout-availability.service';
+import { isHeavy, workoutDurationMinutes } from './training-rules';
 
 @Injectable()
 export class TracksService {
@@ -16,12 +17,75 @@ export class TracksService {
     private readonly db: PrismaService,
     private readonly audit: AuditService,
   ) {}
-  list(includeInactive: boolean, actor: CurrentUserPayload) {
+  async list(
+    includeInactive: boolean,
+    actor: CurrentUserPayload,
+    date?: string,
+    time?: string,
+    workoutType?: string,
+  ) {
     if (!['CLUB_MANAGER', 'HEAD_TRAINER', 'VETERINARIAN', 'GROOM'].includes(actor.role))
       throw new ForbiddenException();
-    return this.db.trainingTrack.findMany({
+    const tracks = await this.db.trainingTrack.findMany({
       where: includeInactive && actor.role === 'CLUB_MANAGER' ? {} : { isActive: true },
       orderBy: [{ code: 'asc' }, { id: 'asc' }],
+    });
+    if (!date || !time) {
+      return tracks.map((t) => ({ ...t, currentCount: 0, isFull: false }));
+    }
+
+    const dateOnly = date.slice(0, 10);
+    const targetDt = new Date(`${dateOnly}T${time.length === 5 ? time + ':00' : time}+07:00`);
+    if (isNaN(targetDt.getTime())) {
+      return tracks.map((t) => ({ ...t, currentCount: 0, isFull: false }));
+    }
+
+    const targetStart = targetDt.getTime();
+    const targetDur = workoutDurationMinutes(workoutType);
+    const targetEnd = targetStart + targetDur * 60 * 1000;
+    const isTargetHeavy = isHeavy(workoutType, 'MEDIUM');
+
+    const maxPreWindow = 120 * 60 * 1000;
+    const workouts = await this.db.workoutSession.findMany({
+      where: {
+        status: { not: 'CANCELLED' },
+        scheduledDate: {
+          gte: new Date(targetStart - maxPreWindow),
+          lte: new Date(targetEnd),
+        },
+      },
+      select: {
+        id: true,
+        trackId: true,
+        trackSurface: true,
+        scheduledDate: true,
+        workoutType: true,
+        intensity: true,
+      },
+    });
+
+    return tracks.map((track) => {
+      const trackWorkouts = workouts.filter((w) => {
+        if (w.trackId !== track.id && !(w.trackId === null && w.trackSurface === track.surface)) {
+          return false;
+        }
+        if (!w.scheduledDate || typeof w.scheduledDate.getTime !== 'function') return false;
+        const wStart = w.scheduledDate.getTime();
+        const wDur = workoutDurationMinutes(w.workoutType);
+        const wEnd = wStart + (wDur + 15) * 60 * 1000;
+        return targetStart < wEnd && wStart < targetEnd;
+      });
+
+      const hasHeavy = trackWorkouts.some((w) => isHeavy(w.workoutType, w.intensity));
+      const count = trackWorkouts.length;
+      const isFull = hasHeavy || (isTargetHeavy && count > 0) || count >= track.capacity;
+
+      return {
+        ...track,
+        currentCount: count,
+        isFull,
+        hasHeavy,
+      };
     });
   }
   async save(

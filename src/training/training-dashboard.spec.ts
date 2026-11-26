@@ -33,10 +33,13 @@ describe('Trainer actionable overview', () => {
     );
   });
   afterEach(() => jest.useRealTimers());
-  it('limits a head trainer to horses on their own live plans', async () => {
+  it('limits a head trainer to horses on their own live plans or assigned directly', async () => {
     await service.getOverview({ userId: 't1', role: 'HEAD_TRAINER' } as any);
     const where = db.horse.findMany.mock.calls[0][0].where;
-    expect(where.trainingPlans.some.trainerUserId).toBe('t1');
+    const planScope =
+      where.trainingPlans?.some?.trainerUserId ||
+      where.OR?.find((c: any) => c.trainingPlans)?.trainingPlans.some.trainerUserId;
+    expect(planScope).toBe('t1');
     expect(db.trainingPlan.findMany.mock.calls[0][0].where.trainerUserId).toBe('t1');
   });
   it('shows the whole club to a manager', async () => {

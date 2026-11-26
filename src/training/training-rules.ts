@@ -68,6 +68,9 @@ export const MAX_DAILY_HEAVY_WORKOUTS_PER_GROOM = 2;
 /** BR-TRN-CAPACITY: Mỗi HLV chỉ được quản lý tối đa 8 chiến mã đồng thời. */
 export const MAX_HORSES_PER_TRAINER = 8;
 
+/** BR-BARN-CAPACITY-HLV: Mỗi Khu chuồng (Barn) cho phép tối đa 2 Huấn luyện viên cùng phụ trách. */
+export const MAX_TRAINERS_PER_BARN = 2;
+
 /** BR-TRN-SLOT-HT: Đệm thời gian tối thiểu giữa các buổi tập của 1 HLV (phút). */
 export const TRAINER_BUFFER_MINUTES = 15;
 
@@ -272,6 +275,14 @@ export function validatePhases(
       };
     }
   }
+
+  const totalPlanDays =
+    Math.round(
+      (new Date(`${planEnd}T00:00:00Z`).getTime() - new Date(`${planStart}T00:00:00Z`).getTime()) /
+        (24 * 60 * 60 * 1000),
+    ) + 1;
+  const isMicrocycle = totalPlanDays < 14;
+
   for (const p of phases) {
     const pDays =
       Math.round(
@@ -280,12 +291,14 @@ export function validatePhases(
           (24 * 60 * 60 * 1000),
       ) + 1;
     const isSpecial = p.type === 'PRE_RACE' || p.type === 'RECOVERY';
-    const minDays = isSpecial ? 3 : 7;
+    const minDays = isMicrocycle ? 3 : isSpecial ? 3 : 7;
     if (pDays < minDays) {
       return bad(
-        isSpecial
-          ? `Giai đoạn "${p.name}" tối thiểu 3 ngày.`
-          : `Giai đoạn rèn luyện "${p.name}" tối thiểu 7 ngày (1 tuần).`,
+        isMicrocycle
+          ? `Giai đoạn "${p.name}" trong giáo án ngắn (< 14 ngày) tối thiểu 3 ngày.`
+          : isSpecial
+            ? `Giai đoạn "${p.name}" tối thiểu 3 ngày.`
+            : `Giai đoạn rèn luyện "${p.name}" tối thiểu 7 ngày (1 tuần).`,
       );
     }
   }

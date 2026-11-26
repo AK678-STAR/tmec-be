@@ -467,7 +467,52 @@ export class TrainingPlansService {
             'Chỉ kích hoạt được giáo án đang ở Nháp.',
           );
         }
-        await this.assertCanActivate(tx, plan, horse, dto);
+
+        // Tịnh tiến đồng bộ lịch tập nếu có effectiveStartDate
+        if (dto.effectiveStartDate) {
+          const targetStartDate = new Date(dto.effectiveStartDate);
+          const shiftMs = targetStartDate.getTime() - plan.startDate.getTime();
+
+          if (shiftMs !== 0) {
+            await this.assertCanActivate(tx, plan, horse, dto);
+
+            const newPlanStartDate = targetStartDate;
+            const newPlanEndDate = new Date(plan.endDate.getTime() + shiftMs);
+
+            const currentPhases = phasesOf(plan);
+            const shiftedPhases = currentPhases.map((phase) => ({
+              ...phase,
+              startDate: new Date(new Date(phase.startDate).getTime() + shiftMs).toISOString(),
+              endDate: new Date(new Date(phase.endDate).getTime() + shiftMs).toISOString(),
+            }));
+
+            await tx.trainingPlan.update({
+              where: { id: plan.id },
+              data: {
+                startDate: newPlanStartDate,
+                endDate: newPlanEndDate,
+                phases: shiftedPhases,
+              },
+            });
+
+            const sessions = await tx.workoutSession.findMany({
+              where: { trainingPlanId: plan.id },
+              select: { id: true, scheduledDate: true },
+            });
+
+            for (const session of sessions) {
+              const newDate = new Date(session.scheduledDate.getTime() + shiftMs);
+              await tx.workoutSession.update({
+                where: { id: session.id },
+                data: { scheduledDate: newDate },
+              });
+            }
+          } else {
+            await this.assertCanActivate(tx, plan, horse, dto);
+          }
+        } else {
+          await this.assertCanActivate(tx, plan, horse, dto);
+        }
         if (horse!.status === HorseStatus.RESTING) {
           await tx.horse.update({
             where: { id: horse!.id },
@@ -601,14 +646,8 @@ export class TrainingPlansService {
     });
 
     if (dto.status === PlanStatus.CANCELLED) {
-      if (result.status === PlanStatus.DRAFT && user.role === UserRole.HEAD_TRAINER) {
-        await this.recordHorseCooldown(
-          result.horseId,
-          result.trainerUserId,
-          dto.reason || 'Huấn luyện viên tự hủy giáo án nháp',
-          'PLAN_CANCELLED_COOLDOWN',
-        );
-      }
+      // Theo chỉ đạo người dùng (V39): Hủy hoặc xóa bản nháp KHÔNG áp dụng cooldown 48h,
+      // chiến mã lập tức quay về trạng thái sẵn sàng để HLV tạo lại được ngay.
       const isManagerCancel =
         user.role === UserRole.CLUB_MANAGER && result.trainerUserId !== user.userId;
       if (isManagerCancel) {
@@ -1118,15 +1157,8 @@ export class TrainingPlansService {
       );
     }
 
-    // Nếu HLV tự xóa bản nháp của mình, áp dụng cooldown 48h
-    if (user.role === UserRole.HEAD_TRAINER && plan.trainerUserId === user.userId) {
-      await this.recordHorseCooldown(
-        plan.horseId,
-        plan.trainerUserId,
-        'Huấn luyện viên tự xóa bản nháp giáo án',
-        'DELETE_PLAN_COOLDOWN',
-      );
-    }
+    // Theo quyết định người dùng (V39): HLV tự xóa bản nháp của mình KHÔNG áp dụng cooldown 48h,
+    // chiến mã lập tức quay về trạng thái Sẵn sàng lập giáo án để HLV tạo lại được ngay.
 
     await this.prisma.$transaction([
       this.prisma.workoutSession.deleteMany({ where: { trainingPlanId: id } }),
@@ -1348,11 +1380,15 @@ export class TrainingPlansService {
    */
   async getAssignableHorses(user: CurrentUserPayload) {
     await this.common.sweepOverdue();
+    const whereCondition: Prisma.HorseWhereInput = {
+      deletedAt: null,
+      status: { not: HorseStatus.RETIRED },
+    };
+    if (user.role === UserRole.HEAD_TRAINER) {
+      whereCondition.assignedTrainerId = user.userId;
+    }
     const horses = await this.prisma.horse.findMany({
-      where: {
-        deletedAt: null,
-        status: { not: HorseStatus.RETIRED },
-      },
+      where: whereCondition,
       select: {
         id: true,
         name: true,
@@ -1365,6 +1401,15 @@ export class TrainingPlansService {
         isMedicalLocked: true,
         isDebtImpounded: true,
         avatarUrl: true,
+        assignedTrainerId: true,
+        trainerAssignmentStatus: true,
+        assignedTrainer: { select: { id: true, fullName: true } },
+        handoverRequests: {
+          where: { status: 'ACCEPTED' },
+          orderBy: { acceptedAt: 'desc' },
+          take: 1,
+          select: { planDeadlineAt: true, acceptedAt: true },
+        },
         owner: { select: { id: true, fullName: true } },
         stallAllocations: {
           where: { isActive: true },
@@ -1386,9 +1431,10 @@ export class TrainingPlansService {
 
     const activeOrDraftPlans = await this.prisma.trainingPlan.findMany({
       where: {
-        status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] },
+        status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE, PlanStatus.COMPLETED] },
         horse: { deletedAt: null },
       },
+      orderBy: { updatedAt: 'desc' },
       select: {
         id: true,
         planCode: true,
@@ -1399,6 +1445,7 @@ export class TrainingPlansService {
         trainer: { select: { id: true, fullName: true } },
         startDate: true,
         endDate: true,
+        updatedAt: true,
       },
     });
 
@@ -1414,6 +1461,17 @@ export class TrainingPlansService {
         const plans = horsePlanMap.get(h.id) || [];
         const activePlan = plans.find((p) => p.status === PlanStatus.ACTIVE) || null;
         const draftPlan = plans.find((p) => p.status === PlanStatus.DRAFT) || null;
+        const completedPlans = plans.filter((p) => p.status === PlanStatus.COMPLETED);
+        const lastCompletedPlan = completedPlans[0]
+          ? {
+              id: completedPlans[0].id,
+              planCode: completedPlans[0].planCode ?? '',
+              phaseName: completedPlans[0].phaseName,
+              completedAt: completedPlans[0].endDate
+                ? completedPlans[0].endDate.toISOString()
+                : null,
+            }
+          : null;
 
         let planState:
           | 'READY'
@@ -1477,6 +1535,45 @@ export class TrainingPlansService {
           }
         }
 
+        if (!h.isMedicalLocked && !h.isDebtImpounded && !activePlan && !draftPlan) {
+          if (user.role === UserRole.HEAD_TRAINER) {
+            if (h.assignedTrainerId && h.assignedTrainerId !== user.userId) {
+              planState = 'ACTIVE_OTHER';
+              canAssign = false;
+              badge = `HLV ${h.assignedTrainer?.fullName || 'khác'} phụ trách`;
+              explanation = `Chiến mã đã được Quản lý phân công cho HLV ${h.assignedTrainer?.fullName || 'khác'}.`;
+            } else if (h.assignedTrainerId === user.userId) {
+              if (
+                h.trainerAssignmentStatus === 'PENDING_ACCEPTANCE' ||
+                (h.trainerAssignmentStatus as string) === 'PENDING'
+              ) {
+                planState = 'READY';
+                canAssign = false;
+                badge = 'Chờ bạn tiếp nhận';
+                explanation = 'Chiến mã đang chờ bạn xác nhận tiếp nhận trước khi lập giáo án.';
+              } else if (
+                h.trainerAssignmentStatus === 'ASSIGNED' ||
+                (h.trainerAssignmentStatus as string) === 'ACCEPTED'
+              ) {
+                planState = 'READY';
+                canAssign = true;
+                badge = 'Đã phân công cho bạn';
+                explanation = 'Chiến mã sẵn sàng để bạn lập giáo án mới.';
+              } else {
+                planState = 'READY';
+                canAssign = true;
+                badge = 'Đã phân công cho bạn';
+                explanation = 'Chiến mã sẵn sàng để bạn lập giáo án mới.';
+              }
+            } else {
+              planState = 'READY';
+              canAssign = false;
+              badge = 'Chưa phân công HLV';
+              explanation = 'Chiến mã chưa được phân công cho bạn.';
+            }
+          }
+        }
+
         let activeCooldown: {
           remainingHours: number;
           trainerUserId: string;
@@ -1513,6 +1610,27 @@ export class TrainingPlansService {
         const stallName = stallInfo
           ? `${stallInfo.code} (${stallInfo.zoneRef?.name || stallInfo.zone})`
           : null;
+        const stallCode = stallInfo?.code ?? null;
+        const zoneName =
+          stallInfo?.zoneRef?.name ?? (stallInfo?.zone ? `Barn ${stallInfo.zone}` : null);
+
+        let unplannedCategory: 'NEW_ADMISSION' | 'RESTING_CYCLE' | 'MEDICAL_LOCKED' | null = null;
+        let isSlaExempt = false;
+
+        if (!activePlan && !draftPlan) {
+          if (h.isMedicalLocked || planState === 'MEDICAL_LOCKED') {
+            unplannedCategory = 'MEDICAL_LOCKED';
+            isSlaExempt = true;
+          } else if (lastCompletedPlan) {
+            unplannedCategory = 'RESTING_CYCLE';
+            isSlaExempt = true;
+            badge = 'Nghỉ ngơi hồi phục (Không tính SLA)';
+            explanation = `Chiến mã đã hoàn thành giáo án ${lastCompletedPlan.planCode}, đang trong chu kỳ nghỉ ngơi phục hồi thể lực.`;
+          } else {
+            unplannedCategory = 'NEW_ADMISSION';
+            isSlaExempt = false;
+          }
+        }
 
         return {
           id: h.id,
@@ -1528,13 +1646,21 @@ export class TrainingPlansService {
           avatarUrl: h.avatarUrl,
           ownerName: h.owner?.fullName ?? null,
           stallName,
+          stallCode,
+          zoneName,
           planState,
           canAssign,
           badge,
           explanation,
+          assignedTrainer: h.assignedTrainer ?? null,
+          trainerAssignmentStatus: h.trainerAssignmentStatus,
+          planDeadlineAt: h.handoverRequests[0]?.planDeadlineAt ?? null,
           activePlan: activePlanInfo,
           activeCooldown,
           existingPlanId: activePlan?.id || draftPlan?.id || null,
+          lastCompletedPlan,
+          unplannedCategory,
+          isSlaExempt,
         };
       }),
     );
@@ -1570,6 +1696,10 @@ export class TrainingPlansService {
     const summary = {
       total: items.length,
       readyCount: items.filter((x) => x.planState === 'READY').length,
+      unplannedCount: items.filter((x) => x.unplannedCategory !== null).length,
+      unplannedNewAdmissionCount: items.filter((x) => x.unplannedCategory === 'NEW_ADMISSION')
+        .length,
+      unplannedRestingCount: items.filter((x) => x.unplannedCategory === 'RESTING_CYCLE').length,
       myActiveCount: items.filter((x) => x.planState === 'ACTIVE_SELF').length,
       myDraftCount: items.filter((x) => x.planState === 'DRAFT_SELF').length,
       otherTrainerCount: items.filter(

@@ -3,6 +3,7 @@ import {
   Role,
   UserStatus,
   HorseStatus,
+  AdmissionStatus,
   StallStatus,
   PlanStatus,
   WorkoutStatus,
@@ -149,6 +150,19 @@ async function main() {
     },
   });
 
+  const vet = await prisma.user.upsert({
+    where: { email: 'vet@gmail.com' },
+    update: { passwordHash, status: UserStatus.ACTIVE, fullName: 'BS. Hoàng Thị Mai' },
+    create: {
+      email: 'vet@gmail.com',
+      passwordHash,
+      fullName: 'BS. Hoàng Thị Mai',
+      role: Role.VETERINARIAN,
+      status: UserStatus.ACTIVE,
+      phoneNumber: '0903115999',
+    },
+  });
+
   // =========================================================================
   // 2. KHU CHUỒNG (Barn A & Barn B) & Ô CHUỒNG
   // =========================================================================
@@ -175,6 +189,41 @@ async function main() {
       rows: 4,
       cols: 3,
       description: 'Khu chuồng biệt lập B (Chuyên môn HLV Trung)',
+    },
+  });
+
+  // Gán Barn cho các HLV theo định mức tối đa 2 HLV / Barn (BR-BARN-STAFFING-LIMIT):
+  // Barn A: HLV Tuấn & HLV Quân
+  // Barn B: HLV Nam & HLV Trung
+  await prisma.user.update({
+    where: { id: trainerA.id },
+    data: { assignedBarnId: zoneA.id },
+  });
+  await prisma.user.update({
+    where: { id: trainerB.id },
+    data: { assignedBarnId: zoneB.id },
+  });
+  await prisma.user.update({
+    where: { id: trainerC.id },
+    data: { assignedBarnId: zoneB.id },
+  });
+
+  const trainerQuan = await prisma.user.upsert({
+    where: { email: 'trainer.quan@gmail.com' },
+    update: {
+      passwordHash,
+      status: UserStatus.ACTIVE,
+      fullName: 'Trần Minh Quân',
+      assignedBarnId: zoneA.id,
+    },
+    create: {
+      email: 'trainer.quan@gmail.com',
+      passwordHash,
+      fullName: 'Trần Minh Quân',
+      role: Role.HEAD_TRAINER,
+      status: UserStatus.ACTIVE,
+      phoneNumber: '0902000004',
+      assignedBarnId: zoneA.id,
     },
   });
 
@@ -232,43 +281,84 @@ async function main() {
     stallsB.push(s);
   }
 
+  // Khởi tạo 4 sân tập thể lực chuẩn đạt chuẩn cho CLB
+  console.log('  -> Khởi tạo 4 sân tập thể lực chuẩn cho CLB (Cỏ A, Cỏ B, Cát, Tổng hợp)...');
+  const tracksData = [
+    { code: 'TRK-TURF-A', name: 'Đường chạy cỏ A (Chính)', surface: 'TURF', capacity: 6, isActive: true },
+    { code: 'TRK-TURF-B', name: 'Đường chạy cỏ B (Phụ)', surface: 'TURF', capacity: 4, isActive: true },
+    { code: 'TRK-DIRT-01', name: 'Đường chạy cát chính', surface: 'DIRT', capacity: 8, isActive: true },
+    { code: 'TRK-SYN-01', name: 'Đường chạy tổng hợp All-weather', surface: 'SYNTHETIC', capacity: 6, isActive: true },
+  ];
+  for (const t of tracksData) {
+    await prisma.trainingTrack.upsert({
+      where: { code: t.code },
+      update: { name: t.name, surface: t.surface, capacity: t.capacity, isActive: t.isActive },
+      create: { code: t.code, name: t.name, surface: t.surface, capacity: t.capacity, isActive: t.isActive },
+    });
+  }
+
   // =========================================================================
-  // 3. THIẾT LẬP TẢI CỦA 3 HUẤN LUYỆN VIÊN (A3)
+  // 3. THIẾT LẬP TẢI CỦA CÁC HUẤN LUYỆN VIÊN (ĐẠT CHUẨN 8/8 & TRẦN 2 HLV/BARN)
   // =========================================================================
-  console.log('⚖️ [3/5] Thiết lập định mức tải cho 3 Huấn luyện viên...');
+  console.log('⚖️ [3/5] Thiết lập định mức tải đạt chuẩn (HLV Tuấn 8/8, HLV Quân 2/8, HLV Nam 4/8, HLV Trung 3/8)...');
 
-  // Reset các ngựa filler cũ nếu có (xóa sạch các liên kết phụ thuộc trước khi xóa ngựa)
-  const demoHorseFilter = { horse: { horseCode: { startsWith: 'HR-DEMO-' } } };
-  await prisma.workoutSession.deleteMany({ where: demoHorseFilter });
-  await prisma.dailyCareTask.deleteMany({ where: demoHorseFilter });
-  await prisma.trainingPlan.deleteMany({ where: demoHorseFilter });
-  await prisma.stallAllocation.deleteMany({ where: demoHorseFilter });
+  // DỌN SẠCH TRIỆT ĐỂ (HARD CLEANUP) TOÀN BỘ CHIẾN MÃ CŨ ĐỂ KHÔNG SÓT NGỰA RÁC TỒN ĐỌNG
+  console.log('  -> Dọn sạch toàn bộ liên kết chiến mã cũ để thiết lập database vừa đủ...');
+  await prisma.workoutSession.deleteMany({});
+  await prisma.dailyCareTask.deleteMany({});
+  await prisma.dailyGroomingLog.deleteMany({});
+  await prisma.trainingPlan.deleteMany({});
+  await prisma.stallAllocation.deleteMany({});
+  await prisma.medicalLock.deleteMany({});
+  try {
+    await prisma.injuryLog.deleteMany({});
+    await prisma.medicalRecord.deleteMany({});
+    await prisma.preventiveSchedule.deleteMany({});
+    await prisma.nutritionPlan.deleteMany({});
+  } catch {}
+  await prisma.horseHandoverRequest.deleteMany({});
+  try {
+    await prisma.admissionHealthReview.deleteMany({});
+    await prisma.admissionHistoryLog.deleteMany({});
+  } catch {}
+  await prisma.horseAdmissionRecord.deleteMany({});
+  try {
+    await prisma.incidentReport.deleteMany({});
+    await prisma.trainerReview.deleteMany({});
+    await prisma.horseTransferRequest.deleteMany({});
+    await prisma.tournamentResult.deleteMany({});
+    await prisma.tournamentRegistration.deleteMany({});
+    await prisma.financialInvoice.deleteMany({});
+  } catch {}
 
-  await prisma.horse.deleteMany({
-    where: { horseCode: { startsWith: 'HR-DEMO-' } },
-  });
+  // Xóa toàn bộ ngựa cũ trong DB
+  await prisma.horse.deleteMany({});
 
-  // Dọn dẹp triệt để các giáo án ACTIVE/DRAFT cũ từ seed.ts của 3 HLV để không bị cộng dồn vượt định mức 8/8
-  await prisma.trainingPlan.updateMany({
-    where: {
-      trainerUserId: { in: [trainerA.id, trainerB.id, trainerC.id] },
-      status: { in: [PlanStatus.ACTIVE, PlanStatus.DRAFT] },
-    },
-    data: { status: PlanStatus.COMPLETED },
-  });
+  // Đảm bảo có Breed & Color Catalog
+  const breeds = ['Thoroughbred', 'Arabian', 'Quarter Horse', 'Warmblood'];
+  for (const b of breeds) {
+    const existing = await prisma.horseCatalogItem.findFirst({ where: { type: 'BREED', name: b } });
+    if (!existing) {
+      await prisma.horseCatalogItem.create({
+        data: { type: 'BREED', name: b, code: b.toUpperCase().replace(/\s+/g, '_') },
+      });
+    }
+  }
+  const colors = ['Bay', 'Chestnut', 'Black', 'White', 'Grey'];
+  for (const c of colors) {
+    const existing = await prisma.horseCatalogItem.findFirst({ where: { type: 'COLOR', name: c } });
+    if (!existing) {
+      await prisma.horseCatalogItem.create({
+        data: { type: 'COLOR', name: c, code: c.toUpperCase() },
+      });
+    }
+  }
 
-  // Gỡ toàn bộ phân bổ chuồng cũ của các groom để đảm bảo định mức chuẩn
-  await prisma.stallAllocation.updateMany({
-    where: {
-      assignedGroomUserId: { in: [groom.id, groom2.id, groom3.id, groom4.id] },
-    },
-    data: { assignedGroomUserId: null },
-  });
-
-  // Mảng theo dõi 6 chiến mã của mỗi Groom
+  // Mảng theo dõi chiến mã của mỗi Groom
   const groom1Horses: { horse: any; stall: any }[] = [];
   const groom2Horses: { horse: any; stall: any }[] = [];
   const groom3Horses: { horse: any; stall: any }[] = [];
+  const groom4Horses: { horse: any; stall: any }[] = [];
 
   // --- Helper tạo giáo án đang hoạt động kèm phases và các buổi tập thực tế ---
   async function createLivePlanWithWorkouts(params: {
@@ -291,7 +381,7 @@ async function main() {
       {
         id: `${params.planCode}-PH1`,
         name: 'Giai đoạn 1: Nền tảng',
-        type: 'FOUNDATION',
+        type: 'BASE',
         startDate: startDate.toISOString().slice(0, 10),
         endDate: phase1End.toISOString().slice(0, 10),
         sessionsPerWeek: 3,
@@ -301,7 +391,7 @@ async function main() {
       {
         id: `${params.planCode}-PH2`,
         name: 'Giai đoạn 2: Tăng tốc & Sức bền',
-        type: 'SPEED',
+        type: 'BUILD',
         startDate: phase2Start.toISOString().slice(0, 10),
         endDate: phase2End.toISOString().slice(0, 10),
         sessionsPerWeek: 3,
@@ -311,7 +401,7 @@ async function main() {
       {
         id: `${params.planCode}-PH3`,
         name: 'Giai đoạn 3: Phục hồi & Nước rút',
-        type: 'RECOVERY',
+        type: 'SPEED',
         startDate: new Date(Date.now() + 16 * 24 * 3600 * 1000).toISOString().slice(0, 10),
         endDate: endDate.toISOString().slice(0, 10),
         sessionsPerWeek: 3,
@@ -335,13 +425,10 @@ async function main() {
       },
     });
 
-    // Phân bổ khoa học 4 tuần qua: 8 buổi tập đều đặn (mỗi tuần 2 buổi) -> avg4w = 12.0 điểm
     const prior4wOffsets = [-32, -29, -25, -22, -18, -15, -11, -8];
-    // 7 ngày qua: 2 buổi tập chuẩn (tải = 12.0 điểm -> ACWR = 1.0)
-    // Riêng ngựa isLoadSpike (Phong Lôi): 3 buổi tập với cự ly tăng dần -> ACWR = 1.38 > 1.3 (Spike chuẩn duy nhất)
     const recentOffsets = params.isLoadSpike ? [-6, -3, -1] : [-5, -2];
-
     const allCompleted = [...prior4wOffsets, ...recentOffsets];
+
     for (let s = 0; s < allCompleted.length; s++) {
       const off = allCompleted[s];
       const sDate = new Date(Date.now() + off * 24 * 3600 * 1000);
@@ -400,151 +487,49 @@ async function main() {
     return plan;
   }
 
-  // --- HLV B (trainer2@gmail.com): Đúng 8 con -> ĐẦY TẢI 8/8 ---
-  console.log('  -> Tạo 8 ngựa cho HLV B để đạt 8/8 đầy tải...');
-  const horseNamesB = [
-    'Tuyết Phong', 'Kim Long', 'Thần Phong', 'Hắc Báo',
-    'Hồng Kỳ', 'Phi Vũ', 'Tử Điện', 'Thanh Loan',
+  // --- 3.1. HLV TUẤN (trainer@gmail.com, Barn A): ĐÚNG 8 CHIẾN MÃ (8/8 TẢI THỰC TẾ) ---
+  console.log('  -> Tạo ĐÚNG 8 chiến mã tại Barn A cho HLV Tuấn theo cơ cấu sống động thực tế (5 Active, 1 Draft, 1 Chờ giáo án, 1 Khóa y tế)...');
+  const horseNamesA = [
+    'Phong Lôi', 'Tuyết Ảnh', 'Lôi Chấn', 'Dạ Nguyệt',
+    'Lão Tướng', 'Huyền Vũ', 'Thần Phong', 'Hắc Báo',
   ];
   for (let i = 1; i <= 8; i++) {
     const avatarUrl = `/images/horses/horse-${String(i).padStart(2, '0')}.jpg`;
-    const h = await prisma.horse.create({
-      data: {
-        horseCode: `HR-DEMO-B0${i}`,
-        name: horseNamesB[i - 1],
-        breed: 'Thoroughbred',
-        gender: i % 2 === 0 ? 'MALE' : 'FEMALE',
-        color: 'Bay',
-        avatarUrl,
-        dob: new Date('2022-03-15'),
-        weightKg: 460 + i * 5,
-        microchip: `98500000200${i}`,
-        microchipRfid: `98500000200${i}`,
-        status: HorseStatus.ACTIVE,
-        ownerId: owner.id,
-      },
-    });
+    const isMedical = i === 8;
+    const isWaitingPlan = i === 7;
+    const isDraft = i === 6;
+    const isActive = i <= 5;
 
-    let assignedStall: any = null;
-    let assignedGroomId: string | null = null;
-    if (i <= 4) {
-      // 4 con đầu (i=1..4): Gán vào A-07 đến A-10 của Barn A cho Groom 2 (Hoàng Văn Phúc)
-      assignedStall = stallsA[5 + i];
-      assignedGroomId = groom2.id;
-      groom2Horses.push({ horse: h, stall: assignedStall });
-    } else if (i <= 6) {
-      // Con thứ 5 và 6: Gán vào A-11 và A-12 của Barn A
-      assignedStall = stallsA[5 + i];
-      assignedGroomId = groom2.id;
-      groom2Horses.push({ horse: h, stall: assignedStall });
-    } else {
-      // Con thứ 7 và 8: Gán vào A-05 và A-06 của Barn A để đủ 8 con trong cùng Barn A
-      assignedStall = stallsA[i - 3];
-      assignedGroomId = groom2.id;
-      groom2Horses.push({ horse: h, stall: assignedStall });
-    }
+    const horseStatus = isMedical
+      ? HorseStatus.INJURED
+      : isWaitingPlan
+        ? HorseStatus.RESTING
+        : HorseStatus.IN_TRAINING;
 
-    await prisma.stallAllocation.create({
-      data: {
-        stallId: assignedStall.id,
-        horseId: h.id,
-        assignedGroomUserId: assignedGroomId,
-        isActive: true,
-      },
-    });
-
-    // Tạo giáo án đang chạy cho HLV B (đủ 6 giáo án -> 6/6 Đầy tải)
-    await createLivePlanWithWorkouts({
-      horseId: h.id,
-      trainerUserId: trainerB.id,
-      planCode: `GA-DEMO-B0${i}`,
-      phaseName: `Giáo án Thể lực & Sức bền B${i}`,
-      objective: 'Duy trì thể lực đỉnh cao và kiểm soát nhịp tim.',
-      baseScore: 8.4 + (i % 3) * 0.2,
-      trackSurface: TrackSurface.TURF,
-      isLoadSpike: false,
-    });
-  }
-
-  // --- HLV C (trainer3@gmail.com): 3 con ở Barn B -> LỆCH BARN KHI CHỌN NGỰA BARN A ---
-  console.log('  -> Tạo 3 ngựa tại Barn B cho HLV C...');
-  const horseNamesC = ['Ngàn Hoa', 'Thiên Mã', 'Hỏa Phụng'];
-  for (let i = 1; i <= 3; i++) {
-    const avatarUrl = `/images/horses/horse-${String(i + 8).padStart(2, '0')}.jpg`;
-    const h = await prisma.horse.create({
-      data: {
-        horseCode: `HR-DEMO-C0${i}`,
-        name: horseNamesC[i - 1],
-        breed: 'Arabian',
-        gender: 'MALE',
-        color: 'Chestnut',
-        avatarUrl,
-        dob: new Date('2021-05-10'),
-        weightKg: 440 + i * 10,
-        microchip: `98500000300${i}`,
-        microchipRfid: `98500000300${i}`,
-        status: HorseStatus.ACTIVE,
-        ownerId: owner.id,
-      },
-    });
-
-    const stallC = stallsB[i - 1]; // B-01, B-02, B-03 cho Groom 3 (Đỗ Thị Mai)
-    await prisma.stallAllocation.create({
-      data: {
-        stallId: stallC.id,
-        horseId: h.id,
-        assignedGroomUserId: groom3.id,
-        isActive: true,
-      },
-    });
-    groom3Horses.push({ horse: h, stall: stallC });
-
-    // Tạo giáo án đang chạy cho HLV C (3 giáo án -> 3/8)
-    await createLivePlanWithWorkouts({
-      horseId: h.id,
-      trainerUserId: trainerC.id,
-      planCode: `GA-DEMO-C0${i}`,
-      phaseName: `Giáo án Nước kiệu Cơ bản C${i}`,
-      objective: 'Tập trung phản xạ và phối hợp bước chạy 1000m.',
-      baseScore: 8.2 + (i % 3) * 0.3,
-      trackSurface: TrackSurface.DIRT,
-      isLoadSpike: false,
-    });
-  }
-
-  // --- HLV A (trainer@gmail.com): Đúng 6 con nền tảng tại Barn A (+ 1 con demo = 7 con -> Sắp đầy tải) ---
-  console.log('  -> Tạo các ngựa nền tảng cho HLV A...');
-  const horseNamesA = ['Phong Lôi', 'Tuyết Ảnh', 'Lôi Chấn', 'Dạ Nguyệt', 'Lão Tướng', 'Huyền Vũ'];
-  for (let i = 1; i <= 6; i++) {
-    const avatarUrl = `/images/horses/horse-${String(i + 11).padStart(2, '0')}.jpg`;
     const h = await prisma.horse.create({
       data: {
         horseCode: `HR-DEMO-A0${i}`,
         name: horseNamesA[i - 1],
         breed: 'Quarter Horse',
-        gender: 'MALE',
-        color: 'Black',
+        gender: i % 2 === 0 ? 'MALE' : 'FEMALE',
+        color: 'Bay',
         avatarUrl,
         dob: new Date('2022-01-20'),
-        weightKg: 470,
+        weightKg: 470 + i * 5,
         microchip: `98500000100${i}`,
         microchipRfid: `98500000100${i}`,
-        status: HorseStatus.ACTIVE,
+        status: horseStatus,
+        isMedicalLocked: isMedical,
+        assignedTrainerId: trainerA.id,
+        trainerAssignmentStatus: 'ASSIGNED',
         ownerId: owner.id,
       },
     });
 
-    const stallA = stallsA[i - 1]; // A-01 đến A-06
-    let assignedGroomId: string | null = null;
-    if (i <= 4) {
-      // A-01 đến A-04: Gán cho Groom 1 (Trần Thị Mai) -> Đạt 4/6 ô (còn đúng 2 slot trống)
-      assignedGroomId = groom.id;
-      groom1Horses.push({ horse: h, stall: stallA });
-    } else {
-      // A-05 và A-06: Gán cho Groom 2 (Hoàng Văn Phúc) -> Cùng với 4 con HLV B đạt đúng 6/6 ô (ĐẦY TẢI)
-      assignedGroomId = groom2.id;
-      groom2Horses.push({ horse: h, stall: stallA });
-    }
+    const stallA = stallsA[i - 1]; // Ô A-01 đến A-08
+    const assignedGroomId = i <= 4 ? groom.id : groom2.id;
+    if (i <= 4) groom1Horses.push({ horse: h, stall: stallA });
+    else groom2Horses.push({ horse: h, stall: stallA });
 
     await prisma.stallAllocation.create({
       data: {
@@ -555,34 +540,238 @@ async function main() {
       },
     });
 
-    // Tạo giáo án đang chạy cho HLV A (đúng 6 giáo án nền tảng)
+    if (isActive) {
+      await createLivePlanWithWorkouts({
+        horseId: h.id,
+        trainerUserId: trainerA.id,
+        planCode: `GA-DEMO-A0${i}`,
+        phaseName: `Giáo án Thể lực & Tốc độ A${i}`,
+        objective: 'Tăng cường sức bền và tốc độ nước rút 1200m.',
+        baseScore: 8.5 + (i % 3) * 0.2,
+        trackSurface: TrackSurface.TURF,
+        isLoadSpike: i === 1,
+      });
+    } else if (isDraft) {
+      // 1 Chiến mã có giáo án DRAFT (chờ kích hoạt)
+      const startDate = new Date(Date.now() + 2 * 24 * 3600 * 1000);
+      const endDate = new Date(Date.now() + 32 * 24 * 3600 * 1000);
+      await prisma.trainingPlan.create({
+        data: {
+          horseId: h.id,
+          trainerUserId: trainerA.id,
+          planCode: `GA-DEMO-A0${i}`,
+          phaseName: `Giáo án Thể lực & Bứt tốc Mùa Thu`,
+          objective: 'Rèn luyện khả năng tăng tốc 400m cuối và hồi phục nhịp tim.',
+          status: PlanStatus.DRAFT,
+          startDate,
+          endDate,
+          trackSurface: TrackSurface.TURF,
+          phases: [
+            {
+              id: `GA-DEMO-A0${i}-PH1`,
+              name: 'Giai đoạn 1: Nền tảng',
+              type: 'BASE',
+              startDate: startDate.toISOString().slice(0, 10),
+              endDate: new Date(Date.now() + 16 * 24 * 3600 * 1000).toISOString().slice(0, 10),
+              sessionsPerWeek: 3,
+              maxWeeklyDistance: 6000,
+              surface: TrackSurface.TURF,
+            },
+          ],
+        },
+      });
+    } else if (isWaitingPlan) {
+      // 1 Chiến mã mới tiếp nhận, chờ lập giáo án (SLA 3 ngày)
+      await prisma.horseHandoverRequest.create({
+        data: {
+          horseId: h.id,
+          fromManagerId: manager.id,
+          toTrainerId: trainerA.id,
+          status: 'ACCEPTED',
+          token: `token-accepted-a07-${Date.now()}`,
+          expiresAt: new Date(Date.now() + 48 * 3600 * 1000),
+          acceptedAt: new Date(Date.now() - 3600 * 1000),
+          planDeadlineAt: new Date(Date.now() + 3 * 24 * 3600 * 1000),
+        },
+      });
+    } else if (isMedical) {
+      // 1 Chiến mã bị khóa y tế
+      await prisma.medicalLock.create({
+        data: {
+          horseId: h.id,
+          lockCode: `KH-DEMO-01`,
+          lockedAt: new Date(Date.now() - 2 * 24 * 3600 * 1000),
+          expectedRestDays: 14,
+          recheckDate: new Date(Date.now() + 12 * 24 * 3600 * 1000),
+          lockReason: 'Chấn thương gân chân trước bên phải cấp độ 2 sau bài tập nặng',
+        },
+      });
+    }
+  }
+
+  // --- 3.2. HLV QUÂN (trainer.quan@gmail.com, Barn A): 2 CHIẾN MÃ (2/8, CÒN 6 CHỖ TRỐNG ĐỂ DEMO HAPPY CASE) ---
+  console.log('  -> Tạo 2 chiến mã tại Barn A cho HLV Quân (2/8 tải, phục vụ test Happy Case phân công)...');
+  const horseNamesQ = ['Tử Điện', 'Thanh Loan'];
+  for (let i = 1; i <= 2; i++) {
+    const avatarUrl = `/images/horses/horse-${String(i + 8).padStart(2, '0')}.jpg`;
+    const h = await prisma.horse.create({
+      data: {
+        horseCode: `HR-DEMO-Q0${i}`,
+        name: horseNamesQ[i - 1],
+        breed: 'Thoroughbred',
+        gender: 'FEMALE',
+        color: 'Chestnut',
+        avatarUrl,
+        dob: new Date('2022-05-10'),
+        weightKg: 460 + i * 10,
+        microchip: `98500000400${i}`,
+        microchipRfid: `98500000400${i}`,
+        status: HorseStatus.IN_TRAINING,
+        assignedTrainerId: trainerQuan.id,
+        trainerAssignmentStatus: 'ASSIGNED',
+        ownerId: owner.id,
+      },
+    });
+
+    const stallQ = stallsA[7 + i]; // Ô A-09 và A-10
+    await prisma.stallAllocation.create({
+      data: {
+        stallId: stallQ.id,
+        horseId: h.id,
+        assignedGroomUserId: groom2.id,
+        isActive: true,
+      },
+    });
+    groom2Horses.push({ horse: h, stall: stallQ });
+
     await createLivePlanWithWorkouts({
       horseId: h.id,
-      trainerUserId: trainerA.id,
-      planCode: `GA-DEMO-A0${i}`,
-      phaseName: `Giáo án Thể lực Tốc độ ${i}`,
-      objective: 'Tăng cường sức bền và tốc độ nước rút 1200m.',
-      baseScore: 8.5 + (i % 3) * 0.2,
+      trainerUserId: trainerQuan.id,
+      planCode: `GA-DEMO-Q0${i}`,
+      phaseName: `Giáo án Nước kiệu Quân ${i}`,
+      objective: 'Rèn luyện phản xạ và cự ly trung bình.',
+      baseScore: 8.3,
       trackSurface: TrackSurface.TURF,
-      isLoadSpike: i === 1,
+      isLoadSpike: false,
+    });
+  }
+
+  // --- 3.3. HLV NAM (trainer2@gmail.com, Barn B): 4 CHIẾN MÃ TẠI BARN B (4/8 TẢI) ---
+  console.log('  -> Tạo 4 chiến mã tại Barn B cho HLV Nam (Barn B)...');
+  const horseNamesB = ['Tuyết Phong', 'Kim Long', 'Hồng Kỳ', 'Phi Vũ'];
+  for (let i = 1; i <= 4; i++) {
+    const avatarUrl = `/images/horses/horse-${String(i + 10).padStart(2, '0')}.jpg`;
+    const h = await prisma.horse.create({
+      data: {
+        horseCode: `HR-DEMO-B0${i}`,
+        name: horseNamesB[i - 1],
+        breed: 'Thoroughbred',
+        gender: 'MALE',
+        color: 'Bay',
+        avatarUrl,
+        dob: new Date('2022-03-15'),
+        weightKg: 480 + i * 5,
+        microchip: `98500000200${i}`,
+        microchipRfid: `98500000200${i}`,
+        status: HorseStatus.IN_TRAINING,
+        assignedTrainerId: trainerB.id,
+        trainerAssignmentStatus: 'ASSIGNED',
+        ownerId: owner.id,
+      },
+    });
+
+    const stallB = stallsB[i - 1]; // Ô B-01 đến B-04
+    await prisma.stallAllocation.create({
+      data: {
+        stallId: stallB.id,
+        horseId: h.id,
+        assignedGroomUserId: groom3.id,
+        isActive: true,
+      },
+    });
+    groom3Horses.push({ horse: h, stall: stallB });
+
+    await createLivePlanWithWorkouts({
+      horseId: h.id,
+      trainerUserId: trainerB.id,
+      planCode: `GA-DEMO-B0${i}`,
+      phaseName: `Giáo án Tốc độ Nam ${i}`,
+      objective: 'Duy trì thể lực và kiểm soát nhịp tim trên sân cát.',
+      baseScore: 8.4,
+      trackSurface: TrackSurface.DIRT,
+      isLoadSpike: false,
+    });
+  }
+
+  // --- 3.4. HLV TRUNG (trainer3@gmail.com, Barn B): 3 CHIẾN MÃ TẠI BARN B (3/8 TẢI) ---
+  console.log('  -> Tạo 3 chiến mã tại Barn B cho HLV Trung (Barn B)...');
+  const horseNamesC = ['Ngàn Hoa', 'Thiên Mã', 'Hỏa Phụng'];
+  for (let i = 1; i <= 3; i++) {
+    const avatarUrl = `/images/horses/horse-${String(i + 14).padStart(2, '0')}.jpg`;
+    const h = await prisma.horse.create({
+      data: {
+        horseCode: `HR-DEMO-C0${i}`,
+        name: horseNamesC[i - 1],
+        breed: 'Arabian',
+        gender: 'MALE',
+        color: 'Chestnut',
+        avatarUrl,
+        dob: new Date('2021-05-10'),
+        weightKg: 450 + i * 10,
+        microchip: `98500000300${i}`,
+        microchipRfid: `98500000300${i}`,
+        status: HorseStatus.IN_TRAINING,
+        assignedTrainerId: trainerC.id,
+        trainerAssignmentStatus: 'ASSIGNED',
+        ownerId: owner.id,
+      },
+    });
+
+    const stallC = stallsB[3 + i]; // Ô B-05 đến B-07
+    await prisma.stallAllocation.create({
+      data: {
+        stallId: stallC.id,
+        horseId: h.id,
+        assignedGroomUserId: groom4.id,
+        isActive: true,
+      },
+    });
+    groom4Horses.push({ horse: h, stall: stallC });
+
+    await createLivePlanWithWorkouts({
+      horseId: h.id,
+      trainerUserId: trainerC.id,
+      planCode: `GA-DEMO-C0${i}`,
+      phaseName: `Giáo án Nước kiệu Trung ${i}`,
+      objective: 'Tập trung phản xạ và phối hợp bước chạy 1000m.',
+      baseScore: 8.2,
+      trackSurface: TrackSurface.DIRT,
+      isLoadSpike: false,
     });
   }
 
   // =========================================================================
-  // 4. BỐ TRÍ 4 CHIẾN MÃ DEMO THEO 4 TRẠNG THÁI (A4)
+  // 4. BỐ TRÍ 4 CHIẾN MÃ DEMO CHUYÊN BIỆT CHO CÁC LUỒNG THỰC TẾ
   // =========================================================================
-  console.log('🐴 [4/5] Tạo 4 chiến mã demo 4 trạng thái phân công...');
+  console.log('🐴 [4/5] Tạo 4 chiến mã phục vụ kịch bản demo Happy Case & Ngoại lệ...');
 
-  // --- Ngựa 1: Ngựa phụ demo Barn B chuồng B-06 ---
-  const pendingHorse = await prisma.horse.upsert({
-    where: { horseCode: 'HR-DEMO-PENDING' },
+  // --- Ngựa Demo 1: "Bạch Long Mã" (HRS-DEMO-01) tại Chuồng A-11 (Barn A) - CHƯA CÓ HLV ---
+  // Dùng để demo Happy Case: Quản lý gán cho HLV Quân (thành công -> gửi Email SLA 48h)
+  // Và demo Ngoại lệ 1: Quản lý gán cho HLV Tuấn (báo lỗi Quá tải 8/8)
+  // Và demo Ngoại lệ 2: Quản lý gán cho HLV Nam (báo lỗi Lệch Barn A != Barn B)
+  const demoHorse1 = await prisma.horse.upsert({
+    where: { horseCode: 'HRS-DEMO-01' },
     update: {
-      name: 'Bạch Mã Hoàng Tử',
+      name: 'Bạch Long Mã',
       avatarUrl: '/images/horses/horse-18.jpg',
+      status: HorseStatus.RESTING,
+      assignedTrainerId: null,
+      trainerAssignmentStatus: 'UNASSIGNED',
+      isMedicalLocked: false,
     },
     create: {
-      horseCode: 'HR-DEMO-PENDING',
-      name: 'Bạch Mã Hoàng Tử',
+      horseCode: 'HRS-DEMO-01',
+      name: 'Bạch Long Mã',
       avatarUrl: '/images/horses/horse-18.jpg',
       breed: 'Thoroughbred',
       gender: 'MALE',
@@ -592,80 +781,77 @@ async function main() {
       microchip: '985000009901',
       microchipRfid: '985000009901',
       status: HorseStatus.RESTING,
+      assignedTrainerId: null,
+      trainerAssignmentStatus: 'UNASSIGNED',
+      isMedicalLocked: false,
       ownerId: owner.id,
     },
   });
 
-  await prisma.stallAllocation.deleteMany({ where: { horseId: pendingHorse.id } });
+  await prisma.stallAllocation.deleteMany({ where: { horseId: demoHorse1.id } });
   await prisma.stallAllocation.create({
     data: {
-      stallId: stallsB[5].id, // Chuồng B-06 (Barn B) hoàn thiện đúng 6 chuồng cho Groom 3
-      horseId: pendingHorse.id,
-      assignedGroomUserId: groom3.id,
+      stallId: stallsA[10].id, // Chuồng A-11 (Barn A)
+      horseId: demoHorse1.id,
+      assignedGroomUserId: groom.id,
       isActive: true,
     },
   });
-  groom3Horses.push({ horse: pendingHorse, stall: stallsB[5] });
 
-  // --- Ngựa 2: Ngựa phụ demo ---
-  const unassignedHorse = await prisma.horse.upsert({
-    where: { horseCode: 'HR-DEMO-UNASSIGNED' },
+  // --- Ngựa Demo 2: "Xích Thố" (HRS-DEMO-02) tại Chuồng A-12 (Barn A) - CHƯA CÓ HLV ---
+  // Dùng để demo SLA Lũy tiến: HLV Quân nhận con thứ 2 -> SLA tăng từ 3 ngày lên 5 ngày!
+  const demoHorse2 = await prisma.horse.upsert({
+    where: { horseCode: 'HRS-DEMO-02' },
     update: {
-      name: 'Hắc Long Mã',
+      name: 'Xích Thố',
       avatarUrl: '/images/horses/horse-19.jpg',
+      status: HorseStatus.RESTING,
+      assignedTrainerId: null,
+      trainerAssignmentStatus: 'UNASSIGNED',
+      isMedicalLocked: false,
     },
     create: {
-      horseCode: 'HR-DEMO-UNASSIGNED',
-      name: 'Hắc Long Mã',
+      horseCode: 'HRS-DEMO-02',
+      name: 'Xích Thố',
       avatarUrl: '/images/horses/horse-19.jpg',
       breed: 'Quarter Horse',
       gender: 'MALE',
-      color: 'Black',
+      color: 'Chestnut',
       dob: new Date('2021-08-25'),
       weightKg: 510.0,
       microchip: '985000009902',
       microchipRfid: '985000009902',
       status: HorseStatus.RESTING,
+      assignedTrainerId: null,
+      trainerAssignmentStatus: 'UNASSIGNED',
+      isMedicalLocked: false,
       ownerId: owner.id,
     },
   });
 
-  await prisma.stallAllocation.deleteMany({ where: { horseId: unassignedHorse.id } });
-
-  // --- Ngựa 3: Ngựa phụ demo ---
-  const declinedHorse = await prisma.horse.upsert({
-    where: { horseCode: 'HR-DEMO-DECLINED' },
-    update: {
-      name: 'Xích Thố Vương',
-      avatarUrl: '/images/horses/horse-02.jpg',
-    },
-    create: {
-      horseCode: 'HR-DEMO-DECLINED',
-      name: 'Xích Thố Vương',
-      avatarUrl: '/images/horses/horse-02.jpg',
-      breed: 'Arabian',
-      gender: 'MALE',
-      color: 'Chestnut',
-      dob: new Date('2021-11-05'),
-      weightKg: 495.0,
-      microchip: '985000009903',
-      microchipRfid: '985000009903',
-      status: HorseStatus.RESTING,
-      ownerId: owner.id,
+  await prisma.stallAllocation.deleteMany({ where: { horseId: demoHorse2.id } });
+  await prisma.stallAllocation.create({
+    data: {
+      stallId: stallsB[7].id, // Chuồng B-08 (Barn B) - Chiến mã tồn đọng thứ 2
+      horseId: demoHorse2.id,
+      assignedGroomUserId: groom4.id,
+      isActive: true,
     },
   });
 
-  await prisma.stallAllocation.deleteMany({ where: { horseId: declinedHorse.id } });
-
-  // --- Ngựa 4: NO-STALL (Chưa gán chuồng) ---
-  const noStallHorse = await prisma.horse.upsert({
-    where: { horseCode: 'HR-DEMO-NO-STALL' },
+  // --- Ngựa Demo 3: "Phi Yến" (HRS-DEMO-03) - CHƯA XẾP CHUỒNG (NO-STALL) ---
+  // Dùng để demo Ngoại lệ: Ngựa chưa xếp ô chuồng thì bị chặn không cho phân công HLV
+  const demoHorse3 = await prisma.horse.upsert({
+    where: { horseCode: 'HRS-DEMO-03' },
     update: {
       name: 'Phi Yến',
       avatarUrl: '/images/horses/horse-04.jpg',
+      status: HorseStatus.RESTING,
+      assignedTrainerId: null,
+      trainerAssignmentStatus: 'UNASSIGNED',
     },
     create: {
-      horseCode: 'HR-DEMO-NO-STALL',
+      horseCode: 'HRS-DEMO-03',
       name: 'Phi Yến',
       avatarUrl: '/images/horses/horse-04.jpg',
       breed: 'Warmblood',
@@ -673,13 +859,178 @@ async function main() {
       color: 'Bay',
       dob: new Date('2023-02-14'),
       weightKg: 430.0,
-      microchip: '985000009904',
-      microchipRfid: '985000009904',
+      microchip: '985000009903',
+      microchipRfid: '985000009903',
       status: HorseStatus.RESTING,
+      assignedTrainerId: null,
+      trainerAssignmentStatus: 'UNASSIGNED',
       ownerId: owner.id,
     },
   });
-  await prisma.stallAllocation.deleteMany({ where: { horseId: noStallHorse.id } });
+  await prisma.stallAllocation.deleteMany({ where: { horseId: demoHorse3.id } });
+
+  // --- Ngựa Demo 4: "Chiến Thần" (HRS-DEMO-04) tại Barn B - ĐANG BỊ KHÓA Y TẾ ---
+  // Dùng để demo Ngoại lệ: Chiến mã đang bị Khóa y tế (chấn thương) bị chặn tạo giáo án
+  const demoHorse4 = await prisma.horse.upsert({
+    where: { horseCode: 'HRS-DEMO-04' },
+    update: {
+      name: 'Chiến Thần',
+      avatarUrl: '/images/horses/horse-02.jpg',
+      status: HorseStatus.RESTING,
+      assignedTrainerId: trainerC.id,
+      trainerAssignmentStatus: 'ASSIGNED',
+      isMedicalLocked: true,
+    },
+    create: {
+      horseCode: 'HRS-DEMO-04',
+      name: 'Chiến Thần',
+      avatarUrl: '/images/horses/horse-02.jpg',
+      breed: 'Arabian',
+      gender: 'MALE',
+      color: 'Black',
+      dob: new Date('2021-11-05'),
+      weightKg: 495.0,
+      microchip: '985000009904',
+      microchipRfid: '985000009904',
+      status: HorseStatus.RESTING,
+      assignedTrainerId: trainerC.id,
+      trainerAssignmentStatus: 'ASSIGNED',
+      isMedicalLocked: true,
+      ownerId: owner.id,
+    },
+  });
+
+  await prisma.stallAllocation.deleteMany({ where: { horseId: demoHorse4.id } });
+  await prisma.stallAllocation.create({
+    data: {
+      stallId: stallsB[8].id, // Chuồng B-09 (Barn B)
+      horseId: demoHorse4.id,
+      assignedGroomUserId: groom4.id,
+      isActive: true,
+    },
+  });
+  groom4Horses.push({ horse: demoHorse4, stall: stallsB[8] });
+
+  // --- KHỞI TẠO 2 YÊU CẦU BÀN GIAO (HORSE HANDOVER REQUEST) PHỤC VỤ KIỂM THỬ SLA ---
+  console.log('📬 Khởi tạo 2 yêu cầu bàn giao phục vụ test SLA (1 an toàn ~36h, 1 khẩn cấp <12h)...');
+  await prisma.horseHandoverRequest.deleteMany({
+    where: { token: { in: ['token-pending-safe-sla-01', 'token-pending-urgent-sla-02'] } },
+  });
+
+  // Yêu cầu 1: An toàn (~36h còn lại) cho HLV Quân
+  await prisma.horseHandoverRequest.create({
+    data: {
+      horseId: demoHorse1.id,
+      fromManagerId: manager.id,
+      toTrainerId: trainerQuan.id,
+      status: 'PENDING',
+      token: 'token-pending-safe-sla-01',
+      expiresAt: new Date(Date.now() + 36 * 3600 * 1000),
+      notes: 'Phân công chiến mã Bạch Long Mã cho HLV Quân tiếp nhận (SLA 48h bình thường).',
+    },
+  });
+
+  // Yêu cầu 2: Khẩn cấp (<12h còn lại) cho HLV Nam
+  await prisma.horseHandoverRequest.create({
+    data: {
+      horseId: demoHorse2.id,
+      fromManagerId: manager.id,
+      toTrainerId: trainerB.id,
+      status: 'PENDING',
+      token: 'token-pending-urgent-sla-02',
+      expiresAt: new Date(Date.now() + 8 * 3600 * 1000),
+      notes: 'CẢNH BÁO KHẨN CẤP: Yêu cầu bàn giao chiến mã Xích Thố sắp hết hạn sau 8 giờ nữa.',
+    },
+  });
+
+  // --- Khởi tạo 2 hồ sơ tiếp nhận chiến mã (HorseAdmissionRecord) phục vụ Màn 3 ---
+  console.log('📋 Tạo 2 hồ sơ tiếp nhận chiến mã (HorseAdmissionRecord) phục vụ Màn 3...');
+
+  // 1. Chiến mã "Ánh Dương" - Sẵn sàng thẩm định & phê duyệt nhập chuồng (APPOINTED)
+  const admHorse1 = await prisma.horse.upsert({
+    where: { horseCode: 'HR-ADM-001' },
+    update: {
+      name: 'Ánh Dương',
+      avatarUrl: '/images/horses/horse-07.jpg',
+      status: HorseStatus.PENDING_ADMISSION,
+      microchip: '985000008001',
+      microchipRfid: '985000008001',
+      ownerId: owner.id,
+    },
+    create: {
+      horseCode: 'HR-ADM-001',
+      name: 'Ánh Dương',
+      avatarUrl: '/images/horses/horse-07.jpg',
+      breed: 'Thoroughbred',
+      gender: 'FEMALE',
+      color: 'Chestnut',
+      dob: new Date('2022-03-15'),
+      weightKg: 465.0,
+      microchip: '985000008001',
+      microchipRfid: '985000008001',
+      status: HorseStatus.PENDING_ADMISSION,
+      ownerId: owner.id,
+    },
+  });
+
+  await prisma.horseAdmissionRecord.deleteMany({ where: { admissionCode: 'ADM-2026-001' } });
+  await prisma.horseAdmissionRecord.create({
+    data: {
+      admissionCode: 'ADM-2026-001',
+      horseId: admHorse1.id,
+      ownerId: owner.id,
+      status: AdmissionStatus.INSPECTION_IN_PROGRESS,
+      appointmentDate: new Date(Date.now() + 24 * 3600 * 1000),
+      appointmentNotes: 'Điểm tiếp nhận kiểm dịch Cổng A. Chủ ngựa mang theo bản gốc giấy tờ gia phả và sổ tiêm chủng.',
+      declaredMicrochip: '985000008001',
+      scannedMicrochip: '985000008001',
+      microchipVerified: true,
+      legalVerified: true,
+      legalDocumentsNote: 'Chứng nhận nguồn gốc giống Thoroughbred & hồ sơ kiểm dịch đã xác thực hợp lệ.',
+      veterinarianUserId: vet.id,
+      isHealthEligible: true,
+      healthCheckNotes: 'Đạt chuẩn kiểm dịch: Không có triệu chứng truyền nhiễm, tim phổi nhịp đều, cơ bắp phát triển tốt.',
+    },
+  });
+
+  // 2. Chiến mã "Hải Đăng" - Đơn mới chờ xếp lịch (PENDING_VERIFICATION)
+  const admHorse2 = await prisma.horse.upsert({
+    where: { horseCode: 'HR-ADM-002' },
+    update: {
+      name: 'Hải Đăng',
+      avatarUrl: '/images/horses/horse-08.jpg',
+      status: HorseStatus.PENDING_ADMISSION,
+      microchip: '985000008002',
+      microchipRfid: '985000008002',
+      ownerId: owner.id,
+    },
+    create: {
+      horseCode: 'HR-ADM-002',
+      name: 'Hải Đăng',
+      avatarUrl: '/images/horses/horse-08.jpg',
+      breed: 'Quarter Horse',
+      gender: 'MALE',
+      color: 'Bay',
+      dob: new Date('2022-06-20'),
+      weightKg: 480.0,
+      microchip: '985000008002',
+      microchipRfid: '985000008002',
+      status: HorseStatus.PENDING_ADMISSION,
+      ownerId: owner.id,
+    },
+  });
+
+  await prisma.horseAdmissionRecord.deleteMany({ where: { admissionCode: 'ADM-2026-002' } });
+  await prisma.horseAdmissionRecord.create({
+    data: {
+      admissionCode: 'ADM-2026-002',
+      horseId: admHorse2.id,
+      ownerId: owner.id,
+      status: AdmissionStatus.PENDING_VERIFICATION,
+      declaredMicrochip: '985000008002',
+      legalDocumentsNote: 'Đơn đăng ký mới trực tuyến từ Chủ ngựa Robert Sterling.',
+    },
+  });
 
   // =========================================================================
   // 5. DỮ LIỆU CA TRỰC & LỊCH TẬP (A5)
@@ -706,8 +1057,8 @@ async function main() {
   const groomProfiles = [
     { user: groom, horses: groom1Horses, zone: zoneA, shiftNotes: 'Trực chính phân khu Barn A (Ô A-01 đến A-04, 4/6 ô)' },
     { user: groom2, horses: groom2Horses, zone: zoneA, shiftNotes: 'Trực hỗ trợ phân khu Barn A (Ô A-05 đến A-10, 6/6 ô đầy tải)' },
-    { user: groom4, horses: [], zone: zoneA, shiftNotes: 'Trực dự phòng phân khu Barn A (Sẵn sàng nhận việc, 0/6 ô)' },
-    { user: groom3, horses: groom3Horses, zone: zoneB, shiftNotes: 'Trực chính phân khu Barn B (Ô B-01 đến B-03, 3/6 ô)' },
+    { user: groom3, horses: groom3Horses, zone: zoneB, shiftNotes: 'Trực chính phân khu Barn B (Ô B-01 đến B-04, 4/6 ô)' },
+    { user: groom4, horses: groom4Horses, zone: zoneB, shiftNotes: 'Trực chính phân khu Barn B (Ô B-05 đến B-08, 4/6 ô)' },
   ];
 
   for (const gp of groomProfiles) {
@@ -913,8 +1264,8 @@ async function main() {
   console.log('   - Huấn luyện viên: trainer3@gmail.com (Phạm Quốc Trung)');
   console.log(`   - Groom 1 (Barn A, 4/6 ô):  groom@gmail.com    (Trần Thị Mai)
    - Groom 2 (Barn A, 6/6 ô):  groom2@gmail.com   (Hoàng Văn Phúc)
-   - Groom 3 (Barn B, 3/6 ô):  groom3@gmail.com   (Đỗ Thị Mai)
-   - Groom 4 (Barn A, 0/6 ô):  groom4@gmail.com   (Lê Quốc Tuấn)`);
+   - Groom 3 (Barn B, 4/6 ô):  groom3@gmail.com   (Đỗ Thị Mai)
+   - Groom 4 (Barn B, 4/6 ô):  groom4@gmail.com   (Lê Quốc Tuấn)`);
   console.log('---------------------------------------------------------------------');
 }
 
