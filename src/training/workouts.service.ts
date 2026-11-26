@@ -247,6 +247,16 @@ export class WorkoutsService {
         'Giờ bắt đầu phải từ 04:00 đến 20:00.',
       );
     }
+    const { hour, minute } = clubTime(w.scheduledDate);
+    const startMins = hour * 60 + minute;
+    const durMins = workoutDurationMinutes(w.workoutType);
+    if (startMins + durMins > 17 * 60) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'EXCEEDS_AFTERNOON_LIMIT',
+        'Buổi tập phải kết thúc trước hoặc đúng 17:00 chiều để đảm bảo giờ nghỉ ngơi và ăn tối của ngựa. Giờ bắt đầu muộn nhất là 16:00.',
+      );
+    }
     if (
       w.scheduledDate < startOfClubDay(plan.startDate) ||
       w.scheduledDate >= addDays(startOfClubDay(plan.endDate), 1)
@@ -983,6 +993,7 @@ export class WorkoutsService {
         'TRAINER_TIME_CONFLICT',
         'PRIME_TIME_QUOTA_EXCEEDED',
         'JOCKEY_TIME_CONFLICT',
+        'EXCEEDS_AFTERNOON_LIMIT',
         'DEBT_IMPOUNDED',
       ];
       const created: string[] = [];

@@ -213,7 +213,7 @@ export class TrainingInsightsService {
         this.prisma.trainingPlan.findMany({
           where: {
             horseId: { in: horseIds },
-            status: { in: [PlanStatus.ACTIVE, PlanStatus.DRAFT] },
+            status: { in: [PlanStatus.ACTIVE, PlanStatus.DRAFT, PlanStatus.COMPLETED] },
             ...(trainerId ? { trainerUserId: trainerId } : {}),
           },
           select: {
@@ -278,9 +278,16 @@ export class TrainingInsightsService {
         }),
       ]);
     const plansByHorse = new Map<string, (typeof allPlans)[0]>();
+    const completedPlansByHorse = new Map<string, (typeof allPlans)[0]>();
     for (const p of allPlans) {
-      if (!plansByHorse.has(p.horseId) || p.status === PlanStatus.ACTIVE) {
-        plansByHorse.set(p.horseId, p);
+      if (p.status === PlanStatus.COMPLETED) {
+        if (!completedPlansByHorse.has(p.horseId)) {
+          completedPlansByHorse.set(p.horseId, p);
+        }
+      } else {
+        if (!plansByHorse.has(p.horseId) || p.status === PlanStatus.ACTIVE) {
+          plansByHorse.set(p.horseId, p);
+        }
       }
     }
     const plansToTrack = Array.from(plansByHorse.values());
@@ -289,6 +296,10 @@ export class TrainingInsightsService {
 
     const rows = horses.map((horse) => {
       const plan = plansByHorse.get(horse.id);
+      const lastCompletedPlan = completedPlansByHorse.get(horse.id);
+      const isRestingCycle = !plan && (Boolean(lastCompletedPlan) || horse.status === HorseStatus.RESTING);
+      const rawDeadline = (horse as any).handoverRequests?.[0]?.planDeadlineAt ?? null;
+      const planDeadlineAt = isRestingCycle ? null : rawDeadline;
       const phase = plan
         ? phasesOf(plan).find((p) => p.startDate <= todayClub && todayClub <= p.endDate)
         : undefined;
@@ -308,6 +319,8 @@ export class TrainingInsightsService {
           horseCode: horse.horseCode,
           status: horse.status,
           isMedicalLocked: horse.isMedicalLocked,
+          isRestingCycle,
+          lastCompletedPlanName: lastCompletedPlan?.phaseName ?? null,
           avatarUrl: (horse as any).avatarUrl ?? null,
           breed: (horse as any).breed ?? null,
           gender: (horse as any).gender ?? null,
@@ -320,7 +333,7 @@ export class TrainingInsightsService {
           handoverStatus: (horse as any).handoverRequests?.[0]?.status ?? null,
           handoverToken: (horse as any).handoverRequests?.[0]?.token ?? null,
           handoverExpiresAt: (horse as any).handoverRequests?.[0]?.expiresAt ?? null,
-          planDeadlineAt: (horse as any).handoverRequests?.[0]?.planDeadlineAt ?? null,
+          planDeadlineAt,
         },
         plan: plan
           ? {
@@ -381,7 +394,7 @@ export class TrainingInsightsService {
       allPlans.filter((p) => p.status === PlanStatus.DRAFT).map((p) => p.horseId),
     );
     const horsesWithoutPlan = horses.filter(
-      (h) => !withActive.has(h.id) && !withDraft.has(h.id),
+      (h) => !withActive.has(h.id) && !withDraft.has(h.id) && !completedPlansByHorse.has(h.id) && h.status !== HorseStatus.RESTING,
     ).length;
     const horsesDraftPlan = horses.filter(
       (h) => !withActive.has(h.id) && withDraft.has(h.id),

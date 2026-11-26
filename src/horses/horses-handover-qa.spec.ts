@@ -146,7 +146,10 @@ describe('HorsesService - Handover & Progressive SLA QA', () => {
         status: UserStatus.ACTIVE,
         assignedBarnId: 'zone-barn-a',
       });
-      mockPrisma.horse.count.mockResolvedValue(3); // 3/8 con
+      mockPrisma.horse.count.mockImplementation(async (args: any) => {
+        if (args?.where?.trainingPlans) return 0; // pendingPlanCount = 0
+        return 3; // currentAssignedCount = 3/8
+      });
       mockPrisma.horseHandoverRequest.create.mockImplementation((args: any) => ({
         id: 'req-1',
         ...args.data,
@@ -170,6 +173,36 @@ describe('HorsesService - Handover & Progressive SLA QA', () => {
       );
       expect(mockMail.emit).toHaveBeenCalled();
     });
+
+    it('QA-HO-04b: Chặn phân công khi HLV đang tồn >= 2 chiến mã chưa kích hoạt giáo án (TRAINER_WIP_LIMIT_EXCEEDED)', async () => {
+      mockPrisma.horse.findUnique.mockResolvedValue({
+        id: 'h-1',
+        name: 'Bạch Long',
+        horseCode: 'BL-01',
+        deletedAt: null,
+        stallAllocations: [
+          {
+            id: 'alloc-1',
+            stall: { id: 's-1', zoneId: 'zone-barn-a', zoneRef: { name: 'Khu chuồng A' } },
+          },
+        ],
+      });
+      mockPrisma.user.findUnique.mockResolvedValue({
+        id: 'trainer-1',
+        fullName: 'HLV Tuấn',
+        role: Role.HEAD_TRAINER,
+        status: UserStatus.ACTIVE,
+        assignedBarnId: 'zone-barn-a',
+      });
+      mockPrisma.horse.count.mockImplementation(async (args: any) => {
+        if (args?.where?.trainingPlans) return 2; // Đang tồn 2 con chưa có giáo án
+        return 4; // currentAssignedCount = 4/8
+      });
+
+      await expect(
+        service.assignTrainer('h-1', { trainerUserId: 'trainer-1' }, mockManager as any),
+      ).rejects.toThrow('đang tồn 2 chiến mã chưa kích hoạt giáo án');
+    });
   });
 
   describe('Respond Handover & Progressive SLA QA Scenarios', () => {
@@ -186,7 +219,7 @@ describe('HorsesService - Handover & Progressive SLA QA', () => {
       ).rejects.toThrow('Yêu cầu phân công đã hết hạn phản hồi (48 giờ).');
     });
 
-    it('QA-HO-06: Tiếp nhận con đầu tiên (N=1) -> SLA lập giáo án đúng 3 ngày', async () => {
+    it('QA-HO-06: Tiếp nhận con đầu tiên (N=1) -> SLA lập giáo án chuẩn 3 ngày và cập nhật assignedTrainerId', async () => {
       const validUntil = new Date(Date.now() + 24 * 3600 * 1000);
       mockPrisma.horseHandoverRequest.findUnique.mockResolvedValue({
         id: 'req-1',
@@ -199,9 +232,6 @@ describe('HorsesService - Handover & Progressive SLA QA', () => {
         toTrainer: { fullName: 'HLV Tuấn', email: 'tuan@tmec.vn' },
         fromManager: { fullName: 'Manager', email: 'mgr@tmec.vn' },
       });
-
-      // Hiện chưa có con nào chờ lập giáo án (waitingCount = 0)
-      mockPrisma.horse.count.mockResolvedValue(0);
 
       const res = await service.respondHandover({
         token: 'valid-token',
@@ -217,13 +247,14 @@ describe('HorsesService - Handover & Progressive SLA QA', () => {
       expect(mockPrisma.horse.update).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
+            assignedTrainerId: 'trainer-1',
             trainerAssignmentStatus: TrainerAssignmentStatus.ASSIGNED,
           }),
         }),
       );
     });
 
-    it('QA-HO-07: Tiếp nhận con thứ 2 (N=2) -> SLA lũy tiến đúng 5 ngày (3 + 1*2)', async () => {
+    it('QA-HO-07: Tiếp nhận con thứ 2 (N=2) -> Chuẩn hóa SLA cố định đúng 3 ngày (không bị trôi dạt SLA)', async () => {
       const validUntil = new Date(Date.now() + 24 * 3600 * 1000);
       mockPrisma.horseHandoverRequest.findUnique.mockResolvedValue({
         id: 'req-2',
@@ -237,20 +268,17 @@ describe('HorsesService - Handover & Progressive SLA QA', () => {
         fromManager: { fullName: 'Manager', email: 'mgr@tmec.vn' },
       });
 
-      // Đã có 1 con chờ lập giáo án (waitingCount = 1) -> 3 + 1*2 = 5 ngày
-      mockPrisma.horse.count.mockResolvedValue(1);
-
       const res = await service.respondHandover({
         token: 'valid-token-2',
         action: HandoverAction.ACCEPT,
       });
 
       expect(res.success).toBe(true);
-      const expectedDeadlineMs = Date.now() + 5 * 24 * 60 * 60 * 1000;
+      const expectedDeadlineMs = Date.now() + 3 * 24 * 60 * 60 * 1000;
       expect(Math.abs(res.planDeadlineAt!.getTime() - expectedDeadlineMs)).toBeLessThan(60000);
     });
 
-    it('QA-HO-08: Tiếp nhận con thứ 3 (N=3) -> SLA lũy tiến đúng 7 ngày (3 + 2*2)', async () => {
+    it('QA-HO-08: Tiếp nhận con thứ 3 (N=3) -> Vẫn áp dụng SLA chuẩn 3 ngày cố định', async () => {
       const validUntil = new Date(Date.now() + 24 * 3600 * 1000);
       mockPrisma.horseHandoverRequest.findUnique.mockResolvedValue({
         id: 'req-3',
@@ -264,16 +292,13 @@ describe('HorsesService - Handover & Progressive SLA QA', () => {
         fromManager: { fullName: 'Manager', email: 'mgr@tmec.vn' },
       });
 
-      // Đã có 2 con chờ lập giáo án (waitingCount = 2) -> 3 + 2*2 = 7 ngày
-      mockPrisma.horse.count.mockResolvedValue(2);
-
       const res = await service.respondHandover({
         token: 'valid-token-3',
         action: HandoverAction.ACCEPT,
       });
 
       expect(res.success).toBe(true);
-      const expectedDeadlineMs = Date.now() + 7 * 24 * 60 * 60 * 1000;
+      const expectedDeadlineMs = Date.now() + 3 * 24 * 60 * 60 * 1000;
       expect(Math.abs(res.planDeadlineAt!.getTime() - expectedDeadlineMs)).toBeLessThan(60000);
     });
 

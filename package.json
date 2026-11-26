@@ -34,6 +34,8 @@
     "db:seed:legacy": "ts-node prisma/seed.ts",
     "db:seed:manual-qa": "ts-node prisma/seed-manual-qa.ts",
     "db:seed:trainer-demo": "ts-node prisma/seed-trainer-demo.ts",
+    "db:seed:master": "ts-node prisma/seed-master.ts",
+    "db:verify": "ts-node scripts/verify-db-sanity.ts",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
     "db:setup": "npx prisma db push && npm run db:seed",

@@ -2306,6 +2306,25 @@ export class HorsesService {
       );
     }
 
+    // Chốt chặn WIP Limit: HLV không được tồn quá 2 chiến mã chưa kích hoạt giáo án
+    const pendingPlanCount = await this.prisma.horse.count({
+      where: {
+        assignedTrainerId: trainer.id,
+        trainerAssignmentStatus: TrainerAssignmentStatus.ASSIGNED,
+        trainingPlans: { none: { status: PlanStatus.ACTIVE } },
+        deletedAt: null,
+        id: { not: horse.id },
+      },
+    });
+
+    if (pendingPlanCount >= 2) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'TRAINER_WIP_LIMIT_EXCEEDED',
+        `Huấn luyện viên ${trainer.fullName} đang tồn ${pendingPlanCount} chiến mã chưa kích hoạt giáo án. Vui lòng hoàn tất giáo án hiện có trước khi phân công thêm.`,
+      );
+    }
+
     // Hủy các yêu cầu PENDING cũ của ngựa này nếu có
     await this.prisma.horseHandoverRequest.updateMany({
       where: { horseId: horse.id, status: HandoverStatus.PENDING },
@@ -2452,19 +2471,8 @@ export class HorsesService {
     }
 
     if (dto.action === HandoverAction.ACCEPT) {
-      // Đếm số ngựa đã ACCEPT của HLV này mà chưa có giáo án ACTIVE
-      const waitingCount = await this.prisma.horse.count({
-        where: {
-          assignedTrainerId: req.toTrainerId,
-          trainerAssignmentStatus: TrainerAssignmentStatus.ASSIGNED,
-          deletedAt: null,
-          trainingPlans: { none: { status: PlanStatus.ACTIVE } },
-          id: { not: req.horseId },
-        },
-      });
-
-      // SLA Lũy tiến: 3 ngày cho con đầu tiên, +2 ngày cho mỗi con chờ tiếp theo
-      const days = 3 + waitingCount * 2;
+      // Chuẩn hóa SLA: Hạn cố định 3 ngày (72 giờ) sau khi tiếp nhận để lập giáo án
+      const days = 3;
       const planDeadlineAt = new Date(Date.now() + days * 24 * 3600 * 1000);
 
       await this.prisma.$transaction(async (tx) => {
@@ -2480,6 +2488,7 @@ export class HorsesService {
         await tx.horse.update({
           where: { id: req.horseId },
           data: {
+            assignedTrainerId: req.toTrainerId,
             trainerAssignmentStatus: TrainerAssignmentStatus.ASSIGNED,
             trainerRespondedAt: new Date(),
             trainerDeclineReason: null,
