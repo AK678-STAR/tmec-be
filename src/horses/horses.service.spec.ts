@@ -1504,7 +1504,10 @@ describe('HorsesService', () => {
         await expect(
           service.scheduleAdmission(
             'adm-approved',
-            { appointmentDate: new Date(Date.now() + 86400000).toISOString(), veterinarianUserId: 'vet-1' },
+            {
+              appointmentDate: new Date(Date.now() + 86400000).toISOString(),
+              veterinarianUserId: 'vet-1',
+            },
             mockManager,
           ),
         ).rejects.toMatchObject({
@@ -1530,7 +1533,10 @@ describe('HorsesService', () => {
         await expect(
           service.scheduleAdmission(
             'adm-rollback',
-            { appointmentDate: new Date(Date.now() + 86400000).toISOString(), veterinarianUserId: 'vet-1' },
+            {
+              appointmentDate: new Date(Date.now() + 86400000).toISOString(),
+              veterinarianUserId: 'vet-1',
+            },
             mockManager,
           ),
         ).rejects.toThrow('Admission history log table write failure');
