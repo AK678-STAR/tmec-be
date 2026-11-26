@@ -297,7 +297,8 @@ export class TrainingInsightsService {
     const rows = horses.map((horse) => {
       const plan = plansByHorse.get(horse.id);
       const lastCompletedPlan = completedPlansByHorse.get(horse.id);
-      const isRestingCycle = !plan && (Boolean(lastCompletedPlan) || horse.status === HorseStatus.RESTING);
+      const isRestingCycle =
+        !plan && (Boolean(lastCompletedPlan) || horse.status === HorseStatus.RESTING);
       const rawDeadline = (horse as any).handoverRequests?.[0]?.planDeadlineAt ?? null;
       const planDeadlineAt = isRestingCycle ? null : rawDeadline;
       const phase = plan
@@ -394,7 +395,11 @@ export class TrainingInsightsService {
       allPlans.filter((p) => p.status === PlanStatus.DRAFT).map((p) => p.horseId),
     );
     const horsesWithoutPlan = horses.filter(
-      (h) => !withActive.has(h.id) && !withDraft.has(h.id) && !completedPlansByHorse.has(h.id) && h.status !== HorseStatus.RESTING,
+      (h) =>
+        !withActive.has(h.id) &&
+        !withDraft.has(h.id) &&
+        !completedPlansByHorse.has(h.id) &&
+        h.status !== HorseStatus.RESTING,
     ).length;
     const horsesDraftPlan = horses.filter(
       (h) => !withActive.has(h.id) && withDraft.has(h.id),
