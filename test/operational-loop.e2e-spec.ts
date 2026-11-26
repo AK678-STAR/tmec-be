@@ -90,6 +90,7 @@ describe('End-to-End Operational Loop (Groom -> Vet -> Trainer -> Owner -> Manag
   };
 
   const prisma: any = {
+    counter: { upsert: jest.fn().mockResolvedValue({ value: 2 }) },
     user: {
       findUnique: jest.fn().mockImplementation(({ where }: any) => {
         const found = Object.values(users).find(
@@ -115,6 +116,12 @@ describe('End-to-End Operational Loop (Groom -> Vet -> Trainer -> Owner -> Manag
       }),
     },
     incidentReport: {
+      findUnique: jest.fn().mockResolvedValue({
+        id: 'inc-1',
+        horseId: HORSE_ID,
+        severity: SeverityLevel.MODERATE,
+        status: IncidentStatus.REPORTED,
+      }),
       create: jest.fn().mockImplementation(({ data }: any) =>
         Promise.resolve({
           id: 'inc-1',
@@ -167,6 +174,12 @@ describe('End-to-End Operational Loop (Groom -> Vet -> Trainer -> Owner -> Manag
         ];
         return Promise.resolve(lock);
       }),
+    },
+    medicalRecord: {
+      findFirst: jest.fn().mockResolvedValue({ id: 'rec-1', horseId: HORSE_ID, status: 'OPEN' }),
+      findUnique: jest.fn().mockResolvedValue({ id: 'rec-1', horseId: HORSE_ID, status: 'OPEN' }),
+      create: jest.fn(),
+      update: jest.fn(),
     },
     workoutSession: {
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),

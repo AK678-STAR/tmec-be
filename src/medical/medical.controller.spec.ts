@@ -10,6 +10,7 @@ import { ROLES_KEY } from '../common/decorators/roles.decorator';
 import { PERMISSION_KEY } from '../common/decorators/require-permission.decorator';
 import { UserRole } from '../common/enums/role.enum';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
+import { UrgencyFilter } from './dto/observation-notes-query.dto';
 
 describe('MedicalController', () => {
   let controller: MedicalController;
@@ -204,11 +205,12 @@ describe('MedicalController', () => {
     });
 
     it('getHorseObservations delegates to overview service', async () => {
-      await controller.getHorseObservations('horse-1', mockVetUser, 'HIGH');
+      const query = { urgency: UrgencyFilter.URGENT };
+      await controller.getHorseObservations('horse-1', mockVetUser, query as any);
       expect(overviewService.getHorseObservations).toHaveBeenCalledWith(
         'horse-1',
         mockVetUser,
-        'HIGH',
+        query,
       );
     });
   });

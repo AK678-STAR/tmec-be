@@ -47,6 +47,7 @@ describe('NutritionService', () => {
 
   beforeEach(() => {
     prismaMock = {
+      $transaction: jest.fn((fn: any) => fn(prismaMock)),
       horse: {
         findUnique: jest.fn(),
       },
@@ -443,6 +444,20 @@ describe('NutritionService', () => {
       prismaMock.nutritionPlan.findFirst.mockResolvedValue(null);
       const none = await service.getActivePlanForHorse('horse-2', mockTrainerUser);
       expect(none).toBeNull();
+    });
+  });
+
+  describe('getActivePlanForHorse scope', () => {
+    it('rejects an owner reading another owner horse ration', async () => {
+      prismaMock.horse.findFirst = jest
+        .fn()
+        .mockResolvedValue({ ownerId: 'other', stallAllocations: [] });
+      await expect(
+        service.getActivePlanForHorse('h-1', { userId: 'owner-1', role: 'HORSE_OWNER' } as any),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'HORSE_OUT_OF_SCOPE' }),
+      });
+      expect(prismaMock.nutritionPlan.findFirst).not.toHaveBeenCalled();
     });
   });
 });

@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { JSON_BODY_LIMIT } from './common/constants/http';
+import { demoClockMiddleware } from './common/utils/demo-clock';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
@@ -45,8 +46,12 @@ async function bootstrap() {
     corsOrigins.push(
       'http://localhost:5173',
       'http://127.0.0.1:5173',
+      'http://localhost:5174',
+      'http://127.0.0.1:5174',
       'http://localhost:5175',
       'http://127.0.0.1:5175',
+      'http://localhost:5176',
+      'http://127.0.0.1:5176',
     );
   }
 
@@ -55,8 +60,13 @@ async function bootstrap() {
     origin: corsOrigins,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowedHeaders: isProduction
+      ? ['Content-Type', 'Authorization', 'X-Requested-With']
+      : ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Demo-Date'],
   });
+  if (!isProduction) {
+    app.use(demoClockMiddleware);
+  }
 
   const cookieOrigins = new Set([frontendUrl]);
   if (!isProduction) {

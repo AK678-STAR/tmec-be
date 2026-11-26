@@ -2,6 +2,7 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsDateString,
   IsEnum,
+  IsIn,
   IsNumber,
   IsOptional,
   IsString,
@@ -9,7 +10,7 @@ import {
   Max,
   Min,
 } from 'class-validator';
-import { BodySide, SeverityLevel } from '@prisma/client';
+import { SeverityLevel } from '@prisma/client';
 
 export class UpdateInjuryDto {
   @ApiPropertyOptional({ description: 'ID bệnh án liên quan' })
@@ -34,22 +35,19 @@ export class UpdateInjuryDto {
   @ApiPropertyOptional({ description: 'Góc nhìn: LEFT | RIGHT' })
   @IsOptional()
   @IsString()
+  @IsIn(['LEFT', 'RIGHT'], { message: 'viewSide must be LEFT or RIGHT' })
   viewSide?: string;
 
-  @ApiPropertyOptional({ description: 'Lớp hiển thị: MUSCLE | BONE' })
+  @ApiPropertyOptional({ description: 'Lớp hiển thị: MUSCLE | SKELETON' })
   @IsOptional()
   @IsString()
+  @IsIn(['MUSCLE', 'SKELETON'], { message: 'layer must be MUSCLE or SKELETON' })
   layer?: string;
 
   @ApiPropertyOptional({ description: 'Vùng giải phẫu' })
   @IsOptional()
   @IsString()
   anatomicalZone?: string;
-
-  @ApiPropertyOptional({ enum: BodySide })
-  @IsOptional()
-  @IsEnum(BodySide)
-  bodySide?: BodySide;
 
   @ApiPropertyOptional({ description: 'Loại tổn thương' })
   @IsOptional()

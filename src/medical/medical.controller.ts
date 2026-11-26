@@ -43,6 +43,7 @@ import { CreateInjuryDto } from './dto/create-injury.dto';
 import { UpdateInjuryDto } from './dto/update-injury.dto';
 import { UpdateRecoveryProgressDto } from './dto/update-recovery-progress.dto';
 import { InjuryQueryDto } from './dto/injury-query.dto';
+import { ObservationNotesQueryDto } from './dto/observation-notes-query.dto';
 import {
   CreatePreventiveTypeCatalogDto,
   UpdatePreventiveTypeCatalogDto,
@@ -87,13 +88,13 @@ export class MedicalController {
 
   @Get('horses/:id/observations')
   @RequirePermission('viewMedical')
-  @ApiOperation({ summary: 'Ghi chú quan sát sức khỏe của Groom (FR-3.17)' })
+  @ApiOperation({ summary: 'Ghi chú quan sát sức khỏe của nhân viên chăm sóc (FR-3.17)' })
   getHorseObservations(
     @Param('id') id: string,
     @CurrentUser() user: CurrentUserPayload,
-    @Query('urgency') urgency?: string,
+    @Query() query: ObservationNotesQueryDto,
   ) {
-    return this.overview.getHorseObservations(id, user, urgency);
+    return this.overview.getHorseObservations(id, user, query);
   }
 
   // ---------------------------------------------------------------------------
@@ -231,6 +232,13 @@ export class MedicalController {
   @ApiOperation({ summary: 'Chi tiết bệnh án' })
   getRecordDetail(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
     return this.records.getMedicalRecordDetail(id, user);
+  }
+
+  @Get('records/:id/medication-log')
+  @RequirePermission('viewMedical')
+  @ApiOperation({ summary: 'Nhật ký cho thuốc của bệnh án (đã cho / bỏ lỡ / sắp tới)' })
+  getMedicationLog(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
+    return this.records.getMedicationLog(id, user);
   }
 
   @Put('records/:id')

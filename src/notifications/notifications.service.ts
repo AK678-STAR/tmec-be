@@ -1,6 +1,9 @@
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger, Optional } from '@nestjs/common';
+import { BusinessMailBody, BusinessMailService } from '../business-mail/business-mail.service';
 import { NotificationCategory, Prisma, Role, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { zoneGroomIds } from '../shift-rosters/groom-zones';
+import { LIVE_TRAINER_PLAN_STATUSES } from '../training/trainer-zones';
 import { apiError } from '../common/exceptions/api-error';
 import { defaultNotify, NotifyKey } from '../users/permissions';
 
@@ -13,6 +16,7 @@ export interface NotifyInput {
   link?: string;
   senderName?: string;
   dedupeKey?: string; // sự kiện chỉ báo 1 lần cho mỗi người nhận
+  email?: { eventCode: string; body: BusinessMailBody };
 }
 
 // Sự kiện gắn với công tắc thông báo của người dùng (trang Notification settings).
@@ -31,7 +35,10 @@ const SETTING_OF: Record<string, NotifyKey> = {
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly businessMail?: BusinessMailService,
+  ) {}
 
   async notifyUsers(
     userIds: (string | null | undefined)[],
@@ -40,7 +47,7 @@ export class NotificationsService {
   ) {
     try {
       const ids = [...new Set(userIds.filter((id): id is string => !!id && id !== excludeUserId))];
-      if (ids.length === 0) return;
+      if (ids.length === 0) return true;
       const recipients = await this.prisma.user.findMany({
         where: { id: { in: ids }, status: UserStatus.ACTIVE },
         select: { id: true, role: true, notify: true },
@@ -51,7 +58,7 @@ export class NotificationsService {
         const stored = (u.notify ?? {}) as Partial<Record<NotifyKey, boolean>>;
         return stored[settingKey] ?? defaultNotify(u.role)[settingKey];
       });
-      if (allowed.length === 0) return;
+      if (allowed.length === 0) return true;
       await this.prisma.notification.createMany({
         data: allowed.map((u) => ({
           userId: u.id,
@@ -66,8 +73,20 @@ export class NotificationsService {
         })),
         skipDuplicates: true,
       });
+      if (input.email && this.businessMail) {
+        try {
+          await this.businessMail.emit({
+            eventCode: input.email.eventCode,
+            recipients: allowed.map((user) => ({ userId: user.id, body: input.email!.body })),
+          });
+        } catch (err) {
+          this.logger.warn(`Could not queue business email: ${(err as Error).message}`);
+        }
+      }
+      return true;
     } catch (err) {
       this.logger.warn(`Could not send notification ${input.type}: ${(err as Error).message}`);
+      return false;
     }
   }
 
@@ -87,13 +106,19 @@ export class NotificationsService {
     }
   }
 
-  /** Người liên quan tới 1 con ngựa: các vai trò được chọn + chủ ngựa + groom đang chăm (tùy chọn). */
-  async horseAudience(horseId: string, opts: { roles?: Role[]; owner?: boolean; groom?: boolean }) {
+  /** Người liên quan tới 1 con ngựa: các vai trò được chọn + chủ ngựa + groom đang trực khu của ngựa hôm nay (tùy chọn). */
+  async horseAudience(
+    horseId: string,
+    opts: { roles?: Role[]; owner?: boolean; groom?: boolean; trainer?: boolean },
+  ) {
     const horse = await this.prisma.horse.findUnique({
       where: { id: horseId },
       select: {
         ownerId: true,
-        stallAllocations: { where: { isActive: true }, select: { assignedGroomUserId: true } },
+        stallAllocations: {
+          where: { isActive: true },
+          select: { stall: { select: { zoneId: true } } },
+        },
       },
     });
     const ids: (string | null | undefined)[] = [];
@@ -104,23 +129,31 @@ export class NotificationsService {
       });
       ids.push(...staff.map((u) => u.id));
     }
+    if (opts.trainer && horse) {
+      const plans = await this.prisma.trainingPlan.findMany({
+        where: { horseId, status: { in: LIVE_TRAINER_PLAN_STATUSES } },
+        select: { trainerUserId: true },
+      });
+      ids.push(...plans.map((plan) => plan.trainerUserId));
+    }
     if (opts.owner && horse?.ownerId) ids.push(horse.ownerId);
     if (opts.groom && horse?.stallAllocations?.length) {
-      ids.push(...horse.stallAllocations.map((a) => a.assignedGroomUserId));
+      ids.push(...(await zoneGroomIds(this.prisma, horse.stallAllocations[0].stall?.zoneId)));
     }
     return ids;
   }
 
   async notifyHorse(
     horseId: string,
-    opts: { roles?: Role[]; owner?: boolean; groom?: boolean },
+    opts: { roles?: Role[]; owner?: boolean; groom?: boolean; trainer?: boolean },
     input: NotifyInput,
     excludeUserId?: string | null,
   ) {
     try {
-      await this.notifyUsers(await this.horseAudience(horseId, opts), input, excludeUserId);
+      return await this.notifyUsers(await this.horseAudience(horseId, opts), input, excludeUserId);
     } catch (err) {
       this.logger.warn(`Could not send notification ${input.type}: ${(err as Error).message}`);
+      return false;
     }
   }
 

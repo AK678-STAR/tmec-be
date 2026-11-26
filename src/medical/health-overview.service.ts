@@ -3,7 +3,9 @@ import { apiError } from '../common/exceptions/api-error';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { Role, HorseStatus, Prisma, PreventiveStatus } from '@prisma/client';
 import { HealthBoardQueryDto } from './dto/health-board-query.dto';
+import { ObservationNotesQueryDto, UrgencyFilter } from './dto/observation-notes-query.dto';
 import { PrismaService } from '../prisma/prisma.service';
+import { groomZoneIds, horsesInZones } from '../shift-rosters/groom-zones';
 import { MedicalAccessService } from './medical-access.service';
 import { getClubDateBounds } from './preventive-care.service';
 
@@ -176,7 +178,7 @@ export class HealthOverviewService {
         dob: horse.dob?.toISOString(),
         gender: horse.gender,
         color: horse.color,
-        stallCode: horse.stallAllocations[0]?.stall?.code || 'Unassigned',
+        stallCode: horse.stallAllocations[0]?.stall?.code || null,
         healthStatus: horse.status || 'RESTING',
         isMedicalLocked,
         activeLock,
@@ -249,21 +251,33 @@ export class HealthOverviewService {
     };
   }
 
-  async getHorseObservations(horseId: string, currentUser: CurrentUserPayload, _urgency?: string) {
+  async getHorseObservations(
+    horseId: string,
+    currentUser: CurrentUserPayload,
+    query?: ObservationNotesQueryDto,
+  ) {
     await this.access.checkHorseAccess(horseId, currentUser);
 
+    const where: any = {
+      horseId,
+      healthObservations: { not: null },
+    };
+
+    if (query?.startDate || query?.endDate) {
+      where.shiftDate = {};
+      if (query.startDate) where.shiftDate.gte = new Date(query.startDate);
+      if (query.endDate) where.shiftDate.lte = new Date(query.endDate);
+    }
+
     const logs = await this.prisma.dailyGroomingLog.findMany({
-      where: {
-        horseId,
-        healthObservations: { not: null },
-      },
+      where,
       orderBy: { shiftDate: 'desc' },
       include: {
         groom: { select: { id: true, fullName: true } },
       },
     });
 
-    const mapped = logs.map((g) => ({
+    let mapped = logs.map((g) => ({
       id: g.id,
       horseId: g.horseId,
       shift: g.shiftType,
@@ -273,6 +287,10 @@ export class HealthOverviewService {
       urgency: 'NORMAL',
       content: g.healthObservations || '',
     }));
+
+    if (query?.urgency && query.urgency !== UrgencyFilter.ALL) {
+      mapped = mapped.filter((o) => o.urgency === query.urgency);
+    }
 
     return { observations: mapped };
   }
@@ -286,16 +304,12 @@ export class HealthOverviewService {
     const now = new Date();
     const { startOfTodayClub, endOf30Days } = getClubDateBounds(now);
     const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    // C-03: OWNER chỉ thấy ngựa mình sở hữu, GROOM chỉ thấy ngựa mình đang chăm (giống getMedicalRecords).
+    // C-03: OWNER chỉ thấy ngựa mình sở hữu, GROOM chỉ thấy ngựa trong khu mình trực hôm nay (giống getMedicalRecords).
     const scope: Prisma.HorseWhereInput =
       currentUser.role === Role.HORSE_OWNER
         ? { ownerId: currentUser.userId }
         : currentUser.role === Role.GROOM
-          ? {
-              stallAllocations: {
-                some: { isActive: true, assignedGroomUserId: currentUser.userId },
-              },
-            }
+          ? horsesInZones(await groomZoneIds(this.prisma, currentUser.userId))
           : {};
     const horses = await this.prisma.horse.findMany({
       where: { deletedAt: null, status: { not: HorseStatus.RETIRED }, ...scope },

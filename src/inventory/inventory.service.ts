@@ -706,7 +706,7 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
               : new Prisma.Decimal(10),
           lastInventoryDate: now,
           lastAdjustedById: currentUser.userId,
-          notes: dto.notes || dto.reason,
+          notes: dto.reason || 'Kiểm kê định kỳ',
         },
         update: {
           quantity: new Prisma.Decimal(dto.actualQuantity),
@@ -715,7 +715,7 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
             : {}),
           lastInventoryDate: now,
           lastAdjustedById: currentUser.userId,
-          notes: dto.notes || dto.reason,
+          notes: dto.reason || 'Kiểm kê định kỳ',
         },
         include: {
           zone: { select: { id: true, code: true, name: true } },
@@ -763,6 +763,10 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
     tx?: Prisma.TransactionClient,
   ) {
     if (!zoneId || !items || !Array.isArray(items) || items.length === 0) return;
+    if (!tx)
+      return this.prisma.$transaction((client) =>
+        this.deductStockForFeeding(zoneId, items, client),
+      );
     const db = tx || this.prisma;
 
     // Phase 1: Pre-validation - Kiểm tra toàn bộ vật tư trong danh sách
@@ -876,20 +880,23 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
     }
 
     // Phase 2: Toàn bộ vật tư đủ tồn kho -> Thực hiện trừ kho chính xác
-    for (const item of resolvedItems) {
+    for (const item of resolvedItems.sort((a, b) => a.supplyId.localeCompare(b.supplyId))) {
       const newQty = item.currentQty - item.amount;
 
-      await db.stockBalance.update({
+      const changed = await db.stockBalance.updateMany({
         where: {
-          zoneId_supplyId: {
-            zoneId,
-            supplyId: item.supplyId,
-          },
+          zoneId,
+          supplyId: item.supplyId,
+          quantity: { gte: new Prisma.Decimal(item.amount) },
         },
-        data: {
-          quantity: new Prisma.Decimal(newQty),
-        },
+        data: { quantity: { decrement: new Prisma.Decimal(item.amount) } },
       });
+      if (changed.count !== 1)
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'INSUFFICIENT_STOCK',
+          'Stock changed during completion. No task was recorded.',
+        );
 
       this.logger.log(
         `[InventoryService] Đã trừ kho khu ${zoneId}, vật tư ${item.supplyName} (${item.supplyId}): -${item.amount} ${item.unit}. Tồn kho còn lại: ${newQty} ${item.unit}.`,
@@ -909,8 +916,10 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
       amount?: number;
       unit?: string;
     }>,
+    tx?: Prisma.TransactionClient,
   ) {
     if (!zoneId || !items || !Array.isArray(items) || items.length === 0) return;
+    const db = tx || this.prisma;
 
     for (const item of items) {
       if (!item.amount || Number(item.amount) <= 0) continue;
@@ -919,7 +928,7 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
 
       if (!supplyId && (item as any).supplyCode) {
         try {
-          const found = await this.prisma.supplyCatalog.findFirst({
+          const found = await db.supplyCatalog.findFirst({
             where: {
               code: { equals: (item as any).supplyCode, mode: 'insensitive' },
               isActive: true,
@@ -934,7 +943,7 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
 
       if (!supplyId && item.supplyName) {
         try {
-          const found = await this.prisma.supplyCatalog.findFirst({
+          const found = await db.supplyCatalog.findFirst({
             where: {
               OR: [
                 { name: { equals: item.supplyName, mode: 'insensitive' } },
@@ -953,7 +962,7 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
       if (!supplyId) continue;
 
       try {
-        const balance = await this.prisma.stockBalance.findUnique({
+        const balance = await db.stockBalance.findUnique({
           where: {
             zoneId_supplyId: {
               zoneId,
@@ -963,7 +972,7 @@ export class InventoryService implements OnModuleInit, OnModuleDestroy {
         });
 
         if (balance) {
-          await this.prisma.stockBalance.update({
+          await db.stockBalance.update({
             where: {
               zoneId_supplyId: {
                 zoneId,

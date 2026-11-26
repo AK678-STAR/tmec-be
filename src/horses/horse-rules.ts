@@ -37,6 +37,8 @@ export interface StatusChangeInput {
   retireReason?: RetireReason | null;
   /** Lý do ngừng quản lý hiện tại của ngựa (khi from = RETIRED). */
   currentRetireReason?: RetireReason | null;
+  /** Đánh dấu thao tác chuyển trạng thái nằm trong quy trình tiếp nhận ADM (Duyệt / Từ chối). */
+  isAdmissionProcess?: boolean;
 }
 
 function deny(code: string, message: string): never {
@@ -55,13 +57,50 @@ function requireReason(reason?: string): void {
  * - HT: chỉ đổi trong nhóm Vận hành, bị chặn khi đang Khóa huấn luyện.
  * - VET: Vận hành -> Y tế, Y tế -> Y tế bất kỳ lúc nào; Y tế -> RESTING/IN_TRAINING chỉ khi không khóa.
  * - CM: chỉ Ngừng quản lý (RETIRED, kèm lý do) và Kích hoạt lại (RETIRED -> RESTING).
+ * - CM duyệt tiếp nhận: PENDING_ADMISSION -> RESTING / REJECTED (trong quy trình ADM).
  * - Ngựa đã Ngừng quản lý: chỉ CM kích hoạt lại, trừ khi lý do là Đã chết.
  */
 export function assertStatusTransition(input: StatusChangeInput): void {
-  const { role, from, to, isMedicalLocked, reason } = input;
+  const { role, from, to, isMedicalLocked, reason, isAdmissionProcess } = input;
 
   if (from === to) {
     throw apiError(HttpStatus.BAD_REQUEST, 'SAME_STATUS', `Horse is already in status ${to}.`);
+  }
+
+  // Khóa không cho chuyển thủ công sang PENDING_ADMISSION (chỉ tạo qua nộp đơn đăng ký)
+  if (to === HorseStatus.PENDING_ADMISSION) {
+    deny('ROLE_RESTRICTION', 'Không thể chuyển thủ công trạng thái ngựa sang Chờ tiếp nhận.');
+  }
+
+  // Ngựa đang chờ tiếp nhận: chỉ CM duyệt/từ chối thông qua quy trình tiếp nhận ADM
+  if (from === HorseStatus.PENDING_ADMISSION) {
+    if (!isAdmissionProcess) {
+      deny(
+        'ADMISSION_PROCESS_REQUIRED',
+        'Không thể đổi trạng thái ngựa đang chờ tiếp nhận qua API này. Vui lòng sử dụng quy trình Thẩm định tiếp nhận.',
+      );
+    }
+    if (
+      role !== UserRole.CLUB_MANAGER ||
+      (to !== HorseStatus.RESTING && to !== HorseStatus.REJECTED)
+    ) {
+      deny(
+        'ROLE_RESTRICTION',
+        'Quản lý CLB chỉ được chuyển trạng thái ngựa đang chờ tiếp nhận sang Nghỉ ngơi (Duyệt) hoặc Từ chối.',
+      );
+    }
+    if (to === HorseStatus.REJECTED) {
+      requireReason(reason);
+    }
+    return;
+  }
+
+  // Ngựa đã bị từ chối tiếp nhận: không thể đổi trạng thái qua API này, phải nộp lại đơn tiếp nhận mới
+  if (from === HorseStatus.REJECTED) {
+    deny(
+      'HORSE_REJECTED',
+      'Ngựa đã bị từ chối tiếp nhận. Vui lòng nộp lại đơn đăng ký tiếp nhận mới.',
+    );
   }
 
   if (from === HorseStatus.RETIRED) {
@@ -121,9 +160,13 @@ export function assertStatusTransition(input: StatusChangeInput): void {
 
   if (role === UserRole.VETERINARIAN) {
     const toMedical = MEDICAL_STATUSES.includes(to);
-    const backToWork =
-      MEDICAL_STATUSES.includes(from) &&
-      (to === HorseStatus.RESTING || to === HorseStatus.IN_TRAINING);
+    // VET có thể đưa ngựa về RESTING từ nhóm y tế hoặc nhóm vận hành (khi điều trị/kết thúc bệnh án).
+    // VET cũng có thể trả ngựa về IN_TRAINING nếu ngựa đang ở nhóm y tế.
+    const canRest = to === HorseStatus.RESTING;
+    const returnFromMedicalToTraining =
+      MEDICAL_STATUSES.includes(from) && to === HorseStatus.IN_TRAINING;
+    const backToWork = canRest || returnFromMedicalToTraining;
+
     if (!toMedical && !backToWork) {
       deny(
         'ROLE_RESTRICTION',

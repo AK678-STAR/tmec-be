@@ -3,6 +3,7 @@ import {
   IsBoolean,
   IsEnum,
   IsNumber,
+  IsInt,
   IsOptional,
   IsString,
   IsUUID,
@@ -57,8 +58,28 @@ export class VitalsDto {
 }
 
 export class CreateMedicalRecordDto {
+  @IsOptional()
+  @IsBoolean()
+  proposeMedicalLock?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(180)
+  lockExpectedRestDays?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  lockUnlockConditions?: string;
+
   @IsUUID('4', { message: 'Please select a valid horse' })
   horseId: string;
+
+  /** Sự cố dẫn tới bệnh án này: bệnh án phải đúng ngựa của sự cố (#9). */
+  @IsOptional()
+  @IsString()
+  incidentId?: string;
 
   @IsOptional()
   @IsString()

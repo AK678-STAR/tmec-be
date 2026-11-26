@@ -12,6 +12,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { apiError } from '../common/exceptions/api-error';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { UserRole } from '../common/enums/role.enum';
+import { groomZoneIds } from '../shift-rosters/groom-zones';
 import {
   CreateNutritionPlanDto,
   MealDto,
@@ -217,7 +218,7 @@ export class NutritionService {
 
     return {
       items: items.map((item) => {
-        const horseWeight =
+        const horseWeightSnapshot =
           item.horseWeightSnapshot ??
           item.horse?.weightKg ??
           item.horse?.medicalRecords[0]?.weightKg ??
@@ -226,7 +227,7 @@ export class NutritionService {
         const currentStallCode = item.horse?.stallAllocations[0]?.stall?.code ?? null;
         return {
           ...item,
-          horseWeight,
+          horseWeightSnapshot,
           currentZone,
           currentStallCode,
           isWithinSafeRange: item.targetWeightRatioPct >= 1.5 && item.targetWeightRatioPct <= 3.0,
@@ -287,7 +288,7 @@ export class NutritionService {
       }
     }
 
-    const horseWeight =
+    const horseWeightSnapshot =
       item.horseWeightSnapshot ??
       item.horse?.weightKg ??
       item.horse?.medicalRecords[0]?.weightKg ??
@@ -295,7 +296,7 @@ export class NutritionService {
 
     return {
       ...item,
-      horseWeight,
+      horseWeightSnapshot,
       isWithinSafeRange: item.targetWeightRatioPct >= 1.5 && item.targetWeightRatioPct <= 3.0,
     };
   }
@@ -303,7 +304,38 @@ export class NutritionService {
   /**
    * Lấy khẩu phần ăn đang có hiệu lực (APPROVED) của một con ngựa cụ thể
    */
-  async getActivePlanForHorse(horseId: string, _currentUser?: CurrentUserPayload) {
+  async getActivePlanForHorse(horseId: string, currentUser?: CurrentUserPayload) {
+    // Owner: chỉ ngựa mình sở hữu; Groom: chỉ ngựa trong khu đang trực. CM/HT/VET xem tất cả.
+    if (currentUser?.role === UserRole.HORSE_OWNER || currentUser?.role === UserRole.GROOM) {
+      const horse = await this.prisma.horse.findFirst({
+        where: { id: horseId, deletedAt: null },
+        select: {
+          ownerId: true,
+          stallAllocations: {
+            where: { isActive: true },
+            select: { stall: { select: { zoneId: true } } },
+          },
+        },
+      });
+      const zones =
+        currentUser.role === UserRole.GROOM
+          ? await groomZoneIds(this.prisma, currentUser.userId)
+          : [];
+      const inScope =
+        !!horse &&
+        (currentUser.role === UserRole.HORSE_OWNER
+          ? horse.ownerId === currentUser.userId
+          : horse.stallAllocations.some(
+              (a) => !!a.stall?.zoneId && zones.includes(a.stall.zoneId),
+            ));
+      if (!inScope) {
+        throw apiError(
+          HttpStatus.FORBIDDEN,
+          'HORSE_OUT_OF_SCOPE',
+          'You can only view rations of your own horses or horses in the zone you are on duty in.',
+        );
+      }
+    }
     const active = await this.prisma.nutritionPlan.findFirst({
       where: {
         horseId,
@@ -608,32 +640,33 @@ export class NutritionService {
     }
 
     if (dto.action === 'APPROVE') {
-      // Khi duyệt: Lưu trữ (ARCHIVE) kế hoạch APPROVED cũ của ngựa này nếu có
-      await this.prisma.nutritionPlan.updateMany({
-        where: {
-          horseId: plan.horseId,
-          status: NutritionPlanStatus.APPROVED,
-          id: { not: id },
-        },
-        data: {
-          status: NutritionPlanStatus.ARCHIVED,
-          validTo: new Date(),
-        },
-      });
-
-      const updated = await this.prisma.nutritionPlan.update({
-        where: { id },
-        data: {
-          status: NutritionPlanStatus.APPROVED,
-          approvedById: currentUser.userId,
-          approvedAt: new Date(),
-          vetNotes: dto.vetNotes ?? plan.vetNotes,
-          rejectionReason: null,
-        },
-        include: {
-          horse: { select: { id: true, name: true } },
-          approvedBy: { select: { id: true, fullName: true, role: true } },
-        },
+      // Lưu trữ bản APPROVED cũ và áp dụng bản mới trong cùng transaction (không để ngựa mất / thừa khẩu phần).
+      const updated = await this.prisma.$transaction(async (tx) => {
+        await tx.nutritionPlan.updateMany({
+          where: {
+            horseId: plan.horseId,
+            status: NutritionPlanStatus.APPROVED,
+            id: { not: id },
+          },
+          data: {
+            status: NutritionPlanStatus.ARCHIVED,
+            validTo: new Date(),
+          },
+        });
+        return tx.nutritionPlan.update({
+          where: { id },
+          data: {
+            status: NutritionPlanStatus.APPROVED,
+            approvedById: currentUser.userId,
+            approvedAt: new Date(),
+            vetNotes: dto.vetNotes ?? plan.vetNotes,
+            rejectionReason: null,
+          },
+          include: {
+            horse: { select: { id: true, name: true } },
+            approvedBy: { select: { id: true, fullName: true, role: true } },
+          },
+        });
       });
 
       await this.auditService.record(

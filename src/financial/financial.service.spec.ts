@@ -3,6 +3,7 @@ import { FinancialService } from './financial.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { BusinessMailService } from '../business-mail/business-mail.service';
 import { InvoiceStatus, RestockStatus } from '@prisma/client';
 
 describe('FinancialService', () => {
@@ -10,9 +11,13 @@ describe('FinancialService', () => {
   let prisma: any;
   let audit: any;
   let notifications: any;
+  let businessMail: any;
 
   beforeEach(async () => {
     prisma = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      careBillingPolicy: { findUnique: jest.fn().mockResolvedValue(null) },
+      careCostClaim: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
       financialInvoice: {
         findMany: jest.fn().mockResolvedValue([]),
         count: jest.fn().mockResolvedValue(0),
@@ -36,6 +41,8 @@ describe('FinancialService', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       user: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
         update: jest.fn().mockResolvedValue({}),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
@@ -57,12 +64,17 @@ describe('FinancialService', () => {
       notifyRoles: jest.fn().mockResolvedValue(undefined),
     };
 
+    businessMail = {
+      emit: jest.fn().mockResolvedValue([]),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         FinancialService,
         { provide: PrismaService, useValue: prisma },
         { provide: AuditService, useValue: audit },
         { provide: NotificationsService, useValue: notifications },
+        { provide: BusinessMailService, useValue: businessMail },
       ],
     }).compile();
 
@@ -89,30 +101,67 @@ describe('FinancialService', () => {
     };
 
     it.each([InvoiceStatus.SENT, InvoiceStatus.OVERDUE])(
-      'pays an owned %s invoice by bank transfer',
+      'owner reporting a transfer on a %s invoice only marks it awaiting reconciliation',
       async (status) => {
         prisma.financialInvoice.findUnique.mockResolvedValue({ ...invoice, status });
-        prisma.financialInvoice.update.mockResolvedValue({
+        prisma.financialInvoice.update.mockImplementation(({ data }: any) => ({
           ...invoice,
-          status: InvoiceStatus.PAID,
-        });
-        const paid = await service.payInvoice(
+          status,
+          ...data,
+        }));
+        const reported = await service.payInvoice(
           invoice.id,
-          { paymentMethod: 'BANK_TRANSFER' },
+          { paymentMethod: 'BANK_TRANSFER', transactionRef: ' FT123 ' },
           owner,
         );
-        expect(paid.status).toBe(InvoiceStatus.PAID);
+        expect(reported.status).toBe(status);
+        expect(reported.paymentReportedAt).toBeInstanceOf(Date);
+        expect(prisma.financialInvoice.update.mock.calls[0][0].data.status).toBeUndefined();
         expect(audit.record).toHaveBeenCalledWith(
           expect.anything(),
-          'INVOICE_PAID',
+          'INVOICE_PAYMENT_REPORTED',
           expect.any(String),
           invoice.id,
           expect.objectContaining({
-            newValues: { status: InvoiceStatus.PAID, paymentMethod: 'BANK_TRANSFER' },
+            newValues: { paymentMethod: 'BANK_TRANSFER', paymentRef: 'FT123' },
           }),
         );
       },
     );
+
+    it('manager confirming receipt marks the invoice PAID with the confirmer', async () => {
+      const manager = { id: 'mgr-1', name: 'Manager', role: 'CLUB_MANAGER' } as any;
+      prisma.financialInvoice.findUnique.mockResolvedValue({
+        ...invoice,
+        paymentMethod: 'BANK_TRANSFER',
+        paymentRef: 'FT123',
+      });
+      prisma.financialInvoice.update.mockImplementation(({ data }: any) => ({
+        ...invoice,
+        ...data,
+      }));
+      const paid = await service.payInvoice(invoice.id, {}, manager);
+      expect(paid.status).toBe(InvoiceStatus.PAID);
+      expect(paid.paidConfirmedById).toBe('mgr-1');
+      expect(paid.paymentRef).toBe('FT123');
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.anything(),
+        'INVOICE_PAID',
+        expect.any(String),
+        invoice.id,
+        expect.anything(),
+      );
+    });
+
+    it('owner cannot flip an invoice to PAID through changeStatus', async () => {
+      prisma.financialInvoice.findUnique.mockResolvedValue(invoice);
+      await expect(
+        service.changeStatus(invoice.id, InvoiceStatus.PAID, owner),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'PAYMENT_NEEDS_RECONCILIATION' }),
+      });
+      expect(prisma.financialInvoice.update).not.toHaveBeenCalled();
+    });
 
     it('rejects paying another owner invoice', async () => {
       prisma.financialInvoice.findUnique.mockResolvedValue({ ...invoice, ownerId: 'other-owner' });
@@ -524,7 +573,8 @@ describe('FinancialService', () => {
     });
 
     it('should automatically release horse impound and clear owner bad debt when all overdue invoices are paid', async () => {
-      const owner = { id: 'o-1', name: 'Owner', role: 'HORSE_OWNER' };
+      const _owner = { id: 'o-1', name: 'Owner', role: 'HORSE_OWNER' };
+      void _owner;
       const invoice = {
         id: 'inv-od-1',
         horseId: 'h-1',
@@ -543,7 +593,12 @@ describe('FinancialService', () => {
       prisma.financialInvoice.update.mockResolvedValue({ ...invoice, status: InvoiceStatus.PAID });
       prisma.financialInvoice.count.mockResolvedValue(0); // 0 remaining overdue
 
-      await service.payInvoice('inv-od-1', { paymentMethod: 'VIETQR' }, owner);
+      // Sanctions lift once the manager reconciles the payment.
+      await service.payInvoice('inv-od-1', { paymentMethod: 'VIETQR' }, {
+        id: 'mgr-1',
+        name: 'Manager',
+        role: 'CLUB_MANAGER',
+      } as any);
 
       expect(prisma.horse.update).toHaveBeenCalledWith({
         where: { id: 'h-1' },
@@ -774,6 +829,218 @@ describe('FinancialService', () => {
           totalCost: 7200000,
         }),
       );
+    });
+  });
+
+  describe('business-mail lifecycle hooks (Task 4)', () => {
+    const invoice = {
+      id: 'inv-bm',
+      ownerId: 'owner-1',
+      horseId: 'h-1',
+      status: InvoiceStatus.SENT,
+      billingPeriod: '2026-07',
+      boardingFee: 5000000,
+      medicalFee: 0,
+      trainingFee: 0,
+      prizeCredit: 0,
+      netAmount: 5000000,
+      dueAt: new Date(),
+      horse: { name: 'Thunder', horseCode: 'THD-1' },
+      owner: { id: 'owner-1', fullName: 'Trần Văn Chủ' },
+    };
+
+    it('changeStatus -> SENT emits INVOICE_ISSUED to the owner', async () => {
+      prisma.financialInvoice.findUnique.mockResolvedValue({
+        ...invoice,
+        status: InvoiceStatus.DRAFT,
+      });
+      prisma.financialInvoice.update.mockResolvedValue({ ...invoice, status: InvoiceStatus.SENT });
+      await service.changeStatus('inv-bm', InvoiceStatus.SENT, {
+        id: 'mgr',
+        name: 'Mgr',
+        role: 'CLUB_MANAGER',
+      });
+      expect(businessMail.emit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventCode: 'INVOICE_ISSUED',
+          recipients: expect.arrayContaining([expect.objectContaining({ userId: 'owner-1' })]),
+        }),
+      );
+    });
+
+    it('changeStatus -> CANCELLED emits INVOICE_CANCELLED to the owner', async () => {
+      prisma.financialInvoice.findUnique.mockResolvedValue(invoice);
+      prisma.financialInvoice.update.mockResolvedValue({
+        ...invoice,
+        status: InvoiceStatus.CANCELLED,
+      });
+      await service.changeStatus('inv-bm', InvoiceStatus.CANCELLED, {
+        id: 'mgr',
+        name: 'Mgr',
+        role: 'CLUB_MANAGER',
+      });
+      expect(businessMail.emit).toHaveBeenCalledWith(
+        expect.objectContaining({ eventCode: 'INVOICE_CANCELLED' }),
+      );
+    });
+
+    it('update that lowers netAmount emits REFUND_NOTIFIED with old/new/reason', async () => {
+      // Phí chỉ sửa được khi DRAFT (guard INVOICE_NOT_EDITABLE) — fixture phải DRAFT.
+      prisma.financialInvoice.findUnique.mockResolvedValue({
+        ...invoice,
+        status: InvoiceStatus.DRAFT,
+      });
+      prisma.financialInvoice.update.mockResolvedValue({
+        ...invoice,
+        status: InvoiceStatus.DRAFT,
+        prizeCredit: 2000000,
+        updatedAt: new Date('2026-11-23T00:00:00Z'),
+        netAmount: 3000000, // giảm từ 5.000.000
+      });
+      await service.update(
+        'inv-bm',
+        { prizeCredit: 2000000, notes: 'Giảm phí y tế sau đối soát' },
+        { id: 'mgr', name: 'Mgr', role: 'CLUB_MANAGER' },
+      );
+      const call = businessMail.emit.mock.calls.find((c) => c[0].eventCode === 'REFUND_NOTIFIED');
+      expect(call).toBeDefined();
+      expect(call[0].recipients[0].body.text).toContain('Giảm phí y tế sau đối soát');
+      // điều chỉnh = 5.000.000 - 3.000.000 = 2.000.000
+      expect(call[0].recipients[0].body.text).toContain('2.000.000');
+    });
+
+    it('sweepOverdue emits INVOICE_OVERDUE only for invoices with netAmount > 0', async () => {
+      prisma.financialInvoice.findMany.mockResolvedValue([
+        { id: 'inv-od', horseId: 'h-1', ownerId: 'owner-1', netAmount: 5000000 },
+      ]);
+      prisma.financialInvoice.updateMany.mockResolvedValue({ count: 1 });
+      prisma.user.findMany.mockResolvedValue([
+        { id: 'owner-1', fullName: 'Trần Văn Chủ', email: 'o1@x.com' },
+      ]);
+      await service.sweepOverdue();
+      expect(businessMail.emit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventCode: 'INVOICE_OVERDUE',
+          recipients: expect.arrayContaining([
+            expect.objectContaining({
+              userId: 'owner-1',
+              body: expect.objectContaining({ milestone: 'overdue-now' }),
+            }),
+          ]),
+        }),
+      );
+    });
+
+    it('recordPaymentFailure emits PAYMENT_FAILED to the transactor, body never says "đã thanh toán"', async () => {
+      prisma.financialInvoice.findUnique.mockResolvedValue(invoice);
+      await service.recordPaymentFailure(
+        'inv-bm',
+        { txRef: 'TX-999' },
+        {
+          id: 'mgr',
+          name: 'Mgr',
+          role: 'CLUB_MANAGER',
+        },
+      );
+      const call = businessMail.emit.mock.calls.find((c) => c[0].eventCode === 'PAYMENT_FAILED');
+      expect(call).toBeDefined();
+      expect(call[0].recipients[0].body.text.toLowerCase()).not.toContain('đã thanh toán');
+      expect(call[0].recipients[0].body.text).toContain('TX-999');
+    });
+
+    it('remindInvoice emits MANUAL_REMIND to the owner with milestone manual', async () => {
+      prisma.financialInvoice.findUnique.mockResolvedValue(invoice);
+      businessMail.emit.mockResolvedValue([{ accepted: true }]);
+      const res = await service.remindInvoice('inv-bm', {
+        id: 'mgr',
+        name: 'Mgr',
+        role: 'CLUB_MANAGER',
+      });
+      expect(res.sent).toBe(true);
+      expect(businessMail.emit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventCode: 'MANUAL_REMIND',
+          recipients: expect.arrayContaining([
+            expect.objectContaining({
+              userId: 'owner-1',
+              body: expect.objectContaining({ milestone: 'manual' }),
+            }),
+          ]),
+        }),
+      );
+    });
+
+    it.each(['GROOM', 'VETERINARIAN', 'HEAD_TRAINER', 'HORSE_OWNER'])(
+      'rejects manual financial actions by %s before reading invoices',
+      async (role) => {
+        const actor = { id: 'staff', name: 'Staff', role };
+        await expect(service.remindInvoice('inv-bm', actor)).rejects.toThrow();
+        await expect(service.recordPaymentFailure('inv-bm', {}, actor)).rejects.toThrow();
+        expect(prisma.financialInvoice.findUnique).not.toHaveBeenCalled();
+        expect(businessMail.emit).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([InvoiceStatus.DRAFT, InvoiceStatus.PAID, InvoiceStatus.CANCELLED])(
+      'does not send manual financial mails for %s invoices',
+      async (status) => {
+        prisma.financialInvoice.findUnique.mockResolvedValue({ ...invoice, status });
+        const actor = { id: 'mgr', name: 'Manager', role: 'CLUB_MANAGER' };
+        await expect(service.remindInvoice(invoice.id, actor)).rejects.toThrow();
+        await expect(service.recordPaymentFailure(invoice.id, {}, actor)).rejects.toThrow();
+        expect(businessMail.emit).not.toHaveBeenCalled();
+      },
+    );
+
+    it('reports SMTP failure without claiming the reminder was sent', async () => {
+      prisma.financialInvoice.findUnique.mockResolvedValue(invoice);
+      businessMail.emit.mockRejectedValue(new Error('mail unavailable'));
+      await expect(
+        service.remindInvoice(invoice.id, { id: 'mgr', name: 'Manager', role: 'CLUB_MANAGER' }),
+      ).resolves.toEqual({ sent: false });
+    });
+
+    it('repeating the same status does not generate another lifecycle mail', async () => {
+      prisma.financialInvoice.findUnique.mockResolvedValue(invoice);
+      prisma.financialInvoice.update.mockResolvedValue(invoice);
+      await service.changeStatus(invoice.id, InvoiceStatus.SENT, {
+        id: 'mgr',
+        name: 'Manager',
+        role: 'CLUB_MANAGER',
+      });
+      expect(businessMail.emit).not.toHaveBeenCalled();
+    });
+
+    it('update to CANCELLED emits the same lifecycle event as changeStatus', async () => {
+      prisma.financialInvoice.findUnique.mockResolvedValue(invoice);
+      prisma.financialInvoice.update.mockResolvedValue({
+        ...invoice,
+        status: InvoiceStatus.CANCELLED,
+      });
+      await service.update(
+        invoice.id,
+        { status: InvoiceStatus.CANCELLED },
+        { id: 'mgr', name: 'Manager', role: 'CLUB_MANAGER' },
+      );
+      expect(businessMail.emit).toHaveBeenCalledWith(
+        expect.objectContaining({ eventCode: 'INVOICE_CANCELLED' }),
+      );
+    });
+
+    it('a failing emit does NOT break the changeStatus transaction (Global Constraint)', async () => {
+      prisma.financialInvoice.findUnique.mockResolvedValue(invoice);
+      prisma.financialInvoice.update.mockResolvedValue({
+        ...invoice,
+        status: InvoiceStatus.CANCELLED,
+      });
+      businessMail.emit.mockRejectedValueOnce(new Error('smtp down'));
+      await expect(
+        service.changeStatus('inv-bm', InvoiceStatus.CANCELLED, {
+          id: 'mgr',
+          name: 'Mgr',
+          role: 'CLUB_MANAGER',
+        }),
+      ).resolves.not.toThrow();
     });
   });
 });

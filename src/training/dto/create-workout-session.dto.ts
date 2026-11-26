@@ -11,6 +11,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  IsUUID,
   Length,
   Max,
   MaxLength,
@@ -22,6 +23,9 @@ import { INTENSITIES, WORKOUT_SURFACES, WORKOUT_TYPES } from '../training-rules'
 
 /** DL-2.01 Thêm buổi tập (HT). Luật nghiệp vụ (khóa y tế, 3 buổi/ngày...) kiểm ở service. */
 export class CreateWorkoutSessionDto {
+  @IsOptional()
+  @IsUUID('4')
+  trackId?: string;
   @ApiProperty({
     description: 'Ngày + giờ bắt đầu (ISO 8601, nên kèm múi giờ)',
     example: '2026-10-15T06:30:00+07:00',
@@ -67,17 +71,17 @@ export class CreateWorkoutSessionDto {
   @IsIn([...WORKOUT_SURFACES], { message: 'Vui lòng chọn mặt sân.' })
   trackSurface: string;
 
-  @ApiPropertyOptional({ description: 'Tên nài ngựa (bắt buộc với BREEZE, TRIAL)' })
+  @ApiPropertyOptional({ description: 'Bỏ qua: HLV của giáo án luôn là nài (#7)' })
   @IsOptional()
   @IsString()
   @Length(2, 100, { message: 'Tên nài ngựa phải từ 2 đến 100 ký tự.' })
   @Transform(trimString)
   jockeyName?: string;
 
-  @ApiProperty({ description: 'Nhân viên chăm sóc (GROOM) phụ trách' })
-  @IsNotEmpty({ message: 'Vui lòng chọn nhân viên chăm sóc.' })
+  @ApiPropertyOptional({ description: 'Bỏ qua: HLV của giáo án tự dẫn buổi tập (#4)' })
+  @IsOptional()
   @IsString()
-  assignedStaffUserId: string;
+  assignedStaffUserId?: string;
 
   @ApiPropertyOptional({ description: 'Ghi chú chỉ dẫn (≤ 500 ký tự)' })
   @IsOptional()
@@ -119,4 +123,10 @@ export class RepeatWorkoutDto extends CreateWorkoutSessionDto {
   @ApiProperty({ description: 'Lặp đến ngày (YYYY-MM-DD, ≤ ngày kết thúc giai đoạn)' })
   @IsISO8601({}, { message: 'Ngày không hợp lệ.' })
   until: string;
+}
+
+export class CheckWorkoutDto extends CreateWorkoutSessionDto {
+  @IsOptional()
+  @IsUUID('4')
+  excludeWorkoutId?: string;
 }

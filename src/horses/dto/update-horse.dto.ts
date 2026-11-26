@@ -59,11 +59,6 @@ export class UpdateHorseDto {
   @Matches(/^\d{15}$/, { message: 'Microchip number must consist of exactly 15 digits.' })
   microchip?: string;
 
-  @ApiPropertyOptional({ description: 'Owner User ID' })
-  @IsOptional()
-  @IsString()
-  ownerId?: string;
-
   @ApiPropertyOptional({ description: 'Weight in kg (> 0)' })
   @IsOptional()
   @IsNumber({}, { message: 'Cân nặng phải là số.' })

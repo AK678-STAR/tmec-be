@@ -1,6 +1,7 @@
+import { followUpDue } from '../business-mail/templates/health-templates';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { PreventiveStatus, Role } from '@prisma/client';
+import { MedicalRecordStatus, PreventiveStatus, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { DAY_MS, getClubDateBounds } from './preventive-care.service';
@@ -20,6 +21,60 @@ export class PreventiveScheduler {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
   ) {}
+
+  /** #12: 06:00 mỗi ngày nhắc lịch tái khám hôm nay và ngày mai cho bác sĩ phụ trách, Groom và chủ ngựa. */
+  @Cron('0 6 * * *', { name: 'follow-up-reminders', timeZone: 'Asia/Ho_Chi_Minh' })
+  async followUpReminders(now = new Date()): Promise<number> {
+    try {
+      const { startOfTodayClub, endOfTodayClub } = getClubDateBounds(now);
+      const records = await this.prisma.medicalRecord.findMany({
+        where: {
+          status: MedicalRecordStatus.OPEN,
+          followUpDate: { gte: startOfTodayClub, lte: new Date(endOfTodayClub.getTime() + DAY_MS) },
+          horse: { deletedAt: null },
+        },
+        select: {
+          id: true,
+          horseId: true,
+          followUpDate: true,
+          veterinarianUserId: true,
+          horse: { select: { name: true } },
+        },
+      });
+      for (const r of records) {
+        const date = new Date(r.followUpDate!.getTime() + 7 * 3600_000).toISOString().slice(0, 10);
+        const audience = await this.notifications.horseAudience(r.horseId, {
+          owner: true,
+          groom: true,
+        });
+        await this.notifications.notifyUsers([...audience, r.veterinarianUserId], {
+          email: {
+            eventCode: 'FOLLOW_UP_DUE',
+            body: {
+              ...followUpDue(
+                { dueAt: r.followUpDate!, procedure: 'Tái khám theo bệnh án' },
+                { id: r.horseId, name: r.horse.name },
+              ),
+              refId: r.id,
+              milestone: date,
+            },
+          },
+          type: 'FOLLOW_UP_DUE',
+          category: 'MEDICAL',
+          title: 'Follow-up visit coming up',
+          message: `${r.horse.name} has a follow-up visit on ${date}.`,
+          params: { horse: r.horse.name, date },
+          link: `/medical/records/${r.id}`,
+          senderName: 'TMEC',
+          dedupeKey: `FOLLOW_UP_DUE:${r.id}:${date}`,
+        });
+      }
+      return records.length;
+    } catch (err) {
+      this.logger.error(`Follow-up reminders failed: ${(err as Error).message}`);
+      return 0;
+    }
+  }
 
   @Cron('0 6 * * *', { name: 'preventive-reminders', timeZone: 'Asia/Ho_Chi_Minh' })
   async dailyReminders(now = new Date()): Promise<number> {

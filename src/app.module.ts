@@ -1,3 +1,4 @@
+import { DemoDataModule } from './demo-data/demo-data.module';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -7,6 +8,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './auth/auth.module';
 import { MailModule } from './mail/mail.module';
+import { BusinessMailModule } from './business-mail/business-mail.module';
 import { AuditModule } from './audit/audit.module';
 import { AccountsModule } from './accounts/accounts.module';
 import { MedicalModule } from './medical/medical.module';
@@ -28,6 +30,7 @@ import { ShiftRostersModule } from './shift-rosters/shift-rosters.module';
 import { NutritionModule } from './nutrition/nutrition.module';
 import { DailyTasksModule } from './daily-tasks/daily-tasks.module';
 import { IncidentsModule } from './incidents/incidents.module';
+import { ComplaintsModule } from './complaints/complaints.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { SimulatorModule } from './simulator/simulator.module';
 
@@ -44,8 +47,10 @@ import { SimulatorModule } from './simulator/simulator.module';
       skipIf: () => process.env.NODE_ENV === 'test',
     }),
     PrismaModule,
+    DemoDataModule,
     HealthModule,
     MailModule,
+    BusinessMailModule,
     AuditModule,
     NotificationsModule,
     AuthModule,
@@ -63,6 +68,7 @@ import { SimulatorModule } from './simulator/simulator.module';
     NutritionModule,
     DailyTasksModule,
     IncidentsModule,
+    ComplaintsModule,
     InventoryModule,
     SimulatorModule,
   ],

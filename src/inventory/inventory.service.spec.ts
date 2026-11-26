@@ -20,6 +20,7 @@ describe('InventoryService', () => {
       ...prisma,
       $queryRaw: jest.fn().mockResolvedValue([]),
       stockBalance: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         ...prisma.stockBalance,
         ...overrides.stockBalance,
       },
@@ -40,6 +41,7 @@ describe('InventoryService', () => {
       stallZone: { findMany: jest.fn(), findUnique: jest.fn() },
       supplyCatalog: { findMany: jest.fn(), findUnique: jest.fn() },
       stockBalance: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findMany: jest.fn(),
         findUnique: jest.fn().mockResolvedValue(null),
         upsert: jest.fn(),
@@ -1214,16 +1216,9 @@ describe('InventoryService', () => {
         { supplyId: 'sup-hay', supplyName: 'Cỏ khô Timothy', amount: 3.4, unit: 'kg' },
       ]);
 
-      expect(prisma.stockBalance.update).toHaveBeenCalledWith({
-        where: {
-          zoneId_supplyId: {
-            zoneId: 'z-1',
-            supplyId: 'sup-hay',
-          },
-        },
-        data: {
-          quantity: new Prisma.Decimal(1.6),
-        },
+      expect(prisma.stockBalance.updateMany).toHaveBeenCalledWith({
+        where: { zoneId: 'z-1', supplyId: 'sup-hay', quantity: { gte: new Prisma.Decimal(3.4) } },
+        data: { quantity: { decrement: new Prisma.Decimal(3.4) } },
       });
     });
 

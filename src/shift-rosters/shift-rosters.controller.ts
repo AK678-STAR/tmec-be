@@ -6,6 +6,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  ParseUUIDPipe,
   Post,
   Query,
 } from '@nestjs/common';
@@ -18,6 +19,9 @@ import {
   AssignShiftRosterDto,
   CopyWeekRosterDto,
   QueryShiftRosterDto,
+  QueryCareTeamDto,
+  RequestShiftSwapDto,
+  SwapCandidatesQueryDto,
 } from './dto/shift-roster.dto';
 
 const STAFF = [UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.VETERINARIAN, UserRole.GROOM];
@@ -28,6 +32,12 @@ const STAFF = [UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.VETERINARI
 export class ShiftRostersController {
   constructor(private readonly service: ShiftRostersService) {}
 
+  @Get('care-team')
+  @Roles(UserRole.HEAD_TRAINER)
+  careTeam(@Query() query: QueryCareTeamDto, @CurrentUser() user: CurrentUserPayload) {
+    return this.service.careTeam(query, user);
+  }
+
   @Get()
   @Roles(...STAFF)
   @ApiOperation({ summary: 'SC-4.01 Lấy ma trận phân ca theo khoảng ngày/khu' })
@@ -35,11 +45,42 @@ export class ShiftRostersController {
     return this.service.findAll(query);
   }
 
+  @Get('overview')
+  @Roles(UserRole.CLUB_MANAGER)
+  @ApiOperation({
+    summary: '#2 Tổng quan ca trực trong ngày: ai trực khu nào, việc xong bao nhiêu',
+  })
+  overview(@Query('date') date?: string) {
+    return this.service.overview(date);
+  }
+
   @Get('my')
   @Roles(UserRole.GROOM)
-  @ApiOperation({ summary: 'SC-4.01 / SC-4.05 Ca trực của tôi và ngựa phụ trách (Groom)' })
+  @ApiOperation({ summary: 'SC-4.01 / SC-4.05 Ca trực của tôi và ngựa phụ trách' })
   getMyShifts(@CurrentUser() user: CurrentUserPayload, @Query() query: QueryShiftRosterDto) {
     return this.service.getMyShifts(user, query);
+  }
+
+  @Get('swap-candidates')
+  @Roles(UserRole.GROOM)
+  @ApiOperation({ summary: 'Đồng nghiệp còn trống ca để xin đổi' })
+  getSwapCandidates(
+    @Query() query: SwapCandidatesQueryDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.service.getSwapCandidates(query.rosterId, user);
+  }
+
+  @Post(':id/swap-request')
+  @Roles(UserRole.GROOM)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Gửi yêu cầu đổi ca tới quản lý, chưa thay đổi phân công' })
+  requestSwap(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() dto: RequestShiftSwapDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.service.requestSwap(id, dto, user);
   }
 
   @Post()

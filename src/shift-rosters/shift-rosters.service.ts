@@ -1,3 +1,5 @@
+import { assertRosterSlot } from './roster-validation';
+import { lockCareAssignments } from '../stalls/groom-care.rules';
 import { HttpStatus, Injectable, Optional } from '@nestjs/common';
 import { Prisma, Role, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -5,10 +7,14 @@ import { AuditService } from '../audit/audit.service';
 import { apiError } from '../common/exceptions/api-error';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { DailyTasksService } from '../daily-tasks/daily-tasks.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { rosterDay, shiftInterval } from './groom-zones';
 import {
   AssignShiftRosterDto,
   CopyWeekRosterDto,
   QueryShiftRosterDto,
+  QueryCareTeamDto,
+  RequestShiftSwapDto,
 } from './dto/shift-roster.dto';
 
 function parseDateOnly(dateStr: string): Date {
@@ -32,7 +38,358 @@ export class ShiftRostersService {
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
     @Optional() private readonly dailyTasks?: DailyTasksService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
+
+  async careTeam(query: QueryCareTeamDto, actor: CurrentUserPayload) {
+    if (actor.role !== Role.HEAD_TRAINER)
+      throw apiError(HttpStatus.FORBIDDEN, 'TRAINER_REQUIRED', 'Trainer scope required.');
+    const start = query.startDate ? parseDateOnly(query.startDate) : getMondayOfDate(rosterDay());
+    const end = query.endDate
+      ? parseDateOnly(query.endDate)
+      : new Date(start.getTime() + 6 * 86400000);
+    if (
+      !Number.isFinite(+start) ||
+      !Number.isFinite(+end) ||
+      end < start ||
+      +end - +start > 30 * 86400000
+    )
+      throw apiError(HttpStatus.BAD_REQUEST, 'INVALID_ROSTER_RANGE', 'Select at most 31 days.');
+    const plans = await this.prisma.trainingPlan.findMany({
+      where: {
+        trainerUserId: actor.userId,
+        status: 'ACTIVE',
+        horse: { deletedAt: null, status: { not: 'RETIRED' } },
+      },
+      select: {
+        horseId: true,
+        horse: {
+          select: {
+            id: true,
+            name: true,
+            stallAllocations: {
+              where: { isActive: true },
+              select: { stall: { select: { zoneId: true } } },
+            },
+          },
+        },
+      },
+    });
+    const horseIds = [...new Set(plans.map((plan) => plan.horseId))];
+    const zoneIds = [
+      ...new Set(
+        plans.flatMap((plan) =>
+          plan.horse.stallAllocations.map((a) => a.stall.zoneId).filter((id): id is string => !!id),
+        ),
+      ),
+    ];
+    const groomRosters =
+      query.scope === 'club' || zoneIds.length
+        ? await this.prisma.shiftRoster.findMany({
+            where: {
+              date: { gte: start, lte: end },
+              ...(query.scope === 'club' ? {} : { zoneId: { in: zoneIds } }),
+            },
+            include: {
+              shift: true,
+              zone: true,
+              groom: {
+                select: {
+                  id: true,
+                  fullName: true,
+                  email: true,
+                  phoneNumber: true,
+                  role: true,
+                  status: true,
+                },
+              },
+            },
+            orderBy: [{ date: 'asc' }, { shiftId: 'asc' }, { id: 'asc' }],
+          })
+        : [];
+    const records = horseIds.length
+      ? await this.prisma.medicalRecord.findMany({
+          where: {
+            horseId: { in: horseIds },
+            status: 'OPEN',
+            veterinarian: { role: 'VETERINARIAN', status: 'ACTIVE' },
+          },
+          select: {
+            horse: { select: { id: true, name: true } },
+            veterinarian: { select: { id: true, fullName: true } },
+          },
+        })
+      : [];
+    const vets = new Map<
+      string,
+      { id: string; fullName: string; horses: Array<{ id: string; name: string }> }
+    >();
+    for (const record of records) {
+      const current = vets.get(record.veterinarian.id) ?? { ...record.veterinarian, horses: [] };
+      if (!current.horses.some((h) => h.id === record.horse.id)) current.horses.push(record.horse);
+      vets.set(current.id, current);
+    }
+    return {
+      groomRosters,
+      responsibleVeterinarians: [...vets.values()].sort((a, b) =>
+        a.fullName.localeCompare(b.fullName),
+      ),
+    };
+  }
+
+  private async swappableRoster(
+    id: string,
+    actor: CurrentUserPayload,
+    db: Prisma.TransactionClient = this.prisma,
+  ) {
+    if (actor.role !== Role.GROOM)
+      throw apiError(
+        HttpStatus.FORBIDDEN,
+        'GROOM_REQUIRED',
+        'Chỉ nhân viên chăm sóc được xin đổi ca.',
+      );
+    const roster = await db.shiftRoster.findUnique({
+      where: { id },
+      include: { shift: true, zone: true },
+    });
+    if (!roster)
+      throw apiError(HttpStatus.NOT_FOUND, 'ROSTER_NOT_FOUND', 'Bản ghi phân ca không tồn tại.');
+    if (roster.groomUserId !== actor.userId)
+      throw apiError(HttpStatus.FORBIDDEN, 'ROSTER_NOT_OWNED', 'Chỉ được xin đổi ca của mình.');
+    if (
+      !roster.shift.isActive ||
+      !roster.zone.isActive ||
+      shiftInterval(roster.date, roster.shift).start <= Date.now()
+    ) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'SHIFT_NOT_AVAILABLE',
+        'Ca đã bắt đầu hoặc ngừng hoạt động.',
+      );
+    }
+    return roster;
+  }
+
+  private async availableGrooms(
+    roster: Awaited<ReturnType<ShiftRostersService['swappableRoster']>>,
+    db: Prisma.TransactionClient = this.prisma,
+  ) {
+    const [grooms, assignments] = await Promise.all([
+      db.user.findMany({
+        where: { role: Role.GROOM, status: UserStatus.ACTIVE, id: { not: roster.groomUserId } },
+        select: { id: true, fullName: true },
+        orderBy: { fullName: 'asc' },
+      }),
+      db.shiftRoster.findMany({
+        where: {
+          date: {
+            gte: new Date(roster.date.getTime() - 86400000),
+            lte: new Date(roster.date.getTime() + 86400000),
+          },
+          shift: { isActive: true },
+        },
+        include: { shift: true },
+      }),
+    ]);
+    const requested = shiftInterval(roster.date, roster.shift);
+    const busy = new Set(
+      assignments
+        .filter((row) => {
+          const assigned = shiftInterval(row.date, row.shift);
+          return assigned.start < requested.end && requested.start < assigned.end;
+        })
+        .map((row) => row.groomUserId),
+    );
+    return grooms
+      .filter((groom) => !busy.has(groom.id))
+      .map(({ id, fullName }) => ({ id, fullName }));
+  }
+
+  async getSwapCandidates(id: string, actor: CurrentUserPayload) {
+    return this.availableGrooms(await this.swappableRoster(id, actor));
+  }
+
+  async requestSwap(id: string, dto: RequestShiftSwapDto, actor: CurrentUserPayload) {
+    const reason = typeof dto.reason === 'string' ? dto.reason.trim() : '';
+    if (!reason || reason.length > 1000 || !!dto.targetRosterId === !!dto.targetGroomUserId)
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'INVALID_SWAP_REQUEST',
+        'Select exactly one target and enter a reason.',
+      );
+    if (actor.role !== Role.GROOM)
+      throw apiError(HttpStatus.FORBIDDEN, 'GROOM_REQUIRED', 'Only Groom can request a swap.');
+    const proposal = await this.prisma.$transaction(async (tx) => {
+      const ids = [id, ...(dto.targetRosterId ? [dto.targetRosterId] : [])].sort();
+      await tx.$queryRaw`SELECT "id" FROM "ShiftRoster" WHERE "id" IN (${Prisma.join(ids)}) ORDER BY "id" FOR UPDATE`;
+      const roster = await this.swappableRoster(id, actor, tx);
+      let target: { id: string; fullName: string };
+      if (dto.targetRosterId) {
+        const other = await tx.shiftRoster.findUnique({
+          where: { id: dto.targetRosterId },
+          include: { shift: true, zone: true, groom: true },
+        });
+        if (
+          !other ||
+          other.id === id ||
+          other.groomUserId === actor.userId ||
+          !other.shift.isActive ||
+          !other.zone.isActive ||
+          other.groom.role !== Role.GROOM ||
+          other.groom.status !== UserStatus.ACTIVE ||
+          shiftInterval(other.date, other.shift).start <= Date.now()
+        )
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'SWAP_TARGET_UNAVAILABLE',
+            'The colleague shift is no longer available.',
+          );
+        for (const [groomUserId, slot] of [
+          [actor.userId, other],
+          [other.groomUserId, roster],
+        ] as const) {
+          const assignments = await tx.shiftRoster.findMany({
+            where: {
+              groomUserId,
+              id: { notIn: ids },
+              date: {
+                gte: new Date(slot.date.getTime() - 86400000),
+                lte: new Date(slot.date.getTime() + 86400000),
+              },
+              shift: { isActive: true },
+            },
+            include: { shift: true },
+          });
+          const range = shiftInterval(slot.date, slot.shift);
+          if (
+            assignments.some((row) => {
+              const busy = shiftInterval(row.date, row.shift);
+              return busy.start < range.end && range.start < busy.end;
+            })
+          )
+            throw apiError(
+              HttpStatus.CONFLICT,
+              'SWAP_TARGET_UNAVAILABLE',
+              'Proposed exchange overlaps another shift.',
+            );
+        }
+        target = { id: other.groomUserId, fullName: other.groom.fullName };
+      } else {
+        const candidates = await this.availableGrooms(roster, tx);
+        const candidate = candidates.find((person) => person.id === dto.targetGroomUserId);
+        if (!candidate)
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'SWAP_TARGET_UNAVAILABLE',
+            'Colleague is not active or is busy.',
+          );
+        target = candidate;
+      }
+      const date = roster.date.toISOString().slice(0, 10);
+      await this.auditService.record(
+        { id: actor.userId, name: actor.fullName },
+        'SHIFT_SWAP_REQUESTED',
+        `Xin đổi ca ${roster.shift.name} ngày ${date} với ${target.fullName}: ${reason}`,
+        id,
+        {
+          entityName: 'ShiftRoster',
+          newValues: {
+            sourceGroomUserId: actor.userId,
+            targetGroomUserId: target.id,
+            targetRosterId: dto.targetRosterId ?? null,
+            date,
+            shiftId: roster.shiftId,
+            zoneId: roster.zoneId,
+            reason,
+          },
+        },
+        tx,
+      );
+      return { roster, target, date };
+    });
+    const { roster, target, date } = proposal;
+    await this.notifications?.notifyRoles([Role.CLUB_MANAGER], {
+      type: 'SHIFT_SWAP_REQUESTED',
+      category: 'SYSTEM',
+      title: 'Yêu cầu đổi ca cần xem xét',
+      message: `${actor.fullName} đề nghị đổi ca ${roster.shift.name} ngày ${date} với ${target.fullName}. ${reason}. Chưa thay đổi phân công.`,
+      link: '/stable/shifts',
+      senderName: actor.fullName,
+      dedupeKey: `shift-swap:${id}:${actor.userId}:${dto.targetRosterId ?? target.id}:${date}`,
+      params: {
+        rosterId: id,
+        targetGroomUserId: target.id,
+        targetRosterId: dto.targetRosterId ?? '',
+        date,
+        reason,
+      },
+    });
+    return { requested: true };
+  }
+
+  /**
+   * #2: Tổng quan ca trực trong ngày cho Club Manager: mỗi khu × ca có ai trực,
+   * bao nhiêu ngựa, việc chăm sóc xong bao nhiêu và còn bao nhiêu sự cố chưa xử lý.
+   */
+  async overview(date?: string) {
+    const day = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? parseDateOnly(date) : rosterDay();
+    const [zones, shifts, rosters, horses, tasks, incidents] = await Promise.all([
+      this.prisma.stallZone.findMany({
+        where: { isActive: true },
+        orderBy: [{ sortOrder: 'asc' }, { code: 'asc' }],
+        select: { id: true, code: true, name: true },
+      }),
+      this.prisma.shiftCatalog.findMany({
+        where: { isActive: true },
+        orderBy: [{ sortOrder: 'asc' }, { startTime: 'asc' }],
+        select: { id: true, name: true, startTime: true, endTime: true },
+      }),
+      this.prisma.shiftRoster.findMany({
+        where: { date: day },
+        select: {
+          zoneId: true,
+          shiftId: true,
+          groom: { select: { id: true, fullName: true, email: true, phoneNumber: true } },
+        },
+      }),
+      this.prisma.stall.groupBy({
+        by: ['zoneId'],
+        where: { status: 'OCCUPIED' },
+        _count: { _all: true },
+      }),
+      this.prisma.dailyCareTask.groupBy({
+        by: ['stallZoneId', 'shiftId', 'isCompleted'],
+        where: { date: day },
+        _count: { _all: true },
+      }),
+      this.prisma.incidentReport.groupBy({
+        by: ['stallZoneId'],
+        where: { status: { in: ['REPORTED', 'UNDER_REVIEW'] } },
+        _count: { _all: true },
+      }),
+    ]);
+    const count = (rows: { _count: { _all: number } }[]) =>
+      rows.reduce((sum, r) => sum + r._count._all, 0);
+    return {
+      date: day.toISOString().slice(0, 10),
+      zones: zones.map((z) => ({
+        ...z,
+        horses: count(horses.filter((h) => h.zoneId === z.id)),
+        openIncidents: count(incidents.filter((i) => i.stallZoneId === z.id)),
+        shifts: shifts.map((s) => {
+          const mine = tasks.filter((t) => t.stallZoneId === z.id && t.shiftId === s.id);
+          return {
+            ...s,
+            grooms: rosters
+              .filter((r) => r.zoneId === z.id && r.shiftId === s.id)
+              .map((r) => r.groom),
+            tasksDone: count(mine.filter((t) => t.isCompleted)),
+            tasksTotal: count(mine),
+          };
+        }),
+      })),
+    };
+  }
 
   /**
    * SC-4.01 Danh sách phân ca theo khoảng ngày và khu.
@@ -125,8 +482,26 @@ export class ShiftRostersService {
       orderBy: [{ date: 'asc' }, { shift: { sortOrder: 'asc' } }],
     });
 
+    const work = await this.prisma.dailyCareTask.findMany({
+      where: {
+        assignedGroomUserId: currentUser.userId,
+        cancelledAt: null,
+        date: where?.date as any,
+      },
+      select: { date: true, shiftId: true, horseId: true },
+    });
     return rosters.map((r) => {
-      const assignedHorses = r.zone.stalls.flatMap((s) => s.allocations.map((a) => a.horse));
+      const ids = new Set(
+        work
+          .filter((t) => t.shiftId === r.shiftId && t.date.getTime() === r.date.getTime())
+          .map((t) => t.horseId),
+      );
+      const assignedHorses = r.zone.stalls.flatMap((s) =>
+        s.allocations
+          .filter((a) => ids.has(a.horseId))
+          .map((a) => ({ ...a.horse, stallId: s.id, stallCode: s.code })),
+      );
+
       return {
         id: r.id,
         date: r.date,
@@ -137,6 +512,7 @@ export class ShiftRostersService {
           name: r.zone.name,
         },
         notes: r.notes,
+        dutyTypes: r.dutyTypes,
         assignedHorsesCount: assignedHorses.length,
         assignedHorses,
       };
@@ -233,7 +609,7 @@ export class ShiftRostersService {
         throw apiError(
           HttpStatus.CONFLICT,
           'GROOM_ALREADY_ASSIGNED_IN_SHIFT',
-          `Nhân viên ${conflict.groom?.fullName || 'Groom'} đã được phân công trực tại ${conflict.zone.name} (${conflict.zone.code}) trong ${conflict.shift.name} ngày ${conflictDateStr}. Trong một ca trực, mỗi Groom chỉ được phân công trực tại 1 khu chuồng.`,
+          `Nhân viên ${conflict.groom?.fullName || 'Nhân viên chăm sóc'} đã được phân công trực tại ${conflict.zone.name} (${conflict.zone.code}) trong ${conflict.shift.name} ngày ${conflictDateStr}. Trong một ca trực, mỗi nhân viên chăm sóc chỉ được phân công trực tại 1 khu chuồng.`,
           {
             groomName: conflict.groom?.fullName,
             zoneName: conflict.zone.name,
@@ -246,7 +622,9 @@ export class ShiftRostersService {
 
     // Thực hiện trong transaction
     await this.prisma.$transaction(async (tx) => {
+      await lockCareAssignments(tx);
       for (const tDate of targetDates) {
+        await assertRosterSlot(tx, tDate, dto.shiftId, dto.zoneId, uniqueGroomIds);
         // Xóa phân công cũ của ô này (tDate, shiftId, zoneId)
         await tx.shiftRoster.deleteMany({
           where: {
@@ -264,6 +642,7 @@ export class ShiftRostersService {
               shiftId: dto.shiftId,
               zoneId: dto.zoneId,
               groomUserId: gId,
+              dutyTypes: dto.dutyTypes ?? ['CLEANING', 'HORSE_CARE'],
               notes: dto.notes?.trim() || null,
               createdById: currentUser.userId,
             })),
@@ -313,8 +692,11 @@ export class ShiftRostersService {
       throw apiError(HttpStatus.NOT_FOUND, 'ROSTER_NOT_FOUND', 'Bản ghi phân ca không tồn tại.');
     }
 
-    await this.prisma.shiftRoster.delete({
-      where: { id },
+    await this.prisma.$transaction(async (tx) => {
+      await lockCareAssignments(tx);
+      const current = await tx.shiftRoster.findUniqueOrThrow({ where: { id } });
+      await assertRosterSlot(tx, current.date, current.shiftId, current.zoneId, []);
+      await tx.shiftRoster.delete({ where: { id } });
     });
 
     await this.auditService.record(
@@ -390,6 +772,13 @@ export class ShiftRostersService {
     const syncTargets: Array<{ date: Date; zoneId?: string }> = [];
 
     await this.prisma.$transaction(async (tx) => {
+      await lockCareAssignments(tx);
+      if (dto.overwrite) {
+        const rows = await tx.shiftRoster.findMany({
+          where: { date: { gte: targetMonday, lte: targetSunday } },
+        });
+        for (const row of rows) await assertRosterSlot(tx, row.date, row.shiftId, row.zoneId, []);
+      }
       // Nếu chọn ghi đè: xóa toàn bộ phân ca của tuần đích
       if (dto.overwrite) {
         await tx.shiftRoster.deleteMany({
@@ -416,22 +805,20 @@ export class ShiftRostersService {
         const newDate = new Date(s.date);
         newDate.setUTCDate(s.date.getUTCDate() + diffDays);
 
-        if (!dto.overwrite) {
-          const exists = await tx.shiftRoster.findUnique({
-            where: {
-              date_shiftId_zoneId_groomUserId: {
-                date: newDate,
-                shiftId: s.shiftId,
-                zoneId: s.zoneId,
-                groomUserId: s.groomUserId,
-              },
-            },
-          });
-          if (exists) {
-            continue;
-          }
-          syncTargets.push({ date: newDate, zoneId: s.zoneId });
+        const existing = await tx.shiftRoster.findFirst({
+          where: { date: newDate, shiftId: s.shiftId, groomUserId: s.groomUserId },
+          select: { zoneId: true },
+        });
+        if (existing?.zoneId === s.zoneId) continue;
+        if (existing) {
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'GROOM_ALREADY_ASSIGNED_IN_SHIFT',
+            'Không thể sao chép ca trực vì nhân viên đã được phân công ở khu chuồng khác trong cùng ca.',
+          );
         }
+        await assertRosterSlot(tx, newDate, s.shiftId, s.zoneId, [s.groomUserId]);
+        if (!dto.overwrite) syncTargets.push({ date: newDate, zoneId: s.zoneId });
 
         await tx.shiftRoster.create({
           data: {
@@ -440,6 +827,7 @@ export class ShiftRostersService {
             zoneId: s.zoneId,
             groomUserId: s.groomUserId,
             notes: s.notes,
+            dutyTypes: s.dutyTypes,
             createdById: currentUser.userId,
           },
         });

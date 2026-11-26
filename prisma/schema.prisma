@@ -56,6 +56,18 @@ enum HorseStatus {
   ISOLATED
   RESTING
   RETIRED
+  PENDING_ADMISSION // ADM-01: ngựa mới đăng ký, chờ thẩm định tiếp nhận vào CLB
+  REJECTED          // ADM-01: ngựa bị từ chối tiếp nhận (được phép đăng ký lại)
+}
+
+// ADM-01 (SPEC-EQUIFLOW-HORSE-ADMISSION-V2 §3.2): vòng đời hồ sơ tiếp nhận ngựa.
+enum AdmissionStatus {
+  PENDING_VERIFICATION
+  APPOINTED
+  INSPECTION_IN_PROGRESS
+  APPROVED
+  REJECTED
+  CANCELLED
 }
 
 enum NutritionPlanStatus {
@@ -91,6 +103,13 @@ enum TrackSurface {
   TURF
   DIRT
   SYNTHETIC
+}
+
+enum TrainerAssignmentStatus {
+  UNASSIGNED
+  PENDING_ACCEPTANCE
+  ASSIGNED
+  DECLINED
 }
 
 // Q14 = A (Flow 2 §4.1): Nháp -> Đang áp dụng -> Hoàn thành / Đã hủy.
@@ -171,6 +190,12 @@ enum IncidentStatus {
   UNDER_REVIEW
   RESOLVED
   DISMISSED
+  MERGED_INTO_TREATMENT
+}
+
+enum MedicalLockSource {
+  VET
+  INCIDENT_AUTO
 }
 
 enum RestockStatus {
@@ -245,6 +270,7 @@ enum SimulatorSessionStatus {
 // -------------------------------------------------------------
 
 model User {
+  careCostEntries CareCostEntry[] @relation("CareCostActor")
   id                   String     @id @default(uuid())
   email                String     @unique
   passwordHash         String     @default("") // "" = tài khoản INVITED chưa đặt mật khẩu
@@ -276,9 +302,13 @@ model User {
   badDebtReason        String?
 
   horsesOwned              Horse[]                  @relation("OwnerHorses")
+  admissionAppointments    HorseAdmissionRecord[]    @relation("AdmissionAppointments")
+  staffWorkItems           StaffWorkItem[]
   horsesDeleted            Horse[]                  @relation("HorseDeletedBy")
   stallAllocations         StallAllocation[]        @relation("GroomStalls")
   trainingPlansCreated     TrainingPlan[]           @relation("TrainerPlans")
+  trainerReviewsReceived   TrainerReview[]          @relation("TrainerReviewsReceived")
+  trainerReviewsWritten    TrainerReview[]          @relation("TrainerReviewsWritten")
   workoutSessionsStaff     WorkoutSession[]         @relation("StaffWorkouts")
   workoutResultsRecorded   WorkoutSession[]         @relation("WorkoutResultRecorder")
   workoutResultsEdited     WorkoutSession[]         @relation("WorkoutResultEditor")
@@ -306,11 +336,89 @@ model User {
   restockRequestsCreated   RestockRequest[]         @relation("RestockRequestedBy")
   restockRequestsReviewed  RestockRequest[]         @relation("RestockReviewedBy")
   restockRequestsDelivered RestockRequest[]         @relation("RestockDeliveredBy")
+  transfersFrom            HorseTransferRequest[]   @relation("TransferFromOwner")
+  transfersTo              HorseTransferRequest[]   @relation("TransferToOwner")
+  transfersRequested       HorseTransferRequest[]   @relation("TransferRequestedBy")
+  ownerAdmissions          HorseAdmissionRecord[]   @relation("OwnerAdmissions")
+  vetAdmissions            HorseAdmissionRecord[]   @relation("VetAdmissions")
+  admissionApprovals       HorseAdmissionRecord[]   @relation("ManagerAdmissions")
+  businessMailings         BusinessMailing[]
+  complaintsFiled          Complaint[]              @relation("ComplaintReporter")
+  complaintsRaised         Complaint[]              @relation("ComplaintSubject")
+
+  assignedBarnId          String?
+  assignedBarn            StallZone?               @relation("TrainerAssignedBarn", fields: [assignedBarnId], references: [id], onDelete: SetNull)
+  horsesAssignedAsTrainer Horse[]                  @relation("TrainerAssignedHorses")
+  sentHandovers           HorseHandoverRequest[]   @relation("ManagerHandovers")
+  receivedHandovers       HorseHandoverRequest[]   @relation("TrainerHandovers")
 
   @@index([email])
   @@index([role])
   @@index([status])
   @@index([isBadDebtFlagged])
+}
+
+// Mail nghiệp vụ (nhắc nợ, cảnh báo, chứng từ) — mỗi người nhận 1 bản ghi riêng,
+// chống trùng theo sự kiện + mốc nhắc + người nhận. SMTP accept != đã vào inbox.
+enum MailingStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model BusinessMailing {
+  refId String?
+  bodyHtml String?
+  id        String        @id @default(uuid())
+  eventCode String
+  milestone String?
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  toEmail   String
+  subject   String
+  bodyText  String
+  dedupeKey String        @unique
+  status    MailingStatus @default(SENT)
+  accepted  Boolean       @default(false) // SMTP accept != đã đến inbox (NOTE.md §6.5)
+  attempts  Int           @default(0)
+  lastError String?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@index([eventCode, userId])
+  @@index([status, attempts])
+}
+
+// Tố cáo / phản ánh nội bộ (NOTE.md §6.4): chưa phải kết luận vi phạm.
+// Chỉ khi người có thẩm quyền (CM/VET) xác nhận mới gửi mail VIOLATION_CONFIRMED.
+enum ComplaintStatus {
+  OPEN
+  UNDER_REVIEW
+  VIOLATION_CONFIRMED
+  DISMISSED
+}
+
+model Complaint {
+  id          String          @id @default(uuid())
+  code        String          @unique // CMP-YYYYMMDD-NNN
+  subjectUserId String
+  subject     User            @relation("ComplaintSubject", fields: [subjectUserId], references: [id], onDelete: Cascade)
+  reporterId  String
+  reporter    User            @relation("ComplaintReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reason      String
+  evidenceJson Json?
+  status      ComplaintStatus @default(OPEN)
+  reviewedById String?
+  reviewedAt  DateTime?
+  reviewNote String?
+  responseDueAt DateTime?
+  conclusion String?
+  regulation String?
+  measures String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([status, createdAt])
 }
 
 model GoogleIdentity {
@@ -420,6 +528,7 @@ model RefreshToken {
 }
 
 model Horse {
+  careCostEntries CareCostEntry[]
   id                String        @id @default(uuid())
   horseCode         String?       @unique
   name              String
@@ -438,6 +547,13 @@ model Horse {
   debtImpoundReason String?
   ownerId           String?
   owner             User?         @relation("OwnerHorses", fields: [ownerId], references: [id], onDelete: SetNull)
+  assignedTrainerId         String?
+  assignedTrainer           User?                    @relation("TrainerAssignedHorses", fields: [assignedTrainerId], references: [id], onDelete: SetNull)
+  trainerAssignmentStatus   TrainerAssignmentStatus  @default(UNASSIGNED)
+  trainerAssignedAt         DateTime?
+  trainerResponseDeadline   DateTime?
+  trainerRespondedAt        DateTime?
+  trainerDeclineReason      String?
   retireReason      RetireReason?
   deletedAt         DateTime?
   deletedById       String?
@@ -459,6 +575,9 @@ model Horse {
   incidents               IncidentReport[]         @relation("HorseIncidents")
   tournamentRegistrations TournamentRegistration[]
   financialInvoices       FinancialInvoice[]
+  transferRequests        HorseTransferRequest[]
+  admissionRecords        HorseAdmissionRecord[]
+  handoverRequests        HorseHandoverRequest[]
 
   @@index([horseCode])
   @@index([microchip])
@@ -489,6 +608,7 @@ model StallZone {
   incidents       IncidentReport[] @relation("ZoneIncidents")
   stockBalances   StockBalance[]
   restockRequests RestockRequest[]
+  assignedTrainers User[]                   @relation("TrainerAssignedBarn")
 }
 
 model Stall {
@@ -571,12 +691,33 @@ model TrainingPlan {
   updatedAt         DateTime     @updatedAt
 
   workoutSessions WorkoutSession[]
+  review          TrainerReview?
 
   @@index([horseId])
   @@index([trainerUserId])
 }
 
+// Chủ ngựa đánh giá HLV theo từng giáo án (1 đánh giá / giáo án, sửa được).
+model TrainerReview {
+  id             String       @id @default(uuid())
+  trainingPlanId String       @unique
+  trainingPlan   TrainingPlan @relation(fields: [trainingPlanId], references: [id], onDelete: Cascade)
+  trainerUserId  String
+  trainer        User         @relation("TrainerReviewsReceived", fields: [trainerUserId], references: [id], onDelete: Restrict)
+  ownerUserId    String
+  owner          User         @relation("TrainerReviewsWritten", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  rating         Int // 1..5
+  comment        String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([trainerUserId])
+  @@index([ownerUserId])
+}
+
 model WorkoutSession {
+  trackId String?
+  track TrainingTrack? @relation(fields: [trackId], references: [id], onDelete: Restrict)
   id                    String            @id @default(uuid())
   trainingPlanId        String
   trainingPlan          TrainingPlan      @relation(fields: [trainingPlanId], references: [id], onDelete: Restrict)
@@ -636,11 +777,28 @@ model WorkoutSession {
   simulatorSession      SimulatorSession?
 
   @@index([trainingPlanId])
+  @@index([trackId, scheduledDate])
   @@index([horseId])
   @@index([scheduledDate])
 }
 
+model TrainingTrack {
+  id String @id @default(uuid())
+  code String @unique
+  name String
+  surface String
+  capacity Int @default(6)
+  isActive Boolean @default(true)
+  workouts WorkoutSession[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model MedicalRecord {
+  careCostEntries CareCostEntry[]
+  proposeMedicalLock Boolean @default(false)
+  lockExpectedRestDays Int @default(7)
+  lockUnlockConditions String?
   id                     String              @id @default(uuid())
   // Mã hồ sơ bệnh án định danh duy nhất theo định dạng BA-YYMM-NNN
   recordNumber           String?
@@ -706,7 +864,7 @@ model InjuryLog {
   coordinateX     Float // Normalized 0.0 - 1.0 (Lateral Skeleton Map)
   coordinateY     Float // Normalized 0.0 - 1.0 (Lateral Skeleton Map)
   viewSide        String         @default("LEFT") // LEFT | RIGHT
-  layer           String         @default("MUSCLE") // MUSCLE | BONE
+  layer           String         @default("MUSCLE") // MUSCLE | SKELETON
   anatomicalZone  String
   bodySide        BodySide       @default(LEFT)
   injuryType      String
@@ -724,14 +882,18 @@ model InjuryLog {
 }
 
 model MedicalLock {
+  source               MedicalLockSource @default(VET)
+  sourceIncidentId     String? @unique
+  sourceIncident       IncidentReport? @relation(fields: [sourceIncidentId], references: [id], onDelete: Restrict)
+  issuedByUserId       String?
   id                   String         @id @default(uuid())
   lockCode             String?        @unique // e.g. KH-000001
   horseId              String
   horse                Horse          @relation(fields: [horseId], references: [id], onDelete: Restrict)
   medicalRecordId      String?
   medicalRecord        MedicalRecord? @relation(fields: [medicalRecordId], references: [id], onDelete: SetNull)
-  veterinarianUserId   String
-  veterinarian         User           @relation("VetLocksIssued", fields: [veterinarianUserId], references: [id], onDelete: Restrict)
+  veterinarianUserId   String?
+  veterinarian         User?          @relation("VetLocksIssued", fields: [veterinarianUserId], references: [id], onDelete: Restrict)
   lockedAt             DateTime       @default(now())
   expectedRestDays     Int            @default(7)
   recheckDate          DateTime? // Ngày xem xét lại (DL-3.01)
@@ -933,23 +1095,116 @@ model TournamentResult {
   updatedAt         DateTime               @updatedAt
 }
 
+enum CareCostEntryType {
+  CONSUMPTION
+  REVERSAL
+  EXAM
+}
+
+model CareCostEntry {
+  invoiceLines InvoiceLineItem[]
+  claim CareCostClaim?
+  id String @id @default(uuid())
+  operationKey String @unique
+  horseId String
+  horse Horse @relation(fields: [horseId], references: [id], onDelete: Restrict)
+  medicalRecordId String?
+  medicalRecord MedicalRecord? @relation(fields: [medicalRecordId], references: [id], onDelete: Restrict)
+  prescriptionId String?
+  sourceTaskId String?
+  sourceTask DailyCareTask? @relation(fields: [sourceTaskId], references: [id], onDelete: Restrict)
+  completionVersion Int?
+  supplyId String?
+  supply SupplyCatalog? @relation(fields: [supplyId], references: [id], onDelete: Restrict)
+  stockZoneId String?
+  performedAt DateTime
+  prescribedAt DateTime?
+  quantity Decimal @db.Decimal(18,6)
+  unit String
+  unitPriceSnapshot Decimal @db.Decimal(18,2)
+  amount Decimal @db.Decimal(18,2)
+  entryType CareCostEntryType
+  reversesEntryId String? @unique
+  reversesEntry CareCostEntry? @relation("CareCostReversals", fields: [reversesEntryId], references: [id], onDelete: Restrict)
+  reversedBy CareCostEntry? @relation("CareCostReversals")
+  actorId String
+  actor User @relation("CareCostActor", fields: [actorId], references: [id], onDelete: Restrict)
+  supplyName String
+  recordNumber String?
+  veterinarianName String?
+  createdAt DateTime @default(now())
+  @@index([horseId, performedAt])
+  @@index([sourceTaskId, completionVersion])
+}
+
+enum InvoiceBillingMethod {
+  LEGACY_PACKAGE
+  ACTUAL_USAGE
+}
+
+model CareBillingPolicy {
+  id String @id @default("club")
+  cutoverPeriod String?
+  examUnitPrice Decimal? @db.Decimal(18,2)
+  updatedById String
+  updatedAt DateTime @updatedAt
+}
+
+model CareCostClaim {
+  careCostEntryId String @id
+  careCostEntry CareCostEntry @relation(fields: [careCostEntryId], references: [id], onDelete: Restrict)
+  invoiceId String
+  invoice FinancialInvoice @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  @@index([invoiceId])
+}
+
+model InvoiceLineItem {
+  id String @id @default(uuid())
+  invoiceId String
+  invoice FinancialInvoice @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  careCostEntryId String
+  careCostEntry CareCostEntry @relation(fields: [careCostEntryId], references: [id], onDelete: Restrict)
+  entryType CareCostEntryType
+  recordNumber String?
+  medicalRecordId String?
+  prescribedAt DateTime?
+  performedAt DateTime
+  veterinarianName String?
+  supplyName String
+  quantity Decimal @db.Decimal(18,6)
+  unit String
+  unitPrice Decimal @db.Decimal(18,2)
+  amount Decimal @db.Decimal(18,2)
+  @@unique([invoiceId,careCostEntryId])
+}
+
 model FinancialInvoice {
+  billingMethod InvoiceBillingMethod @default(LEGACY_PACKAGE)
+  lineItems InvoiceLineItem[]
+  usageClaims CareCostClaim[]
   id                  String        @id @default(uuid())
   horseId             String
   horse               Horse         @relation(fields: [horseId], references: [id], onDelete: Restrict)
   ownerId             String
   owner               User          @relation("OwnerInvoices", fields: [ownerId], references: [id], onDelete: Restrict)
   billingPeriod       String // e.g. "2026-09"
-  boardingFee         Decimal       @default(0) @db.Decimal(10, 2)
+  boardingFee         Decimal       @default(0) @db.Decimal(18, 2)
   boardingDays        Int?
-  boardingMonthlyRate Decimal?      @db.Decimal(10, 2)
+  boardingMonthlyRate Decimal?      @db.Decimal(18, 2)
   dueAt               DateTime?
-  medicalFee          Decimal       @default(0) @db.Decimal(10, 2)
-  trainingFee         Decimal       @default(0) @db.Decimal(10, 2)
-  prizeCredit         Decimal       @default(0) @db.Decimal(10, 2)
-  netAmount           Decimal       @default(0) @db.Decimal(10, 2)
+  medicalFee          Decimal       @default(0) @db.Decimal(18, 2)
+  trainingFee         Decimal       @default(0) @db.Decimal(18, 2)
+  prizeCredit         Decimal       @default(0) @db.Decimal(18, 2)
+  netAmount           Decimal       @default(0) @db.Decimal(18, 2)
   status              InvoiceStatus @default(DRAFT)
   invoiceUrl          String?
+  // Chủ ngựa báo đã chuyển khoản => chờ Club Manager đối soát; chỉ CM chuyển sang PAID.
+  paymentReportedAt   DateTime?
+  paymentMethod       String?
+  paymentRef          String?
+  paidAt              DateTime?
+  paidConfirmedById   String?
+  paidConfirmedByName String?
   createdAt           DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
 
@@ -981,6 +1236,7 @@ model AuditLog {
 // -------------------------------------------------------------
 
 model SupplyCatalog {
+  careCostEntries CareCostEntry[]
   id             String         @id @default(uuid())
   code           String         @unique
   name           String         @unique
@@ -1021,6 +1277,7 @@ model ShiftCatalog {
 }
 
 model ShiftRoster {
+  dutyTypes   String[] @default(["CLEANING", "HORSE_CARE"])
   id          String       @id @default(uuid())
   date        DateTime     @db.Date
   shiftId     String
@@ -1045,6 +1302,9 @@ model ShiftRoster {
 // -------------------------------------------------------------
 
 model DailyCareTask {
+  cancelledAt DateTime?
+  completionVersion Int @default(0)
+  careCostEntries CareCostEntry[]
   id            String        @id @default(uuid())
   taskCode      String?       @unique // e.g. "TASK-20261018-001"
   date          DateTime      @db.Date
@@ -1088,6 +1348,11 @@ model DailyCareTask {
 }
 
 model IncidentReport {
+  parentIncidentId String?
+  parentIncident IncidentReport? @relation("IncidentDuplicates", fields: [parentIncidentId], references: [id], onDelete: Restrict)
+  duplicateIncidents IncidentReport[] @relation("IncidentDuplicates")
+  safetyLock MedicalLock?
+  resolvedAt DateTime?
   id              String         @id @default(uuid())
   sourceEventId   String?        @unique
   incidentNumber  String?        @unique // e.g. "INC-20261018-0001"
@@ -1110,6 +1375,7 @@ model IncidentReport {
   updatedAt       DateTime       @updatedAt
 
   @@index([horseId])
+  @@index([parentIncidentId])
   @@index([reportedById])
   @@index([severity, status])
   @@index([createdAt])
@@ -1125,7 +1391,7 @@ model StockBalance {
   zone              StallZone     @relation(fields: [zoneId], references: [id], onDelete: Restrict)
   supplyId          String
   supply            SupplyCatalog @relation(fields: [supplyId], references: [id], onDelete: Restrict)
-  quantity          Decimal       @default(0) @db.Decimal(12, 2)
+  quantity          Decimal       @default(0) @db.Decimal(18, 6)
   minThreshold      Decimal       @default(10) @db.Decimal(12, 2)
   capacity          Decimal?      @db.Decimal(12, 2)
   lastInventoryDate DateTime?
@@ -1193,3 +1459,171 @@ model SimulatorSession {
   @@index([status, updatedAt])
   @@index([medicalRecordId])
 }
+
+enum HorseTransferStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+/// Chuyển nhượng ngựa: Club Manager tạo yêu cầu, chủ cũ và chủ mới cùng xác nhận thì mới đổi chủ.
+model HorseTransferRequest {
+  id              String              @id @default(uuid())
+  horseId         String
+  horse           Horse               @relation(fields: [horseId], references: [id], onDelete: Cascade)
+  fromOwnerId     String?
+  fromOwner       User?               @relation("TransferFromOwner", fields: [fromOwnerId], references: [id], onDelete: SetNull)
+  toOwnerId       String
+  toOwner         User                @relation("TransferToOwner", fields: [toOwnerId], references: [id], onDelete: Cascade)
+  requestedById   String
+  requestedBy     User                @relation("TransferRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
+  reason          String?
+  status          HorseTransferStatus @default(PENDING)
+  fromConfirmedAt DateTime?
+  toConfirmedAt   DateTime?
+  rejectedById    String?
+  rejectReason    String?
+  decidedAt       DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([horseId, status])
+  @@index([fromOwnerId, status])
+  @@index([toOwnerId, status])
+}
+
+// -------------------------------------------------------------
+// ADM-01 (SPEC-EQUIFLOW-HORSE-ADMISSION-V2 §4): TIẾP NHẬN & THẨM ĐỊNH NGỰA
+// -------------------------------------------------------------
+
+/// Công việc có giờ cụ thể do Quản lý phân công ngoài các lịch nghiệp vụ có sẵn.
+model StaffWorkItem {
+  id String @id @default(uuid())
+  title String
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  startsAt DateTime
+  endsAt DateTime
+  location String?
+  notes String?
+  status String @default("PENDING")
+  createdById String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, startsAt])
+}
+
+/// Hồ sơ tiếp nhận: đăng ký -> hẹn chung -> chip/pháp lý/y tế -> quyết định.
+/// horseId không unique: có thể đăng ký lại sau khi bị từ chối.
+model HorseAdmissionRecord {
+  healthFinalizedAt DateTime?
+  healthReviews AdmissionHealthReview[]
+  id           String   @id @default(uuid())
+  admissionCode String  @unique // ADM-YYYY-NNN
+  horseId      String
+  horse        Horse    @relation(fields: [horseId], references: [id], onDelete: Cascade)
+  ownerId      String
+  owner        User     @relation("OwnerAdmissions", fields: [ownerId], references: [id], onDelete: Restrict)
+  status       AdmissionStatus @default(PENDING_VERIFICATION)
+
+  // §1 Lịch hẹn thẩm định (CM)
+  appointmentDate    DateTime?
+  appointmentEndDate DateTime?
+  managerUserId      String?
+  manager            User? @relation("AdmissionAppointments", fields: [managerUserId], references: [id], onDelete: SetNull)
+  capacityDeferredAt DateTime?
+  appointmentNotes   String?
+
+  // §2 Pháp lý & vi mạch (CM)
+  declaredMicrochip  String?
+  scannedMicrochip   String?
+  microchipVerified  Boolean @default(false)
+  legalDocumentsNote String?
+  legalVerified      Boolean @default(false)
+  // §6 câu 2: link ảnh giấy tờ chủ upload (tùy chọn)
+  documentsUrl       String?
+
+  // §3 Khám sàng lọc (Vet)
+  isHealthEligible   Boolean?
+  healthCheckNotes   String?
+  veterinarianUserId String?
+  veterinarian       User? @relation("VetAdmissions", fields: [veterinarianUserId], references: [id], onDelete: SetNull)
+
+  // §4 Quyết định (CM)
+  approvedByUserId   String?
+  approvedBy         User? @relation("ManagerAdmissions", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  admittedAt         DateTime?
+  rejectionReason    String?
+
+  history      AdmissionHistoryLog[]
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([status, admittedAt])
+  @@index([managerUserId, appointmentDate])
+  @@index([veterinarianUserId, appointmentDate])
+  @@index([horseId])
+  @@index([ownerId])
+}
+
+/// Nhật ký lịch sử tiếp nhận (audit trail): ai đổi trạng thái, khi nào, lý do gì (§8 spec).
+model AdmissionHealthReview {
+  id String @id @default(uuid())
+  admissionId String
+  admission HorseAdmissionRecord @relation(fields: [admissionId], references: [id], onDelete: Restrict)
+  veterinarianUserId String
+  veterinarianName String
+  isHealthEligible Boolean
+  notes String
+  reason String?
+  createdAt DateTime @default(now())
+  @@index([admissionId, createdAt])
+}
+
+model AdmissionHistoryLog {
+  id          String  @id @default(uuid())
+  admissionId String
+  admission   HorseAdmissionRecord @relation(fields: [admissionId], references: [id], onDelete: Cascade)
+  fromStatus  AdmissionStatus?
+  toStatus    AdmissionStatus
+  actorUserId String
+  actorName   String?
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@index([admissionId, createdAt])
+}
+
+enum HandoverStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  CANCELLED
+}
+
+model HorseHandoverRequest {
+  id             String         @id @default(uuid())
+  horseId        String
+  horse          Horse          @relation(fields: [horseId], references: [id], onDelete: Cascade)
+  fromManagerId  String
+  fromManager    User           @relation("ManagerHandovers", fields: [fromManagerId], references: [id], onDelete: Restrict)
+  toTrainerId    String
+  toTrainer      User           @relation("TrainerHandovers", fields: [toTrainerId], references: [id], onDelete: Restrict)
+  status         HandoverStatus @default(PENDING)
+  token          String         @unique
+  notes          String?
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  planDeadlineAt DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([horseId, status])
+  @@index([toTrainerId, status])
+  @@index([token])
+}
+

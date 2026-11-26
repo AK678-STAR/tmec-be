@@ -49,10 +49,6 @@ export class CreateTreatmentPhaseDto {
 
   @IsOptional()
   @IsString()
-  allowedActivityLevel?: string;
-
-  @IsOptional()
-  @IsString()
   allowedActivity?: string;
 
   @IsOptional()
@@ -77,10 +73,6 @@ export class UpdateTreatmentPhaseDto {
   @IsOptional()
   @IsString()
   target?: string;
-
-  @IsOptional()
-  @IsString()
-  allowedActivityLevel?: string;
 
   @IsOptional()
   @IsString()

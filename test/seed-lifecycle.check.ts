@@ -107,13 +107,18 @@ async function main() {
 
     const zones = await prisma.stallZone.findMany();
     const stalls = await prisma.stall.findMany();
-    assert.ok(zones.length >= 4, 'Expected >= 4 StallZones');
-    assert.ok(stalls.length >= 32, `Expected >= 32 Stalls, got ${stalls.length}`);
-    for (const z of zones) {
-      assert.ok(
-        z.rows >= 1 && z.rows <= 4 && z.cols >= 1 && z.cols <= 4,
-        `Zone ${z.code} grid out of bounds`,
-      );
+    for (const code of ['A', 'B', 'C', 'H']) {
+      const zone = zones.find((item) => item.code === code);
+      assert.ok(zone, `Missing default stall zone ${code}`);
+      assert.equal(zone.rows * zone.cols, 12, `Expected a 12-position grid for zone ${code}`);
+      const zoneStalls = stalls.filter((stall) => stall.zoneId === zone.id);
+      assert.equal(zoneStalls.length, 12, `Expected 12 stalls in zone ${code}`);
+      const positions = new Set(zoneStalls.map((stall) => `${stall.row}:${stall.col}`));
+      for (let row = 1; row <= zone.rows; row++) {
+        for (let col = 1; col <= zone.cols; col++) {
+          assert.ok(positions.has(`${row}:${col}`), `Missing stall at ${code} ${row}:${col}`);
+        }
+      }
     }
     const stallStatuses = distinct(stalls.map((s) => s.status));
     for (const st of Object.values(StallStatus)) {
@@ -150,6 +155,22 @@ async function main() {
     const planStatuses = distinct(plans.map((p) => p.status));
     for (const st of Object.values(PlanStatus)) {
       assert.ok(planStatuses.has(st), `Missing PlanStatus: ${st}`);
+    }
+    const zoneByStall = new Map(stalls.map((stall) => [stall.id, stall.zoneId]));
+    const zoneByHorse = new Map(
+      horses.map((horse) => [horse.id, zoneByStall.get(horse.stallAllocations[0]?.stallId)]),
+    );
+    const zoneByTrainer = new Map<string, string>();
+    for (const plan of plans) {
+      if (plan.status !== PlanStatus.ACTIVE && plan.status !== PlanStatus.DRAFT) continue;
+      const zoneId = zoneByHorse.get(plan.horseId);
+      if (!zoneId) continue;
+      const assignedZone = zoneByTrainer.get(plan.trainerUserId);
+      assert.ok(
+        !assignedZone || assignedZone === zoneId,
+        `Trainer ${plan.trainerUserId} spans zones`,
+      );
+      zoneByTrainer.set(plan.trainerUserId, zoneId);
     }
 
     const workouts = await prisma.workoutSession.findMany();
@@ -310,7 +331,7 @@ async function main() {
     }
 
     console.log(
-      `PASS: All ${models.length} Prisma models, enums, counts (10 grooms, 4 vets, 19 horses, 32 stalls), BR-STL-07, and PR #153 verified cleanly.`,
+      `PASS: All ${models.length} Prisma models, enums, counts (10 grooms, 4 vets, 19 horses, 48 stalls), BR-STL-07, and PR #153 verified cleanly.`,
     );
   } finally {
     await prisma.$disconnect();

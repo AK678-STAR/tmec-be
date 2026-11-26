@@ -11,7 +11,7 @@ const rosters = [
   },
   {
     zoneId: 'B',
-    groomUserId: 'g1',
+    groomUserId: 'g3',
     shiftId: 'M',
     startTime: '05:00',
     endTime: '13:00',
@@ -57,6 +57,26 @@ describe('planDailyTasks', () => {
     expect(afternoon.every((t) => t.assignedGroomUserId === 'g2' && t.shiftId === 'P')).toBe(true);
   });
 
+  it('leaves tasks unassigned if the horse’s groom is rostered only in another zone', () => {
+    const tasks = planDailyTasks([{ ...horses[0], zoneId: 'C', allocationGroomId: 'g1' }], rosters);
+    expect(tasks.length).toBeGreaterThan(0);
+    expect(tasks.every((task) => task.assignedGroomUserId === undefined)).toBe(true);
+  });
+
+  it('prepares a scheduled horse in its zone and suppresses preparation under a lock', () => {
+    const horse = { ...horses[1], workouts: [{ id: 'workout-1', time: '12:00' }] };
+    expect(planDailyTasks([horse], rosters)).toContainEqual(
+      expect.objectContaining({
+        taskCode: 'WORKOUT-PREP-workout-1',
+        assignedGroomUserId: 'g1',
+        scheduledTime: '11:45',
+      }),
+    );
+    expect(
+      planDailyTasks([{ ...horse, isLocked: true }], rosters).some((task) => task.taskCode),
+    ).toBe(false);
+  });
+
   it('gives a locked horse physical therapy from careInstructions and skips walking', () => {
     const types = tasks.filter((t) => t.horseId === 'h0').map((t) => t.taskType);
     expect(types).toContain('PHYSICAL_THERAPY');
@@ -71,5 +91,34 @@ describe('shiftCovers', () => {
     expect(shiftCovers(night, toMinutes('23:30'))).toBe(true);
     expect(shiftCovers(night, toMinutes('04:59'))).toBe(true);
     expect(shiftCovers(night, toMinutes('12:00'))).toBe(false);
+  });
+});
+
+describe('Groom duty and stall capacity', () => {
+  const roster = {
+    zoneId: 'zone',
+    groomUserId: 'groom',
+    shiftId: 'day',
+    startTime: '00:00',
+    endTime: '00:00',
+    isOvernight: true,
+  };
+  it('does not assign horse-care tasks to cleaning-only shifts', () => {
+    const tasks = planDailyTasks(
+      [{ id: 'horse', zoneId: 'zone', isLocked: false }],
+      [{ ...roster, dutyTypes: ['CLEANING'] }],
+    );
+    expect(tasks.some((t) => t.assignedGroomUserId && t.taskType === 'CLEANING')).toBe(true);
+    expect(
+      tasks.filter((t) => t.taskType !== 'CLEANING').every((t) => !t.assignedGroomUserId),
+    ).toBe(true);
+  });
+  it('leaves the seventh horse unassigned instead of exceeding shift capacity', () => {
+    const tasks = planDailyTasks(
+      Array.from({ length: 7 }, (_, i) => ({ id: String(i), zoneId: 'zone', isLocked: false })),
+      [roster],
+    );
+    expect(new Set(tasks.filter((t) => t.assignedGroomUserId).map((t) => t.horseId)).size).toBe(6);
+    expect(tasks.some((t) => !t.assignedGroomUserId)).toBe(true);
   });
 });

@@ -3,10 +3,12 @@ import { FinancialService } from './financial.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { BusinessMailService } from '../business-mail/business-mail.service';
 
 describe('Financial billing lifecycle', () => {
   const manager = { id: 'manager', name: 'Manager', role: 'CLUB_MANAGER' };
-  const owner = { id: 'owner', name: 'Owner', role: 'HORSE_OWNER' };
+  const _owner = { id: 'owner', name: 'Owner', role: 'HORSE_OWNER' };
+  void _owner;
   const now = new Date('2027-01-01T03:00:00Z');
   const base = {
     id: 'invoice',
@@ -28,6 +30,9 @@ describe('Financial billing lifecycle', () => {
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(now);
     db = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      careBillingPolicy: { findUnique: jest.fn().mockResolvedValue(null) },
+      careCostClaim: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
       horse: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -59,11 +64,15 @@ describe('Financial billing lifecycle', () => {
       db as PrismaService,
       { record: jest.fn() } as unknown as AuditService,
       { notifyUsers: jest.fn() } as unknown as NotificationsService,
+      { emit: jest.fn().mockResolvedValue([]) } as unknown as BusinessMailService,
     );
   });
   afterEach(() => jest.useRealTimers());
 
   it('creates independent monthly snapshots and does not duplicate a paid period', async () => {
+    db.stallAllocation.findMany.mockResolvedValue([
+      { startDate: new Date('2026-10-01'), endDate: null },
+    ]);
     db.financialInvoice.findFirst.mockImplementation(({ where }) =>
       where.billingPeriod === '2026-10' ? { ...base, status: 'PAID' } : null,
     );
@@ -145,9 +154,9 @@ describe('Financial billing lifecycle', () => {
     await expect(service.update('invoice', { medicalFee: 1 }, manager)).rejects.toThrow();
     expect(db.financialInvoice.update).not.toHaveBeenCalled();
   });
-  it('still permits an owner to pay an overdue invoice without a penalty', async () => {
+  it('still permits settling an overdue invoice without a penalty', async () => {
     db.financialInvoice.findUnique.mockResolvedValue({ ...base, status: 'OVERDUE' });
-    const result = await service.payInvoice('invoice', {}, owner);
+    const result = await service.payInvoice('invoice', {}, manager);
     expect(result.status).toBe('PAID');
     expect(result.netAmount).toBe(6000000);
   });

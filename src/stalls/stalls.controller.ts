@@ -1,20 +1,7 @@
-import {
-  Body,
-  Controller,
-  Get,
-  HttpCode,
-  HttpStatus,
-  Param,
-  Patch,
-  Post,
-  Put,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { StallsService } from './stalls.service';
 import {
-  CreateStallDto,
-  CreateZoneDto,
   SetStallStatusDto,
   SetZoneStatusDto,
   UpdateStallDto,
@@ -23,6 +10,8 @@ import {
 import { AssignHorseDto } from './dto/assign-horse.dto';
 import { TransferHorseDto } from './dto/transfer-horse.dto';
 import { ReturnStallDto } from './dto/return-stall.dto';
+import { AssignAllocationGroomDto } from './dto/assign-allocation-groom.dto';
+import { BulkAssignGroomDto } from './dto/bulk-assign-groom.dto';
 import { CurrentUser, CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { UserRole } from '../common/enums/role.enum';
@@ -35,6 +24,29 @@ const STAFF = [UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.VETERINARI
 @Controller('stalls')
 export class StallsController {
   constructor(private readonly stallsService: StallsService) {}
+
+  @Get('allocations/:id/groom-candidates')
+  @Roles(UserRole.CLUB_MANAGER)
+  groomCandidates(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
+    return this.stallsService.groomCandidates(id, user);
+  }
+
+  @Patch('allocations/:id/groom')
+  @Roles(UserRole.CLUB_MANAGER)
+  assignAllocationGroom(
+    @Param('id') id: string,
+    @Body() dto: AssignAllocationGroomDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.stallsService.assignAllocationGroom(id, dto.groomUserId, user);
+  }
+
+  @Post('allocations/bulk-groom')
+  @Roles(UserRole.CLUB_MANAGER)
+  @ApiOperation({ summary: 'Phân công hàng loạt ô chuồng cho một nhân viên chăm sóc (Groom)' })
+  bulkAssignGroom(@Body() dto: BulkAssignGroomDto, @CurrentUser() user: CurrentUserPayload) {
+    return this.stallsService.bulkAssignGroom(dto, user);
+  }
 
   @Get()
   @Roles(...STAFF)
@@ -71,14 +83,6 @@ export class StallsController {
     return this.stallsService.listGrooms();
   }
 
-  @Post('zones')
-  @Roles(UserRole.CLUB_MANAGER)
-  @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'DL-1.14 Thêm khu chuồng (CM)' })
-  createZone(@Body() dto: CreateZoneDto, @CurrentUser() user: CurrentUserPayload) {
-    return this.stallsService.createZone(dto, user);
-  }
-
   @Put('zones/:id')
   @Roles(UserRole.CLUB_MANAGER)
   @ApiOperation({ summary: 'DL-1.14 Sửa khu chuồng (CM)' })
@@ -99,14 +103,6 @@ export class StallsController {
     @CurrentUser() user: CurrentUserPayload,
   ) {
     return this.stallsService.setZoneStatus(id, dto, user);
-  }
-
-  @Post()
-  @Roles(UserRole.CLUB_MANAGER)
-  @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'DL-1.15 Thêm ô chuồng (CM)' })
-  create(@Body() dto: CreateStallDto, @CurrentUser() user: CurrentUserPayload) {
-    return this.stallsService.create(dto, user);
   }
 
   @Put(':id')
@@ -135,7 +131,7 @@ export class StallsController {
   }
 
   @Post(':id/allocations')
-  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER)
+  @Roles(UserRole.CLUB_MANAGER)
   @ApiOperation({ summary: 'DL-1.02 Gán ngựa vào ô chuồng (CM, HT)' })
   assignHorse(
     @Param('id') id: string,
@@ -146,7 +142,7 @@ export class StallsController {
   }
 
   @Put('allocations/:id/transfer')
-  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER)
+  @Roles(UserRole.CLUB_MANAGER)
   @ApiOperation({ summary: 'DL-1.02 Chuyển ngựa sang ô chuồng khác (CM, HT)' })
   transferHorse(
     @Param('id') id: string,
@@ -157,7 +153,7 @@ export class StallsController {
   }
 
   @Put('allocations/:id/return')
-  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER)
+  @Roles(UserRole.CLUB_MANAGER)
   @ApiOperation({ summary: 'DL-1.03 Trả ô chuồng (CM, HT)' })
   returnStall(
     @Param('id') id: string,

@@ -15,6 +15,7 @@ import {
 } from './training-rules';
 import { WORKOUT_INCLUDE, phasesOf } from './training-shared';
 import { PrismaService } from '../prisma/prisma.service';
+import { trainerHorseScope } from '../horses/horses.service';
 import { AuditService } from '../audit/audit.service';
 import { TrainingCommonService } from './training-common.service';
 
@@ -157,12 +158,18 @@ export class TrainingInsightsService {
    * SC-2.01 Tổng quan huấn luyện (CM, HT, VET): 4 thẻ chỉ số và một dòng cho mỗi ngựa đang quản lý.
    * Tải 7 ngày "tăng đột ngột" khi > 130% trung bình tuần của 4 tuần trước (Q-2.10).
    */
-  async getOverview() {
+  async getOverview(user?: CurrentUserPayload) {
     await this.common.sweepOverdue();
     const now = new Date();
     const today = startOfClubDay(now);
+    // HLV chỉ thấy ngựa mình đang có giáo án (DRAFT/ACTIVE), tối đa 3 con — không thấy ngựa HLV khác.
+    const trainerId = user?.role === UserRole.HEAD_TRAINER ? user.userId : null;
     const horses = await this.prisma.horse.findMany({
-      where: { deletedAt: null, status: { not: HorseStatus.RETIRED } },
+      where: {
+        deletedAt: null,
+        status: { not: HorseStatus.RETIRED },
+        ...(trainerId ? trainerHorseScope(trainerId) : {}),
+      },
       select: {
         id: true,
         name: true,
@@ -172,10 +179,30 @@ export class TrainingInsightsService {
         avatarUrl: true,
         breed: true,
         gender: true,
+        owner: {
+          select: { fullName: true, phoneNumber: true },
+        },
         stallAllocations: {
           where: { isActive: true },
           take: 1,
           select: { stall: { select: { code: true } } },
+        },
+        medicalLocks: {
+          where: { isLocked: true },
+          take: 1,
+          select: { lockReason: true, recheckDate: true },
+        },
+        handoverRequests: {
+          where: { status: { in: ['PENDING', 'ACCEPTED'] } },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: {
+            status: true,
+            token: true,
+            expiresAt: true,
+            planDeadlineAt: true,
+            fromManager: { select: { fullName: true } },
+          },
         },
       },
       orderBy: { name: 'asc' },
@@ -187,6 +214,7 @@ export class TrainingInsightsService {
           where: {
             horseId: { in: horseIds },
             status: { in: [PlanStatus.ACTIVE, PlanStatus.DRAFT] },
+            ...(trainerId ? { trainerUserId: trainerId } : {}),
           },
           select: {
             id: true,
@@ -284,6 +312,15 @@ export class TrainingInsightsService {
           breed: (horse as any).breed ?? null,
           gender: (horse as any).gender ?? null,
           stallCode,
+          ownerName: (horse as any).owner?.fullName ?? null,
+          ownerPhone: (horse as any).owner?.phoneNumber ?? null,
+          fromManagerName: (horse as any).handoverRequests?.[0]?.fromManager?.fullName ?? null,
+          medicalLockReason: (horse as any).medicalLocks?.[0]?.lockReason ?? null,
+          medicalLockRecheckDate: (horse as any).medicalLocks?.[0]?.recheckDate ?? null,
+          handoverStatus: (horse as any).handoverRequests?.[0]?.status ?? null,
+          handoverToken: (horse as any).handoverRequests?.[0]?.token ?? null,
+          handoverExpiresAt: (horse as any).handoverRequests?.[0]?.expiresAt ?? null,
+          planDeadlineAt: (horse as any).handoverRequests?.[0]?.planDeadlineAt ?? null,
         },
         plan: plan
           ? {

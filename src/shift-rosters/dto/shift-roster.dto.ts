@@ -2,19 +2,56 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
+  ArrayMinSize,
   IsArray,
   IsBoolean,
   IsDateString,
   IsIn,
+  IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
   MaxLength,
+  ValidateBy,
 } from 'class-validator';
 
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
 
 export type ApplyScope = 'ONLY_THIS_DAY' | 'REST_OF_WEEK' | 'SAME_DAY_4_WEEKS';
+
+export class SwapCandidatesQueryDto {
+  @ApiProperty({ description: 'Phân công ca trực cần xin đổi' })
+  @IsUUID('4')
+  rosterId: string;
+}
+
+export class RequestShiftSwapDto {
+  @ApiPropertyOptional({ description: 'Nhân viên chăm sóc đề nghị thay ca' })
+  @IsOptional()
+  @IsUUID('4')
+  targetGroomUserId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  targetRosterId?: string;
+
+  @ValidateBy({
+    name: 'exactlyOneSwapTarget',
+    validator: {
+      validate: (_, args) => {
+        const target = args?.object as RequestShiftSwapDto;
+        return !!target.targetGroomUserId !== !!target.targetRosterId;
+      },
+      defaultMessage: () => 'Choose exactly one target Groom or target roster.',
+    },
+  })
+  @ApiProperty({ description: 'Lý do xin đổi ca (quản lý sẽ xem xét)' })
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  reason: string;
+}
 
 /** DL-4.01 Phân ca (một ô: Ngày x Ca x Khu) */
 export class AssignShiftRosterDto {
@@ -32,12 +69,19 @@ export class AssignShiftRosterDto {
 
   @ApiProperty({
     type: [String],
-    description: 'Danh sách ID nhân viên Groom được phân công (tối đa 10 người)',
+    description: 'Danh sách ID nhân viên chăm sóc được phân công (tối đa 10 người)',
   })
   @IsArray({ message: 'Danh sách nhân viên phải là mảng.' })
   @ArrayMaxSize(10, { message: 'Mỗi ca tối đa 10 nhân viên.' })
   @IsUUID('4', { each: true, message: 'ID nhân viên không hợp lệ.' })
   groomUserIds: string[];
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(2)
+  @IsIn(['CLEANING', 'HORSE_CARE'], { each: true })
+  dutyTypes?: string[];
 
   @ApiPropertyOptional({
     enum: ['ONLY_THIS_DAY', 'REST_OF_WEEK', 'SAME_DAY_4_WEEKS'],
@@ -93,8 +137,22 @@ export class QueryShiftRosterDto {
   @IsUUID('4')
   zoneId?: string;
 
-  @ApiPropertyOptional({ description: 'Lọc theo nhân viên Groom' })
+  @ApiPropertyOptional({ description: 'Lọc theo nhân viên chăm sóc' })
   @IsOptional()
   @IsUUID('4')
   groomUserId?: string;
+}
+
+export class QueryCareTeamDto {
+  @IsOptional()
+  @IsDateString({ strict: true })
+  startDate?: string;
+
+  @IsOptional()
+  @IsDateString({ strict: true })
+  endDate?: string;
+
+  @IsOptional()
+  @IsIn(['mine', 'club'])
+  scope: 'mine' | 'club' = 'mine';
 }

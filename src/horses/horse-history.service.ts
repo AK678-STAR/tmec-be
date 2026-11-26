@@ -4,6 +4,7 @@ import { apiError } from '../common/exceptions/api-error';
 import { UserRole } from '../common/enums/role.enum';
 import { CurrentUserPayload } from '../common/decorators/current-user.decorator';
 import { PrismaService } from '../prisma/prisma.service';
+import { groomZoneIds } from '../shift-rosters/groom-zones';
 import { HorsesService } from './horses.service';
 
 /** Thời gian (ms) cho phép bấm Hoàn tác sau khi xóa. FE hiện nút 10 giây; BE nới 60 giây cho mạng chậm. */
@@ -112,8 +113,9 @@ export class HorseHistoryService {
 
     if (user.role === UserRole.GROOM) {
       const allocations = horse.stallAllocations || [];
+      const zones = await groomZoneIds(this.prisma, user.userId);
       const isAssigned = allocations.some(
-        (a) => a.assignedGroomUserId === user.userId && a.isActive,
+        (a) => a.isActive && !!a.stall?.zoneId && zones.includes(a.stall.zoneId),
       );
       if (!isAssigned) {
         throw apiError(

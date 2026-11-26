@@ -57,7 +57,75 @@ export const PENDING_WORKOUT_STATUSES: WorkoutStatus[] = [
   WorkoutStatus.MISSED,
 ];
 
+/** #5: số ngựa tối đa một HLV phụ trách cùng lúc. */
+
 export const MAX_WORKOUTS_PER_DAY = 3; // Q-2.13
+
+/** BR-TRN-GROOM-CAPACITY: Định mức công việc tối đa của 1 Groom trong ngày để đảm bảo an toàn & thể lực. */
+export const MAX_DAILY_WORKOUTS_PER_GROOM = 4;
+export const MAX_DAILY_HEAVY_WORKOUTS_PER_GROOM = 2;
+
+/** BR-TRN-CAPACITY: Mỗi HLV chỉ được quản lý tối đa 8 chiến mã đồng thời. */
+export const MAX_HORSES_PER_TRAINER = 8;
+
+/** BR-BARN-CAPACITY-HLV: Mỗi Khu chuồng (Barn) cho phép tối đa 2 Huấn luyện viên cùng phụ trách. */
+export const MAX_TRAINERS_PER_BARN = 2;
+
+/** BR-TRN-SLOT-HT: Đệm thời gian tối thiểu giữa các buổi tập của 1 HLV (phút). */
+export const TRAINER_BUFFER_MINUTES = 15;
+
+/** BR-TRN-TRACK-CAPACITY: Sức chứa tối đa của 1 mặt sân cho các bài tập nhẹ/vừa. */
+export const TRACK_MAX_LIGHT_HORSES = 3;
+
+/** BR-TRN-PRIME-QUOTA: Khung giờ vàng buổi sáng (06:15 - 08:00). */
+export const PRIME_TIME_START_HOUR = 6;
+export const PRIME_TIME_START_MINUTE = 15;
+export const PRIME_TIME_END_HOUR = 8;
+export const PRIME_TIME_END_MINUTE = 0;
+export const MAX_PRIME_HEAVY_SESSIONS_PER_TRAINER = 2;
+
+/** Danh sách Nài ngựa chính quy của Câu lạc bộ. */
+export interface JockeyInfo {
+  name: string;
+  weightKg: number;
+  experienceYears: number;
+  status: 'ACTIVE' | 'SUSPENDED' | 'RESTING';
+}
+
+export const CLUB_JOCKEYS: JockeyInfo[] = [
+  { name: 'Trần Văn Kiên', weightKg: 52, experienceYears: 7, status: 'ACTIVE' },
+  { name: 'Lê Minh Quân', weightKg: 51, experienceYears: 5, status: 'ACTIVE' },
+  { name: 'Nguyễn Tấn Lộc', weightKg: 53, experienceYears: 8, status: 'ACTIVE' },
+  { name: 'Phạm Hữu Đạt', weightKg: 50, experienceYears: 4, status: 'ACTIVE' },
+];
+
+/** Thông tin sức chứa và tình trạng mặt sân bãi theo thời gian thực. */
+export interface TrackAvailabilityInfo {
+  surface: 'TURF' | 'DIRT' | 'SYNTHETIC';
+  surfaceName: string;
+  currentCount: number;
+  maxCapacity: number;
+  isAvailable: boolean;
+  status: 'EMPTY' | 'AVAILABLE' | 'FULL' | 'HEAVY_OCCUPIED';
+  statusText: string;
+  activeHorses: Array<{
+    workoutId: string;
+    horseName: string;
+    trainerName: string;
+    workoutType: string;
+    timeRange: string;
+    isHeavy: boolean;
+  }>;
+}
+
+/** Kiểm tra xem thời điểm có nằm trong Khung giờ vàng 06:15 - 08:00 hay không. */
+export function isWithinPrimeTime(d: Date): boolean {
+  const { hour, minute } = clubTime(d);
+  const timeMins = hour * 60 + minute;
+  const startMins = PRIME_TIME_START_HOUR * 60 + PRIME_TIME_START_MINUTE;
+  const endMins = PRIME_TIME_END_HOUR * 60 + PRIME_TIME_END_MINUTE;
+  return timeMins >= startMins && timeMins < endMins;
+}
 
 /** Thời lượng tiêu chuẩn của bài tập (phút) theo BR-TRN-23. */
 export function workoutDurationMinutes(workoutType?: string | null): number {
@@ -205,6 +273,33 @@ export function validatePhases(
         code: 'PHASE_OVERLAP',
         message: `Giai đoạn bị trùng thời gian với giai đoạn ${phases[i - 1].name}.`,
       };
+    }
+  }
+
+  const totalPlanDays =
+    Math.round(
+      (new Date(`${planEnd}T00:00:00Z`).getTime() - new Date(`${planStart}T00:00:00Z`).getTime()) /
+        (24 * 60 * 60 * 1000),
+    ) + 1;
+  const isMicrocycle = totalPlanDays < 14;
+
+  for (const p of phases) {
+    const pDays =
+      Math.round(
+        (new Date(`${p.endDate}T00:00:00Z`).getTime() -
+          new Date(`${p.startDate}T00:00:00Z`).getTime()) /
+          (24 * 60 * 60 * 1000),
+      ) + 1;
+    const isSpecial = p.type === 'PRE_RACE' || p.type === 'RECOVERY';
+    const minDays = isMicrocycle ? 3 : isSpecial ? 3 : 7;
+    if (pDays < minDays) {
+      return bad(
+        isMicrocycle
+          ? `Giai đoạn "${p.name}" trong giáo án ngắn (< 14 ngày) tối thiểu 3 ngày.`
+          : isSpecial
+            ? `Giai đoạn "${p.name}" tối thiểu 3 ngày.`
+            : `Giai đoạn rèn luyện "${p.name}" tối thiểu 7 ngày (1 tuần).`,
+      );
     }
   }
   return { phases };

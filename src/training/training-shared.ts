@@ -41,6 +41,7 @@ export const PLAN_INCLUDE = {
   },
   trainer: { select: { id: true, fullName: true, email: true, status: true } },
   _count: { select: { workoutSessions: true } },
+  review: { select: { id: true, rating: true, comment: true, updatedAt: true } },
 } satisfies Prisma.TrainingPlanInclude;
 
 export const WORKOUT_INCLUDE = {
@@ -79,6 +80,7 @@ export const WORKOUT_INCLUDE = {
 
 /** Dữ liệu buổi tập sau khi gộp bản cũ + thay đổi, dùng chung cho kiểm tra DL-2.01. */
 export interface WorkoutDraft {
+  trackId?: string | null;
   scheduledDate: Date;
   phaseId?: string | null;
   workoutType: string;
@@ -88,7 +90,7 @@ export interface WorkoutDraft {
   repetitions: number;
   targetSpeedKmh?: number | null;
   jockeyName?: string | null;
-  assignedStaffUserId: string;
+  assignedStaffUserId?: string | null;
   vetConsulted?: boolean;
 }
 
@@ -96,6 +98,9 @@ export type PlanForCheck = {
   id: string;
   status: PlanStatus;
   horseId: string;
+
+  trainerUserId?: string | null;
+
   startDate: Date;
   endDate: Date;
   phases: Prisma.JsonValue;

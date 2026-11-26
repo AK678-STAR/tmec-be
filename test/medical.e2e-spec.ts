@@ -40,6 +40,7 @@ describe('Flow 3 medical HTTP contract (mock database, real JWT/guards)', () => 
       update: jest.fn().mockResolvedValue(horse),
     },
     medicalLock: {
+      findMany: jest.fn().mockResolvedValue([]),
       findFirst: jest.fn().mockResolvedValue(null),
       findUnique: jest.fn(),
       count: jest.fn().mockResolvedValue(0),
@@ -58,12 +59,15 @@ describe('Flow 3 medical HTTP contract (mock database, real JWT/guards)', () => 
     },
     medicalRecord: {
       findUnique: jest.fn(),
+      findFirst: jest.fn().mockResolvedValue({ id: 'rec-1', horseId: HORSE_ID, status: 'OPEN' }),
       create: jest.fn(),
       delete: jest.fn(),
     },
     workoutSession: { updateMany: jest.fn().mockResolvedValue({ count: 2 }) },
     auditLog: { create: jest.fn().mockResolvedValue({}) },
     notification: { createMany: jest.fn().mockResolvedValue({ count: 0 }) },
+    shiftRoster: { findMany: jest.fn().mockResolvedValue([{ zoneId: 'zone-a' }]) },
+    groomAssignment: { findMany: jest.fn().mockResolvedValue([{ zoneId: 'zone-a' }]) },
     $queryRaw: jest.fn().mockResolvedValue([]),
     $transaction: jest.fn((arg: any) =>
       typeof arg === 'function' ? arg(prisma) : Promise.all(arg),
@@ -95,6 +99,11 @@ describe('Flow 3 medical HTTP contract (mock database, real JWT/guards)', () => 
     jest.clearAllMocks();
     user.role = Role.VETERINARIAN;
     user.permissions = null;
+    prisma.medicalRecord.findFirst.mockResolvedValue({
+      id: 'rec-1',
+      horseId: HORSE_ID,
+      status: 'OPEN',
+    });
     prisma.medicalLock.findFirst.mockResolvedValue(null);
     prisma.medicalLock.findUnique.mockImplementation(({ where }: any) =>
       Promise.resolve(where.id === 'lock-1' ? activeLock : null),
@@ -207,7 +216,7 @@ describe('Flow 3 medical HTTP contract (mock database, real JWT/guards)', () => 
       .auth(token(), { type: 'bearer' })
       .expect(200);
     expect(prisma.horse.findMany.mock.calls[0][0].where.stallAllocations).toEqual({
-      some: { isActive: true, assignedGroomUserId: 'actor' },
+      some: { isActive: true, stall: { zoneId: { in: ['zone-a'] } } },
     });
   });
 

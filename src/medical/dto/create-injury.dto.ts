@@ -11,7 +11,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { BodySide, SeverityLevel } from '@prisma/client';
+import { SeverityLevel } from '@prisma/client';
 
 export class CreateInjuryDto {
   @ApiProperty({ description: 'ID chiến mã' })
@@ -42,24 +42,19 @@ export class CreateInjuryDto {
   viewSide?: string;
 
   @ApiPropertyOptional({
-    description: 'Lớp hiển thị: MUSCLE | BONE | TENDON_LIGAMENT',
+    description: 'Lớp hiển thị: MUSCLE | SKELETON',
     default: 'MUSCLE',
   })
   @IsOptional()
   @IsString()
-  @IsIn(['MUSCLE', 'BONE', 'TENDON_LIGAMENT', 'SKELETON'], {
-    message: 'layer must be MUSCLE, BONE or TENDON_LIGAMENT',
+  @IsIn(['MUSCLE', 'SKELETON'], {
+    message: 'layer must be MUSCLE or SKELETON',
   })
   layer?: string;
 
   @ApiProperty({ description: 'Vùng giải phẫu' })
   @IsString()
   anatomicalZone: string;
-
-  @ApiPropertyOptional({ enum: BodySide, default: BodySide.LEFT })
-  @IsOptional()
-  @IsEnum(BodySide)
-  bodySide?: BodySide;
 
   @ApiProperty({ description: 'Loại tổn thương (Viêm gân, Rách dây chằng, Bong gân, ...)' })
   @IsString()

@@ -24,6 +24,21 @@ describe('IncidentsService', () => {
       },
     };
 
+    prisma.$queryRaw = jest.fn();
+    prisma.$transaction = jest.fn((fn) => fn(prisma));
+    prisma.counter = { upsert: jest.fn().mockResolvedValue({ value: 1 }) };
+    prisma.horse.update = jest.fn();
+    prisma.medicalLock = {
+      findUnique: jest.fn(),
+      findFirst: jest.fn(),
+      create: jest.fn().mockResolvedValue({ id: 'auto-lock' }),
+    };
+    prisma.workoutSession = { updateMany: jest.fn() };
+    prisma.tournamentRegistration = { updateMany: jest.fn() };
+    prisma.incidentReport.findUnique.mockImplementation(async ({ where }) =>
+      where.id ? await prisma.incidentReport.create.mock.results.at(-1)?.value : null,
+    );
+
     auditService = { record: jest.fn().mockResolvedValue(undefined) };
     notifications = {
       notifyHorse: jest.fn().mockResolvedValue(undefined),
@@ -91,12 +106,21 @@ describe('IncidentsService', () => {
       );
       expect(notifications.notifyHorse.mock.calls[0][2].message).not.toContain('data:image');
       expect(notifications.notifyHorse.mock.calls[0][2].message).toContain('Ngựa quằn quại');
+      expect(notifications.notifyHorse.mock.calls[0][2].email).toEqual(
+        expect.objectContaining({
+          eventCode: 'INCIDENT_REPORTED',
+          body: expect.objectContaining({
+            refId: res.id,
+            text: expect.stringContaining('chờ xác minh'),
+          }),
+        }),
+      );
 
       expect(notifications.notifyHorse).toHaveBeenCalledWith(
         'horse-1',
         {
-          roles: [Role.VETERINARIAN, Role.HEAD_TRAINER, Role.CLUB_MANAGER],
-          owner: true,
+          roles: [Role.VETERINARIAN, Role.CLUB_MANAGER],
+          trainer: true,
           groom: true,
         },
         expect.objectContaining({
@@ -135,7 +159,7 @@ describe('IncidentsService', () => {
           horseId: 'horse-2',
           severity: SeverityLevel.MODERATE,
           stallZoneId: 'zone-9',
-          symptomsJson: ['LOSS_OF_APPETITE'],
+          symptoms: ['LOSS_OF_APPETITE'],
           description: 'Ngựa ăn ít hơn bình thường.',
         },
         reporter,
@@ -145,8 +169,8 @@ describe('IncidentsService', () => {
       expect(notifications.notifyHorse).toHaveBeenCalledWith(
         'horse-2',
         {
-          roles: [Role.VETERINARIAN],
-          owner: true,
+          roles: [Role.VETERINARIAN, Role.CLUB_MANAGER],
+          trainer: true,
           groom: true,
         },
         expect.objectContaining({
@@ -157,7 +181,9 @@ describe('IncidentsService', () => {
       // Negative check: HT and CM must not be included for MODERATE
       const opts = notifications.notifyHorse.mock.calls[0][1];
       expect(opts.roles).not.toContain(Role.HEAD_TRAINER);
-      expect(opts.roles).not.toContain(Role.CLUB_MANAGER);
+      expect(opts.roles).toContain(Role.CLUB_MANAGER);
+      expect(opts.trainer).toBe(true);
+      expect(opts.owner).toBeUndefined();
     });
 
     it('creates a low severity incident with empty symptoms defaulting to OTHER', async () => {
@@ -261,7 +287,7 @@ describe('IncidentsService', () => {
   });
 
   describe('review', () => {
-    it('allows Veterinarian to review and resolve incident with notes', async () => {
+    it('allows Veterinarian to review without prematurely resolving incident with notes', async () => {
       const mockIncident = {
         id: 'inc-1',
         incidentNumber: 'INC-001',
@@ -273,7 +299,7 @@ describe('IncidentsService', () => {
       prisma.incidentReport.findUnique.mockResolvedValue(mockIncident);
       prisma.incidentReport.update.mockResolvedValue({
         ...mockIncident,
-        status: IncidentStatus.RESOLVED,
+        status: IncidentStatus.UNDER_REVIEW,
         vetNotes: 'Đã tiêm thuốc giảm đau chống co thắt.',
       });
 
@@ -286,13 +312,13 @@ describe('IncidentsService', () => {
       const res = await service.review(
         'inc-1',
         {
-          status: IncidentStatus.RESOLVED,
+          status: IncidentStatus.UNDER_REVIEW,
           vetNotes: 'Đã tiêm thuốc giảm đau chống co thắt.',
         },
         vet,
       );
 
-      expect(res.status).toBe(IncidentStatus.RESOLVED);
+      expect(res.status).toBe(IncidentStatus.UNDER_REVIEW);
       expect(notifications.notifyUsers).toHaveBeenCalledWith(
         ['groom-1'],
         expect.objectContaining({
@@ -365,8 +391,10 @@ describe('IncidentsService', () => {
       expect(notifications.notifyHorse).not.toHaveBeenCalled();
     });
 
-    it('maps FRACTURE to CRITICAL severity and creates IncidentReport without activating MedicalLock', async () => {
-      prisma.incidentReport.findUnique.mockResolvedValue(null);
+    it('maps FRACTURE to CRITICAL severity and creates IncidentReport and activates automatic safety protection', async () => {
+      prisma.incidentReport.findUnique.mockImplementation(async ({ where }) =>
+        where.id ? await prisma.incidentReport.create.mock.results.at(-1)?.value : null,
+      );
       prisma.horse.findUnique.mockResolvedValue({
         id: 'horse-1',
         name: 'Thunderbolt',
@@ -422,8 +450,8 @@ describe('IncidentsService', () => {
       expect(notifications.notifyHorse).toHaveBeenCalledWith(
         'horse-1',
         {
-          roles: [Role.VETERINARIAN, Role.HEAD_TRAINER, Role.CLUB_MANAGER],
-          owner: true,
+          roles: [Role.VETERINARIAN, Role.CLUB_MANAGER],
+          trainer: true,
           groom: true,
         },
         expect.objectContaining({

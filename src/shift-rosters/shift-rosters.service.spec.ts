@@ -25,6 +25,9 @@ describe('ShiftRostersService (SC-4.01)', () => {
     id: 'shift-1',
     code: 'SHIFT_MORNING',
     name: 'Ca Sáng',
+    startTime: '06:00',
+    endTime: '14:00',
+    isOvernight: false,
     isActive: true,
   };
 
@@ -47,8 +50,12 @@ describe('ShiftRostersService (SC-4.01)', () => {
     zone: sampleZone,
   };
 
+  afterEach(() => jest.useRealTimers());
   beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-10-18T00:00:00Z'));
     prisma = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      dailyCareTask: { findMany: jest.fn().mockResolvedValue([]) },
       $transaction: jest.fn((cb) => cb(prisma)),
       shiftCatalog: {
         findUnique: jest.fn().mockResolvedValue(sampleShift),
@@ -57,12 +64,14 @@ describe('ShiftRostersService (SC-4.01)', () => {
         findUnique: jest.fn().mockResolvedValue(sampleZone),
       },
       user: {
+        count: jest.fn(async ({ where }) => where.id.in.length),
         findMany: jest
           .fn()
           .mockResolvedValue([{ id: 'groom-1', role: Role.GROOM, status: UserStatus.ACTIVE }]),
       },
       shiftRoster: {
         findMany: jest.fn().mockResolvedValue([sampleRoster]),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(sampleRoster),
         findUnique: jest.fn().mockResolvedValue(null),
         findFirst: jest.fn().mockResolvedValue(null),
         deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -156,6 +165,28 @@ describe('ShiftRostersService (SC-4.01)', () => {
       ).rejects.toMatchObject({
         response: expect.objectContaining({ code: 'COPY_TARGET_WEEK_IN_PAST' }),
       });
+    });
+
+    it('rejects a copy that would roster a Groom in two zones for the same shift', async () => {
+      prisma.shiftRoster.findMany.mockResolvedValueOnce([
+        {
+          date: new Date('2099-10-05T00:00:00.000Z'),
+          shiftId: 'shift-1',
+          zoneId: 'zone-1',
+          groomUserId: 'groom-1',
+        },
+      ]);
+      prisma.shiftRoster.findFirst.mockResolvedValueOnce({ zoneId: 'zone-2' });
+
+      await expect(
+        service.copyWeek(
+          { sourceWeekStart: '2099-10-05', targetWeekStart: '2099-10-12' },
+          managerUser,
+        ),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'GROOM_ALREADY_ASSIGNED_IN_SHIFT' }),
+      });
+      expect(prisma.shiftRoster.create).not.toHaveBeenCalled();
     });
 
     it('successfully copies week and skips inactive grooms', async () => {

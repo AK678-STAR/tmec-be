@@ -20,6 +20,8 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { RequirePermission } from '../common/decorators/require-permission.decorator';
 import { UserRole } from '../common/enums/role.enum';
 import { WorkoutStatus } from '@prisma/client';
+import { WorkoutSlotSuggestionsService } from './workout-slot-suggestions.service';
+import { SuggestWorkoutSlotsDto } from './dto/suggest-workout-slots.dto';
 
 class OptionalEnumPipe<T extends object> implements PipeTransform {
   private readonly pipe: ParseEnumPipe<T>;
@@ -36,10 +38,22 @@ class OptionalEnumPipe<T extends object> implements PipeTransform {
 import { TrainingInsightsService } from './training-insights.service';
 import { TrainingPlansService } from './training-plans.service';
 import { WorkoutsService } from './workouts.service';
+import { TrainerReviewsService } from './trainer-reviews.service';
+import { TracksService } from './tracks.service';
+import {
+  CreateTrainingTrackDto,
+  UpdateTrainingTrackDto,
+  MapLegacyTrackDto,
+} from './dto/training-track.dto';
+import { UpsertTrainerReviewDto } from './dto/trainer-review.dto';
 import { CreateTrainingPlanDto } from './dto/create-training-plan.dto';
 import { UpdateTrainingPlanDto } from './dto/update-training-plan.dto';
 import { QueryTrainingPlanDto } from './dto/query-training-plan.dto';
-import { CreateWorkoutSessionDto, RepeatWorkoutDto } from './dto/create-workout-session.dto';
+import {
+  CheckWorkoutDto,
+  CreateWorkoutSessionDto,
+  RepeatWorkoutDto,
+} from './dto/create-workout-session.dto';
 import { UpdateWorkoutSessionDto } from './dto/update-workout-session.dto';
 import { RecordWorkoutResultDto } from './dto/record-result.dto';
 import {
@@ -48,7 +62,9 @@ import {
   ChangePlanStatusDto,
   ClonePlanDto,
   RestoreWorkoutDto,
+  UnlockCooldownDto,
 } from './dto/workout-actions.dto';
+import { CLUB_JOCKEYS } from './training-rules';
 
 /**
  * Flow 2 - phân quyền theo đặc tả §2: chỉ HT lập/sửa/kích hoạt giáo án, xếp buổi tập và ghi kết quả;
@@ -63,13 +79,104 @@ export class TrainingController {
     private readonly insights: TrainingInsightsService,
     private readonly plans: TrainingPlansService,
     private readonly workouts: WorkoutsService,
+    private readonly reviews: TrainerReviewsService,
+    private readonly tracks: TracksService,
+    private readonly suggestions: WorkoutSlotSuggestionsService,
   ) {}
+
+  @Get('plans/:id/suggest-slots')
+  @Roles(UserRole.HEAD_TRAINER)
+  @RequirePermission('assignSchedule')
+  suggestSlots(
+    @Param('id') id: string,
+    @Query() dto: SuggestWorkoutSlotsDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.suggestions.suggest(id, dto, user);
+  }
+
+  @Post('plans/:id/check-workout')
+  @Roles(UserRole.HEAD_TRAINER)
+  @RequirePermission('assignSchedule')
+  checkWorkout(
+    @Param('id') id: string,
+    @Body() dto: CheckWorkoutDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.workouts.checkWorkout(id, dto, user);
+  }
+
+  @Get('tracks')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.VETERINARIAN, UserRole.GROOM)
+  listTracks(
+    @Query('includeInactive') includeInactive: string,
+    @Query('date') date: string,
+    @Query('time') time: string,
+    @Query('workoutType') workoutType: string,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.tracks.list(includeInactive === 'true', user, date, time, workoutType);
+  }
+
+  @Post('tracks')
+  @Roles(UserRole.CLUB_MANAGER)
+  @RequirePermission('manageAccounts')
+  createTrack(@Body() dto: CreateTrainingTrackDto, @CurrentUser() user: CurrentUserPayload) {
+    return this.tracks.save(null, dto, user);
+  }
+
+  @Patch('tracks/:id')
+  @Roles(UserRole.CLUB_MANAGER)
+  @RequirePermission('manageAccounts')
+  updateTrack(
+    @Param('id') id: string,
+    @Body() dto: UpdateTrainingTrackDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.tracks.save(id, dto, user);
+  }
+
+  @Post('tracks/:id/map-legacy-workouts')
+  @Roles(UserRole.CLUB_MANAGER)
+  @RequirePermission('manageAccounts')
+  mapLegacyTrack(
+    @Param('id') id: string,
+    @Body() dto: MapLegacyTrackDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.tracks.mapLegacy(id, dto.workoutIds, user);
+  }
+
+  // ------------------------------------------------------------ Đánh giá HLV
+
+  @Get('trainer-reviews')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.HORSE_OWNER)
+  @ApiOperation({
+    summary: 'Đánh giá HLV: CM tổng hợp mọi HLV, HT của mình, OWNER đánh giá đã viết',
+  })
+  async listTrainerReviews(
+    @CurrentUser() user: CurrentUserPayload,
+    @Query('trainerId') trainerId?: string,
+  ) {
+    return this.reviews.list(user, trainerId || undefined);
+  }
+
+  @Put('plans/:id/review')
+  @Roles(UserRole.HORSE_OWNER)
+  @ApiOperation({ summary: 'Chủ ngựa chấm sao + nhận xét HLV cho giáo án (tạo hoặc sửa)' })
+  async upsertTrainerReview(
+    @Param('id') id: string,
+    @Body() dto: UpsertTrainerReviewDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.reviews.upsert(id, dto, user);
+  }
 
   @Get('overview')
   @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.VETERINARIAN)
   @ApiOperation({ summary: 'SC-2.01 Tổng quan huấn luyện: 4 thẻ chỉ số + bảng ngựa' })
-  async getOverview() {
-    return this.insights.getOverview();
+  async getOverview(@CurrentUser() user: CurrentUserPayload) {
+    return this.insights.getOverview(user);
   }
 
   // ------------------------------------------------------------ Giáo án
@@ -114,8 +221,11 @@ export class TrainingController {
 
   @Patch('plans/:id/status')
   @RequirePermission('createPlan')
-  @Roles(UserRole.HEAD_TRAINER)
-  @ApiOperation({ summary: 'DL-2.02 Kích hoạt / DL-2.04 Hoàn thành / DL-2.03 Hủy giáo án - HT' })
+  @Roles(UserRole.HEAD_TRAINER, UserRole.CLUB_MANAGER)
+  @ApiOperation({
+    summary:
+      'DL-2.02 Kích hoạt / DL-2.04 Hoàn thành / DL-2.03 Hủy giáo án - HT, Quản lý CLB cưỡng chế',
+  })
   async changePlanStatus(
     @Param('id') id: string,
     @Body() dto: ChangePlanStatusDto,
@@ -139,10 +249,31 @@ export class TrainingController {
 
   @Delete('plans/:id')
   @RequirePermission('createPlan')
-  @Roles(UserRole.HEAD_TRAINER)
-  @ApiOperation({ summary: 'Xóa giáo án Nháp chưa có buổi hoàn thành - HT' })
+  @Roles(UserRole.HEAD_TRAINER, UserRole.CLUB_MANAGER)
+  @ApiOperation({ summary: 'Xóa giáo án Nháp chưa có buổi hoàn thành - HT, Quản lý CLB' })
   async deletePlan(@Param('id') id: string, @CurrentUser() user: CurrentUserPayload) {
     return this.plans.deletePlan(id, user);
+  }
+
+  @Post('horses/:horseId/cooldown/unlock')
+  @Roles(UserRole.CLUB_MANAGER)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Quản lý CLB mở khóa thời gian chờ (cooldown) cho HLV trên chiến mã' })
+  async unlockCooldown(
+    @Param('horseId') horseId: string,
+    @Body() dto: UnlockCooldownDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.plans.unlockCooldown(horseId, dto, user);
+  }
+
+  @Get('assignable-horses')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER)
+  @ApiOperation({
+    summary: 'Lấy danh sách ngựa kèm trạng thái giáo án thời gian thực để tạo/nhân bản giáo án',
+  })
+  async getAssignableHorses(@CurrentUser() user: CurrentUserPayload) {
+    return this.plans.getAssignableHorses(user);
   }
 
   // ------------------------------------------------------------ Buổi tập
@@ -184,6 +315,25 @@ export class TrainingController {
     @Query('workoutType') workoutType?: string,
   ) {
     return this.workouts.findGrooms(horseId, date, time, excludeWorkoutId, workoutType);
+  }
+
+  @Get('jockeys')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.VETERINARIAN)
+  @ApiOperation({ summary: 'Danh mục nài ngựa chính quy của Câu lạc bộ' })
+  getJockeys() {
+    return CLUB_JOCKEYS;
+  }
+
+  @Get('track-availability')
+  @Roles(UserRole.CLUB_MANAGER, UserRole.HEAD_TRAINER, UserRole.VETERINARIAN)
+  @ApiOperation({ summary: 'Kiểm tra tình trạng sức chứa sân bãi theo thời gian thực - HT' })
+  async getTrackAvailability(
+    @Query('date') date?: string,
+    @Query('time') time?: string,
+    @Query('workoutType') workoutType?: string,
+    @Query('excludeWorkoutId') excludeWorkoutId?: string,
+  ) {
+    return this.workouts.getTrackAvailability(date, time, workoutType, excludeWorkoutId);
   }
 
   @Post('plans/:id/workouts')
@@ -267,6 +417,14 @@ export class TrainingController {
     @CurrentUser() user: CurrentUserPayload,
   ) {
     return this.workouts.restoreWorkout(workoutId, dto, user);
+  }
+
+  @Delete('workouts/:id')
+  @RequirePermission('assignSchedule')
+  @Roles(UserRole.HEAD_TRAINER, UserRole.CLUB_MANAGER)
+  @ApiOperation({ summary: 'Xóa buổi tập chưa diễn ra hoặc thuộc giáo án Nháp' })
+  async deleteWorkout(@Param('id') workoutId: string, @CurrentUser() user: CurrentUserPayload) {
+    return this.workouts.deleteWorkout(workoutId, user);
   }
 
   // ------------------------------------------------------------ Cảnh báo & thể lực
