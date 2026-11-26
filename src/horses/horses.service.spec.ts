@@ -1441,7 +1441,7 @@ describe('HorsesService', () => {
 
     describe('scheduleAdmission', () => {
       it('schedules appointment, logs history and emits email with refId and appointment milestone', async () => {
-        const appointmentDate = '2026-11-26T10:00:00Z';
+        const appointmentDate = new Date(Date.now() + 86400000).toISOString();
         prisma.horseAdmissionRecord.findUnique.mockResolvedValue({
           id: 'adm-10',
           admissionCode: 'ADM-2026-010',
@@ -1504,7 +1504,7 @@ describe('HorsesService', () => {
         await expect(
           service.scheduleAdmission(
             'adm-approved',
-            { appointmentDate: '2026-11-26T10:00:00Z', veterinarianUserId: 'vet-1' },
+            { appointmentDate: new Date(Date.now() + 86400000).toISOString(), veterinarianUserId: 'vet-1' },
             mockManager,
           ),
         ).rejects.toMatchObject({
@@ -1530,7 +1530,7 @@ describe('HorsesService', () => {
         await expect(
           service.scheduleAdmission(
             'adm-rollback',
-            { appointmentDate: '2026-11-26T10:00:00Z', veterinarianUserId: 'vet-1' },
+            { appointmentDate: new Date(Date.now() + 86400000).toISOString(), veterinarianUserId: 'vet-1' },
             mockManager,
           ),
         ).rejects.toThrow('Admission history log table write failure');
