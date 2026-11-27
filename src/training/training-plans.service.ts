@@ -1431,7 +1431,9 @@ export class TrainingPlansService {
 
     const activeOrDraftPlans = await this.prisma.trainingPlan.findMany({
       where: {
-        status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE, PlanStatus.COMPLETED, PlanStatus.CANCELLED] },
+        status: {
+          in: [PlanStatus.DRAFT, PlanStatus.ACTIVE, PlanStatus.COMPLETED, PlanStatus.CANCELLED],
+        },
         horse: { deletedAt: null },
       },
       orderBy: { updatedAt: 'desc' },
@@ -1643,7 +1645,8 @@ export class TrainingPlansService {
               explanation = `Giáo án ${lastCancelledPlan.planCode} đã hủy, chiến mã đang nghỉ ngơi và sẵn sàng cho giáo án mới.`;
             } else {
               badge = 'Nghỉ ngơi hồi phục (Không tính SLA)';
-              explanation = 'Chiến mã đang trong chu kỳ nghỉ ngơi phục hồi thể lực, sẵn sàng cho giáo án mới.';
+              explanation =
+                'Chiến mã đang trong chu kỳ nghỉ ngơi phục hồi thể lực, sẵn sàng cho giáo án mới.';
             }
           } else {
             unplannedCategory = 'NEW_ADMISSION';
