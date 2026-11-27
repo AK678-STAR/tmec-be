@@ -30,10 +30,8 @@ async function main() {
   const tomorrow = new Date(now);
   tomorrow.setDate(now.getDate() + 1);
   const tomorrowStr = tomorrow.toISOString().split('T')[0];
-  // 3. Ngày demo cố định theo giao diện (2026-11-28 và 2026-11-29)
+  // Ngày demo cố định theo giao diện giáo án (2026-11-28 và 2026-11-29) nằm trong khung thời gian hợp lệ
   const targetDemoDates = ['2026-11-28', '2026-11-29'];
-  if (!targetDemoDates.includes(todayStr)) targetDemoDates.push(todayStr);
-  if (!targetDemoDates.includes(tomorrowStr)) targetDemoDates.push(tomorrowStr);
 
   // 1. Kiểm tra hoặc tạo các tài khoản liên kết (Manager, Vet, Groom, Owner)
   console.log('[1/7] Thiết lập các tài khoản liên quan...');
@@ -475,6 +473,7 @@ async function main() {
   // Giáo án 1: Bạch Long Mã - Đang chạy
   const planBachLongMa = await prisma.trainingPlan.create({
     data: {
+      planCode: 'GA-MINH-BLM',
       horseId: bachLongMa.id,
       trainerUserId: trainerMinh.id,
       phaseName: 'Giai đoạn thể lực cơ bản',
@@ -482,12 +481,29 @@ async function main() {
       trackSurface: TrackSurface.TURF,
       startDate: new Date('2026-11-28T00:00:00.000Z'),
       endDate: new Date('2026-12-12T00:00:00.000Z'),
+      phases: [
+        {
+          id: 'PH-BLM-01',
+          name: 'Giai đoạn 1: Thể lực cơ bản',
+          type: 'BASE',
+          focus: 'BASE',
+          startDate: '2026-11-28',
+          endDate: '2026-12-12',
+          durationDays: 14,
+          sessionsPerWeek: 4,
+          maxWeeklyDistance: 8000,
+          surface: 'TURF',
+          targetSpeedKmh: 48,
+          targetDistanceM: 1400,
+        },
+      ],
     },
   });
 
   // Giáo án 2: Xích Thổ - Đang chạy
   const planXichTho = await prisma.trainingPlan.create({
     data: {
+      planCode: 'GA-MINH-XT',
       horseId: xichTho.id,
       trainerUserId: trainerMinh.id,
       phaseName: 'Giai đoạn thể lực nâng cao',
@@ -495,12 +511,29 @@ async function main() {
       trackSurface: TrackSurface.DIRT,
       startDate: new Date('2026-11-28T00:00:00.000Z'),
       endDate: new Date('2026-12-12T00:00:00.000Z'),
+      phases: [
+        {
+          id: 'PH-XT-01',
+          name: 'Giai đoạn 1: Thể lực nâng cao',
+          type: 'BUILD',
+          focus: 'BUILD',
+          startDate: '2026-11-28',
+          endDate: '2026-12-12',
+          durationDays: 14,
+          sessionsPerWeek: 4,
+          maxWeeklyDistance: 7000,
+          surface: 'DIRT',
+          targetSpeedKmh: 58,
+          targetDistanceM: 1200,
+        },
+      ],
     },
   });
 
   // Giáo án 3: Phi Tiêu - Đang chạy (Giai đoạn 1: 2026-11-28 -> 2026-12-04, chưa có buổi tập để HLV Minh bấm sinh lịch)
   await prisma.trainingPlan.create({
     data: {
+      planCode: 'GA-MINH-PT',
       horseId: phiTieu.id,
       trainerUserId: trainerMinh.id,
       phaseName: 'Giai đoạn 1',
@@ -508,12 +541,29 @@ async function main() {
       trackSurface: TrackSurface.TURF,
       startDate: new Date('2026-11-28T00:00:00.000Z'),
       endDate: new Date('2026-12-04T00:00:00.000Z'),
+      phases: [
+        {
+          id: 'PH-PT-01',
+          name: 'Giai đoạn 1',
+          type: 'BASE',
+          focus: 'BASE',
+          startDate: '2026-11-28',
+          endDate: '2026-12-04',
+          durationDays: 7,
+          sessionsPerWeek: 5,
+          maxWeeklyDistance: 8000,
+          surface: 'TURF',
+          targetSpeedKmh: 45,
+          targetDistanceM: 1000,
+        },
+      ],
     },
   });
 
   // Giáo án 4: Thần Mã - Đã hoàn thành (Sẵn sàng thi đấu)
   await prisma.trainingPlan.create({
     data: {
+      planCode: 'GA-MINH-TM',
       horseId: thanMa.id,
       trainerUserId: trainerMinh.id,
       phaseName: 'Giai đoạn hoàn thiện tốc độ',
@@ -521,6 +571,22 @@ async function main() {
       trackSurface: TrackSurface.TURF,
       startDate: new Date('2026-10-01T00:00:00.000Z'),
       endDate: new Date('2026-11-15T00:00:00.000Z'),
+      phases: [
+        {
+          id: 'PH-TM-01',
+          name: 'Giai đoạn 1: Hoàn thiện tốc độ',
+          type: 'PEAK',
+          focus: 'PEAK',
+          startDate: '2026-10-01',
+          endDate: '2026-11-15',
+          durationDays: 45,
+          sessionsPerWeek: 4,
+          maxWeeklyDistance: 6000,
+          surface: 'TURF',
+          targetSpeedKmh: 60,
+          targetDistanceM: 1600,
+        },
+      ],
     },
   });
 
@@ -532,6 +598,7 @@ async function main() {
     await prisma.workoutSession.create({
       data: {
         trainingPlanId: planBachLongMa.id,
+        phaseId: 'PH-BLM-01',
         horseId: bachLongMa.id,
         trackId: trackTurfA?.id,
         assignedStaffUserId: trainerMinh.id,
@@ -552,6 +619,7 @@ async function main() {
     await prisma.workoutSession.create({
       data: {
         trainingPlanId: planXichTho.id,
+        phaseId: 'PH-XT-01',
         horseId: xichTho.id,
         trackId: trackDirt?.id,
         assignedStaffUserId: trainerMinh.id,
