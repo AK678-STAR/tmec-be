@@ -10,8 +10,12 @@ const demoClockStorage = new AsyncLocalStorage<Date>();
  * so same-day ordering and UTC+7 clubDate conversions remain consistent.
  * Always disabled in production.
  */
+function isDemoClockDisabled(): boolean {
+  return process.env.DEMO_DATA_ENABLED === 'false';
+}
+
 export function parseDemoDate(raw: unknown): Date | null {
-  if (process.env.NODE_ENV === 'production' || typeof raw !== 'string') return null;
+  if (isDemoClockDisabled() || typeof raw !== 'string') return null;
   const trimmed = raw.trim();
   if (!DEMO_DATE_RE.test(trimmed)) return null;
   const [year, month, day] = trimmed.split('-').map(Number);
@@ -31,7 +35,7 @@ export function parseDemoDate(raw: unknown): Date | null {
 }
 
 export function demoClockMiddleware(req: Request, _res: Response, next: NextFunction): void {
-  if (process.env.NODE_ENV === 'production') {
+  if (isDemoClockDisabled()) {
     next();
     return;
   }
@@ -45,13 +49,13 @@ export function demoClockMiddleware(req: Request, _res: Response, next: NextFunc
   demoClockStorage.run(demoDate, () => next());
 }
 
-/** Returns request-scoped simulated Date in non-production when X-Demo-Date is set; otherwise real Date. */
+/** Returns request-scoped simulated Date when X-Demo-Date is set; otherwise real Date. */
 export function effectiveNow(): Date {
-  if (process.env.NODE_ENV === 'production') return new Date();
+  if (isDemoClockDisabled()) return new Date();
   return demoClockStorage.getStore() ?? new Date();
 }
 
-/** True only in non-production while a valid X-Demo-Date override is active for the current request. */
+/** True while a valid X-Demo-Date override is active for the current request. */
 export function isDemoClockActive(): boolean {
-  return process.env.NODE_ENV !== 'production' && demoClockStorage.getStore() !== undefined;
+  return !isDemoClockDisabled() && demoClockStorage.getStore() !== undefined;
 }

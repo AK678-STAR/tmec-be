@@ -17,14 +17,19 @@ import {
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  app.set('trust proxy', 1);
   // Evidence is sent both as a field and in legacy Markdown, up to 50KB each.
   app.useBodyParser('json', { limit: JSON_BODY_LIMIT });
 
   const configService = app.get(ConfigService);
   const port = configService.get<number>('PORT', 3000);
   const apiPrefix = configService.get<string>('API_PREFIX', '/api');
-  const frontendUrl = configService.get<string>('FRONTEND_URL', 'http://localhost:5173');
-  const simulatorUrl = configService.get<string>('SIMULATOR_URL', 'http://localhost:5175');
+  const frontendUrl = configService
+    .get<string>('FRONTEND_URL', 'http://localhost:5173')
+    .replace(/\/+$/, '');
+  const simulatorUrl = configService
+    .get<string>('SIMULATOR_URL', 'http://localhost:5175')
+    .replace(/\/+$/, '');
 
   // Security Middleware
   app.use(
@@ -60,9 +65,7 @@ async function bootstrap() {
     origin: corsOrigins,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: isProduction
-      ? ['Content-Type', 'Authorization', 'X-Requested-With']
-      : ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Demo-Date'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Demo-Date'],
   });
   if (!isProduction) {
     app.use(demoClockMiddleware);
@@ -166,7 +169,7 @@ async function bootstrap() {
     },
   });
 
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0');
   logger.log(`=======================================================`);
   logger.log(` TMEC Backend is running on: http://localhost:${port}`);
   logger.log(` API Endpoints: http://localhost:${port}/${apiPrefix.replace(/^\//, '')}`);
