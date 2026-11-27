@@ -104,6 +104,28 @@ async function main() {
     },
   });
 
+  // Tạo các ô chuồng A-01, A-02, A-03, A-04 cho Barn A và C-01 cho Barn C
+  const stallA01 = await prisma.stall.upsert({
+    where: { code: 'A-01' },
+    update: { zone: barnA.name, zoneId: barnA.id, status: StallStatus.OCCUPIED },
+    create: { code: 'A-01', zone: barnA.name, zoneId: barnA.id, status: StallStatus.OCCUPIED, row: 1, col: 1 },
+  });
+  const stallA02 = await prisma.stall.upsert({
+    where: { code: 'A-02' },
+    update: { zone: barnA.name, zoneId: barnA.id, status: StallStatus.OCCUPIED },
+    create: { code: 'A-02', zone: barnA.name, zoneId: barnA.id, status: StallStatus.OCCUPIED, row: 1, col: 2 },
+  });
+  const stallA03 = await prisma.stall.upsert({
+    where: { code: 'A-03' },
+    update: { zone: barnA.name, zoneId: barnA.id, status: StallStatus.OCCUPIED },
+    create: { code: 'A-03', zone: barnA.name, zoneId: barnA.id, status: StallStatus.OCCUPIED, row: 1, col: 3 },
+  });
+  const stallA04 = await prisma.stall.upsert({
+    where: { code: 'A-04' },
+    update: { zone: barnA.name, zoneId: barnA.id, status: StallStatus.OCCUPIED },
+    create: { code: 'A-04', zone: barnA.name, zoneId: barnA.id, status: StallStatus.OCCUPIED, row: 1, col: 4 },
+  });
+
   // Tạo chuồng C-01 trong Barn C
   const stallC01 = await prisma.stall.upsert({
     where: { code: 'C-01' },
@@ -282,6 +304,7 @@ async function main() {
     where: { horseId: hacLongMa.id },
   });
 
+  // Gán chuồng A-01 cho Bạch Long Mã
   const bachLongMa = await prisma.horse.upsert({
     where: { horseCode: 'HRS-BLM-01' },
     update: {
@@ -308,8 +331,116 @@ async function main() {
     },
   });
 
-  // Tạo giáo án đang chạy cho Bạch Long Mã có bài tập lúc 08:00 - 09:00 tại Đường chạy Cỏ B
-  // Để dùng kiểm thử phát hiện trùng giờ HLV Trần Minh Quân
+  await prisma.stallAllocation.deleteMany({ where: { horseId: bachLongMa.id } });
+  await prisma.stallAllocation.create({
+    data: {
+      stallId: stallA01.id,
+      horseId: bachLongMa.id,
+      assignedGroomUserId: groom.id,
+      isActive: true,
+    },
+  });
+
+  // 5b. Thiết lập 2 chiến mã nợ giáo án để kích hoạt ngưỡng WIP Limit = 2 của HLV Trần Minh Quân
+  console.log('[5b] Thiết lập 2 chiến mã Xích Thổ & Phi Tiêu nợ giáo án (WIP Limit = 2)...');
+  const xichTho = await prisma.horse.upsert({
+    where: { horseCode: 'HRS-XT-01' },
+    update: {
+      name: 'Xích Thổ',
+      status: HorseStatus.ACTIVE,
+      ownerId: owner.id,
+      assignedTrainerId: trainerQuan.id,
+      trainerAssignmentStatus: TrainerAssignmentStatus.ASSIGNED,
+    },
+    create: {
+      horseCode: 'HRS-XT-01',
+      name: 'Xích Thổ',
+      breed: 'Thoroughbred',
+      dob: new Date('2021-06-15'),
+      gender: 'Colt',
+      color: 'Chestnut',
+      weightKg: 505,
+      microchip: '985141000222222',
+      microchipRfid: 'RFID-XT-222222',
+      status: HorseStatus.ACTIVE,
+      ownerId: owner.id,
+      assignedTrainerId: trainerQuan.id,
+      trainerAssignmentStatus: TrainerAssignmentStatus.ASSIGNED,
+    },
+  });
+  await prisma.stallAllocation.deleteMany({ where: { horseId: xichTho.id } });
+  await prisma.stallAllocation.create({
+    data: { stallId: stallA02.id, horseId: xichTho.id, assignedGroomUserId: groom.id, isActive: true },
+  });
+  await prisma.workoutSession.deleteMany({ where: { horseId: xichTho.id } });
+  await prisma.trainingPlan.deleteMany({ where: { horseId: xichTho.id } });
+
+  const phiTieu = await prisma.horse.upsert({
+    where: { horseCode: 'HRS-PT-02' },
+    update: {
+      name: 'Phi Tiêu',
+      status: HorseStatus.ACTIVE,
+      ownerId: owner.id,
+      assignedTrainerId: trainerQuan.id,
+      trainerAssignmentStatus: TrainerAssignmentStatus.ASSIGNED,
+    },
+    create: {
+      horseCode: 'HRS-PT-02',
+      name: 'Phi Tiêu',
+      breed: 'Thoroughbred',
+      dob: new Date('2021-08-20'),
+      gender: 'Filly',
+      color: 'Bay',
+      weightKg: 480,
+      microchip: '985141000333333',
+      microchipRfid: 'RFID-PT-333333',
+      status: HorseStatus.ACTIVE,
+      ownerId: owner.id,
+      assignedTrainerId: trainerQuan.id,
+      trainerAssignmentStatus: TrainerAssignmentStatus.ASSIGNED,
+    },
+  });
+  await prisma.stallAllocation.deleteMany({ where: { horseId: phiTieu.id } });
+  await prisma.stallAllocation.create({
+    data: { stallId: stallA03.id, horseId: phiTieu.id, assignedGroomUserId: groom.id, isActive: true },
+  });
+  await prisma.workoutSession.deleteMany({ where: { horseId: phiTieu.id } });
+  await prisma.trainingPlan.deleteMany({ where: { horseId: phiTieu.id } });
+
+  // Chiến mã Hắc Phong ở Barn A, chưa có HLV -> Dùng để demo Quản lý cố tình gán con thứ 3 cho HLV Quân và bị chặn WIP Limit!
+  const hacPhong = await prisma.horse.upsert({
+    where: { horseCode: 'HRS-HP-03' },
+    update: {
+      name: 'Hắc Phong',
+      status: HorseStatus.ACTIVE,
+      ownerId: owner.id,
+      assignedTrainerId: null,
+      trainerAssignmentStatus: TrainerAssignmentStatus.UNASSIGNED,
+    },
+    create: {
+      horseCode: 'HRS-HP-03',
+      name: 'Hắc Phong',
+      breed: 'Thoroughbred',
+      dob: new Date('2022-02-10'),
+      gender: 'Colt',
+      color: 'Black',
+      weightKg: 515,
+      microchip: '985141000444444',
+      microchipRfid: 'RFID-HP-444444',
+      status: HorseStatus.ACTIVE,
+      ownerId: owner.id,
+      assignedTrainerId: null,
+      trainerAssignmentStatus: TrainerAssignmentStatus.UNASSIGNED,
+    },
+  });
+  await prisma.stallAllocation.deleteMany({ where: { horseId: hacPhong.id } });
+  await prisma.stallAllocation.create({
+    data: { stallId: stallA04.id, horseId: hacPhong.id, assignedGroomUserId: groom.id, isActive: true },
+  });
+  await prisma.workoutSession.deleteMany({ where: { horseId: hacPhong.id } });
+  await prisma.trainingPlan.deleteMany({ where: { horseId: hacPhong.id } });
+
+  // Tạo giáo án đang chạy cho Bạch Long Mã
   let planBachLongMa = await prisma.trainingPlan.findFirst({
     where: { horseId: bachLongMa.id, status: PlanStatus.ACTIVE },
   });
@@ -327,23 +458,58 @@ async function main() {
     });
   }
 
-  // Buổi tập trùng giờ: 08:00 - 09:00 ngày demo
+  // Khởi tạo các bài tập của Bạch Long Mã (HLV Trần Minh Quân tự dẫn tập & kiêm nài):
+  // 1. Prime Time Bài Nặng 1: 06:15 - 07:00 (BREEZE, ép HEAVY)
+  // 2. Prime Time Bài Nặng 2: 07:15 - 08:00 (TRIAL, ép HEAVY) -> HLV Quân đã đạt 2/2 bài nặng giờ vàng!
+  // 3. Bài tập buổi sáng: 09:30 - 10:30 (CANTER) -> Dùng để test đệm HLV 15p!
   await prisma.workoutSession.deleteMany({
     where: { trainingPlanId: planBachLongMa.id },
   });
-  await prisma.workoutSession.create({
-    data: {
-      trainingPlanId: planBachLongMa.id,
-      horseId: bachLongMa.id,
-      trackId: trackTurfB.id,
-      scheduledDate: new Date(demoDateStr + 'T08:00:00.000Z'),
-      workoutType: 'CANTER',
-      intensity: 'MEDIUM',
-      trackSurface: 'TURF',
-      status: WorkoutStatus.SCHEDULED,
-      distanceMeters: 1600,
-      targetSpeedKmh: 40,
-    },
+  await prisma.workoutSession.createMany({
+    data: [
+      {
+        trainingPlanId: planBachLongMa.id,
+        horseId: bachLongMa.id,
+        trackId: trackTurfA.id,
+        assignedStaffUserId: trainerQuan.id,
+        jockeyName: trainerQuan.fullName,
+        scheduledDate: new Date(demoDateStr + 'T06:15:00.000Z'),
+        workoutType: 'BREEZE',
+        intensity: 'HEAVY',
+        trackSurface: 'TURF',
+        status: WorkoutStatus.SCHEDULED,
+        distanceMeters: 1000,
+        targetSpeedKmh: 55,
+      },
+      {
+        trainingPlanId: planBachLongMa.id,
+        horseId: bachLongMa.id,
+        trackId: trackTurfB.id,
+        assignedStaffUserId: trainerQuan.id,
+        jockeyName: trainerQuan.fullName,
+        scheduledDate: new Date(demoDateStr + 'T07:15:00.000Z'),
+        workoutType: 'TRIAL',
+        intensity: 'HEAVY',
+        trackSurface: 'TURF',
+        status: WorkoutStatus.SCHEDULED,
+        distanceMeters: 1200,
+        targetSpeedKmh: 60,
+      },
+      {
+        trainingPlanId: planBachLongMa.id,
+        horseId: bachLongMa.id,
+        trackId: trackTurfB.id,
+        assignedStaffUserId: trainerQuan.id,
+        jockeyName: trainerQuan.fullName,
+        scheduledDate: new Date(demoDateStr + 'T09:30:00.000Z'),
+        workoutType: 'CANTER',
+        intensity: 'MEDIUM',
+        trackSurface: 'TURF',
+        status: WorkoutStatus.SCHEDULED,
+        distanceMeters: 1600,
+        targetSpeedKmh: 40,
+      },
+    ],
   });
 
   // 6. Tạo 6 bài tập trên Đường chạy Cỏ A lúc 07:00 - 08:00 ngày demo để làm đầy sức chứa 6/6

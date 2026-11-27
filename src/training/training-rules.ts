@@ -71,6 +71,9 @@ export const MAX_HORSES_PER_TRAINER = 8;
 /** BR-BARN-CAPACITY-HLV: Mỗi Khu chuồng (Barn) cho phép tối đa 2 Huấn luyện viên cùng phụ trách. */
 export const MAX_TRAINERS_PER_BARN = 2;
 
+/** BR-BARN-CAPACITY-GROOM: Mỗi Khu chuồng (Barn) cho phép tối đa 4 Groom phụ trách. */
+export const MAX_GROOMS_PER_BARN = 4;
+
 /** BR-TRN-SLOT-HT: Đệm thời gian tối thiểu giữa các buổi tập của 1 HLV (phút). */
 export const TRAINER_BUFFER_MINUTES = 15;
 
