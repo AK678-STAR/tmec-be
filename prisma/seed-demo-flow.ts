@@ -1546,6 +1546,72 @@ async function main() {
         trainerNotes: 'Đi bộ thư giãn trên thảm cỏ cuối ngày sau 45 phút đệm an toàn.',
       },
     });
+
+    // Thêm các ca tập demo cho ngày mai (tomorrow) và ngày 2026-11-28 để test xung đột lịch HLV trong Timeline
+    const tomorrow = new Date(now.getTime() + 24 * 3600 * 1000);
+    const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`;
+    const testDates = Array.from(new Set([tomorrowStr, '2026-11-28', '2026-11-29']));
+
+    for (const dStr of testDates) {
+      // HLV Tuấn: bận huấn luyện Tuyết Ảnh lúc 08:00 - 08:45
+      await prisma.workoutSession.create({
+        data: {
+          trainingPlanId: planA2.id,
+          horseId: horseA2.id,
+          assignedStaffUserId: trainerA.id,
+          scheduledDate: new Date(`${dStr}T08:00:00+07:00`),
+          workoutType: 'CANTER',
+          intensity: 'MEDIUM',
+          trackSurface: TrackSurface.DIRT,
+          distanceMeters: 1400,
+          repetitions: 1,
+          status: WorkoutStatus.SCHEDULED,
+          trainerNotes: 'Ca tập sáng của Tuyết Ảnh - Demo phát hiện trùng lịch HLV',
+        },
+      });
+
+      // HLV Tuấn: bận huấn luyện Lôi Chấn lúc 15:30 - 16:15
+      await prisma.workoutSession.create({
+        data: {
+          trainingPlanId: planA3.id,
+          horseId: horseA3.id,
+          assignedStaffUserId: trainerA.id,
+          scheduledDate: new Date(`${dStr}T15:30:00+07:00`),
+          workoutType: 'BREEZE',
+          intensity: 'HIGH',
+          trackSurface: TrackSurface.DIRT,
+          distanceMeters: 1000,
+          repetitions: 1,
+          status: WorkoutStatus.SCHEDULED,
+          trainerNotes: 'Ca tập chiều của Lôi Chấn - Demo phát hiện trùng lịch HLV',
+        },
+      });
+    }
+
+    // HLV Quân cũng có ca huấn luyện Sấm Sét vào các ngày test
+    const activePlanQuan = await prisma.trainingPlan.findFirst({
+      where: { trainerUserId: trainerQuan.id, status: PlanStatus.ACTIVE },
+      include: { horse: true },
+    });
+    if (activePlanQuan) {
+      for (const dStr of testDates) {
+        await prisma.workoutSession.create({
+          data: {
+            trainingPlanId: activePlanQuan.id,
+            horseId: activePlanQuan.horseId,
+            assignedStaffUserId: trainerQuan.id,
+            scheduledDate: new Date(`${dStr}T08:30:00+07:00`),
+            workoutType: 'TROT',
+            intensity: 'MEDIUM',
+            trackSurface: TrackSurface.TURF,
+            distanceMeters: 1200,
+            repetitions: 1,
+            status: WorkoutStatus.SCHEDULED,
+            trainerNotes: 'Ca tập sáng của Sấm Sét - Demo phát hiện trùng lịch HLV Quân',
+          },
+        });
+      }
+    }
   }
 
   console.log('========================================================================');
