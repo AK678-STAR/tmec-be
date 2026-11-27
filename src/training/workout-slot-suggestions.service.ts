@@ -55,7 +55,7 @@ export function rankWorkoutSlots(
   // Whole intervals must fit the preferred windows; morning groups rank before afternoon.
   for (const [begin, end] of [
     [360, 510],
-    [930, 1050],
+    [930, 1020],
   ]) {
     for (let day = new Date(`${from}T00:00:00+07:00`); clubDate(day) <= to; day = addDays(day, 1)) {
       for (
