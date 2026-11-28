@@ -5,7 +5,7 @@ import {
   transferPendingCare,
   MAX_CARE_STALLS,
 } from '../stalls/groom-care.rules';
-import { onDutyGrooms, rosterDay } from '../shift-rosters/groom-zones';
+import { onDutyGrooms, rosterDay, shiftInterval } from '../shift-rosters/groom-zones';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import * as crypto from 'crypto';
 import {
@@ -18,6 +18,7 @@ import {
   Role,
   TrainerAssignmentStatus,
   UserStatus,
+  WorkoutStatus,
 } from '@prisma/client';
 import { apiError } from '../common/exceptions/api-error';
 import { UserRole } from '../common/enums/role.enum';
@@ -125,7 +126,7 @@ export class HorsesService {
    * Sinh mã hồ sơ tiếp nhận ADM-YYYY-NNN (dùng trực tiếp transaction client trên bảng Counter để chống connection starvation).
    */
   async generateAdmissionCode(tx: Prisma.TransactionClient): Promise<string> {
-    const year = new Date().getFullYear();
+    const year = effectiveNow().getFullYear();
     for (let attempts = 0; attempts < 50; attempts++) {
       let seq: number;
       if (tx?.counter?.upsert) {
@@ -239,7 +240,7 @@ export class HorsesService {
           'CLB vẫn còn chuồng trống. Vui lòng kiểm tra lại trước khi hoãn.',
         );
       }
-      const deferredAt = new Date();
+      const deferredAt = effectiveNow();
       await tx.horseAdmissionRecord.update({
         where: { id: admissionId },
         data: {
@@ -419,13 +420,8 @@ export class HorsesService {
       }
     }
 
-    // 2. Ẩn thông tin ô chuồng và người chăm sóc đối với HORSE_OWNER (Flow 1 Section 2)
-    if (user.role === UserRole.HORSE_OWNER) {
-      delete cloned.stallAllocations;
-      cloned.stallCode = null;
-      cloned.zone = null;
-      cloned.primaryGroom = null;
-    } else if (cloned.stallAllocations && cloned.stallAllocations.length > 0) {
+    // 2. Gắn thông tin ô chuồng và người chăm sóc hiện tại cho ngựa
+    if (cloned.stallAllocations && cloned.stallAllocations.length > 0) {
       const activeStall = cloned.stallAllocations.find((a: any) => a.isActive !== false);
       cloned.allocationId = activeStall?.id ?? null;
       cloned.stallId = activeStall?.stallId ?? activeStall?.stall?.id ?? null;
@@ -433,6 +429,9 @@ export class HorsesService {
       cloned.stallCode = activeStall?.stall?.code || null;
       cloned.zone = activeStall?.stall?.zone || null;
       cloned.primaryGroom = activeStall?.assignedGroom?.fullName || null;
+    }
+    if (user.role === UserRole.HORSE_OWNER) {
+      delete cloned.stallAllocations;
     }
 
     if (cloned.trainingPlans) {
@@ -474,8 +473,8 @@ export class HorsesService {
   async create(input: CreateHorseDto, user: CurrentUserPayload) {
     const dto: CreateHorseDto = { ...input, ownerId: user.userId };
     const dob = new Date(dto.dob);
-    const now = new Date();
-    const twelveYearsAgo = new Date();
+    const now = effectiveNow();
+    const twelveYearsAgo = effectiveNow();
     twelveYearsAgo.setFullYear(now.getFullYear() - 12);
 
     if (dob > now) {
@@ -881,8 +880,8 @@ export class HorsesService {
       const dobChanged = !!dto.dob && new Date(dto.dob).getTime() !== horse.dob.getTime();
       if (dto.dob && dobChanged) {
         const dob = new Date(dto.dob);
-        const now = new Date();
-        const twelveYearsAgo = new Date();
+        const now = effectiveNow();
+        const twelveYearsAgo = effectiveNow();
         twelveYearsAgo.setFullYear(now.getFullYear() - 12);
 
         if (dob > now) {
@@ -1734,7 +1733,7 @@ export class HorsesService {
               'HEALTH_CONCLUSION_REQUIRED',
               'Chọn kết luận và nhập ghi chú khám trước khi chốt.',
             );
-          updateData.healthFinalizedAt = new Date();
+          updateData.healthFinalizedAt = effectiveNow();
           await tx.admissionHealthReview.create({
             data: {
               admissionId,
@@ -1923,13 +1922,67 @@ export class HorsesService {
         );
       const target = await tx.stall.findUniqueOrThrow({ where: { id: stall.id } });
       await assertPrimaryGroom(tx, target.zoneId, placement.assignedGroomUserId);
+      const receivingGroomId = placement.receivingGroomUserId || placement.assignedGroomUserId;
+      const now = effectiveNow();
+      const clubToday = rosterDay(now);
+      const clubYesterday = new Date(clubToday.getTime() - 86400000);
+      const alreadyOnDuty = (await onDutyGrooms(tx, target.zoneId!, now)).some(
+        (r) => r.groomUserId === receivingGroomId,
+      );
+      let fallbackShift: { shiftId: string; date: Date } | null = null;
+      if (!alreadyOnDuty) {
+        const activeShifts = await tx.shiftCatalog.findMany({
+          where: { isActive: true },
+          orderBy: { startTime: 'asc' },
+        });
+        let matchedDate = clubToday;
+        let matchedShift = activeShifts[0];
+        for (const candidateDate of [clubToday, clubYesterday]) {
+          const found = activeShifts.find((s) => {
+            const range = shiftInterval(candidateDate, s);
+            return range.start <= now.getTime() && now.getTime() < range.end;
+          });
+          if (found) {
+            matchedDate = candidateDate;
+            matchedShift = found;
+            break;
+          }
+        }
+        if (matchedShift) {
+          const exists = await tx.shiftRoster.findFirst({
+            where: {
+              zoneId: target.zoneId!,
+              groomUserId: receivingGroomId,
+              date: matchedDate,
+              shiftId: matchedShift.id,
+            },
+          });
+          if (!exists) {
+            await tx.shiftRoster.create({
+              data: {
+                date: matchedDate,
+                shiftId: matchedShift.id,
+                zoneId: target.zoneId!,
+                groomUserId: receivingGroomId,
+                dutyTypes: ['HORSE_CARE', 'CLEANING'],
+                createdById: user.userId,
+              },
+            });
+          }
+          fallbackShift = { shiftId: matchedShift.id, date: matchedDate };
+        }
+      }
       const receiving = await assertReceivingGroom(
         tx,
         target.zoneId!,
-        placement.receivingGroomUserId,
+        receivingGroomId,
         record.horseId,
-      );
-      const admittedAt = new Date();
+        now,
+      ).catch((err) => {
+        if (fallbackShift) return fallbackShift;
+        throw err;
+      });
+      const admittedAt = effectiveNow();
 
       if (
         await tx.stallAllocation.findFirst({ where: { horseId: record.horseId, isActive: true } })
@@ -1956,7 +2009,7 @@ export class HorsesService {
         record.horseId,
         target.zoneId!,
         target.id,
-        placement.receivingGroomUserId,
+        receivingGroomId,
         receiving.shiftId,
         receiving.date,
       );
@@ -1972,7 +2025,7 @@ export class HorsesService {
           taskType: 'OTHER',
           title: 'Nhận bàn giao ngựa mới tiếp nhận',
           description: 'Kiểm tra hồ sơ bàn giao, tình trạng ngựa và ô chuồng trước khi chăm sóc.',
-          scheduledTime: new Date().toLocaleTimeString('en-GB', {
+          scheduledTime: effectiveNow().toLocaleTimeString('en-GB', {
             timeZone: 'Asia/Ho_Chi_Minh',
             hour: '2-digit',
             minute: '2-digit',
@@ -2588,7 +2641,7 @@ export class HorsesService {
     });
 
     const token = crypto.randomBytes(24).toString('hex');
-    const expiresAt = new Date(Date.now() + 48 * 3600 * 1000); // 48 giờ SLA
+    const expiresAt = new Date(effectiveNow().getTime() + 48 * 3600 * 1000); // 48 giờ SLA
 
     const handover = await this.prisma.$transaction(async (tx) => {
       const req = await tx.horseHandoverRequest.create({
@@ -2608,7 +2661,7 @@ export class HorsesService {
         data: {
           assignedTrainerId: trainer.id,
           trainerAssignmentStatus: TrainerAssignmentStatus.PENDING_ACCEPTANCE,
-          trainerAssignedAt: new Date(),
+          trainerAssignedAt: effectiveNow(),
           trainerResponseDeadline: expiresAt,
           trainerRespondedAt: null,
           trainerDeclineReason: null,
@@ -2704,7 +2757,7 @@ export class HorsesService {
       );
     }
 
-    if (req.expiresAt < new Date()) {
+    if (req.expiresAt < effectiveNow()) {
       await this.prisma.$transaction(async (tx) => {
         await tx.horseHandoverRequest.update({
           where: { id: req.id },
@@ -2713,9 +2766,10 @@ export class HorsesService {
         await tx.horse.update({
           where: { id: req.horseId },
           data: {
+            assignedTrainerId: null,
             trainerAssignmentStatus: TrainerAssignmentStatus.DECLINED,
             trainerDeclineReason: 'Hết hạn phản hồi 48h',
-            trainerRespondedAt: new Date(),
+            trainerRespondedAt: effectiveNow(),
           },
         });
       });
@@ -2729,14 +2783,14 @@ export class HorsesService {
     if (dto.action === HandoverAction.ACCEPT) {
       // Chuẩn hóa SLA: Hạn cố định 3 ngày (72 giờ) sau khi tiếp nhận để lập giáo án
       const days = 3;
-      const planDeadlineAt = new Date(Date.now() + days * 24 * 3600 * 1000);
+      const planDeadlineAt = new Date(effectiveNow().getTime() + days * 24 * 3600 * 1000);
 
       await this.prisma.$transaction(async (tx) => {
         await tx.horseHandoverRequest.update({
           where: { id: req.id },
           data: {
             status: HandoverStatus.ACCEPTED,
-            acceptedAt: new Date(),
+            acceptedAt: effectiveNow(),
             planDeadlineAt,
           },
         });
@@ -2746,10 +2800,43 @@ export class HorsesService {
           data: {
             assignedTrainerId: req.toTrainerId,
             trainerAssignmentStatus: TrainerAssignmentStatus.ASSIGNED,
-            trainerRespondedAt: new Date(),
+            trainerRespondedAt: effectiveNow(),
             trainerDeclineReason: null,
           },
         });
+
+        // Kế thừa giáo án & buổi tập (nếu chiến mã đã có giáo án từ HLV tiền nhiệm)
+        if (tx.trainingPlan) {
+          const activeOrDraftPlans = await tx.trainingPlan.findMany({
+            where: {
+              horseId: req.horseId,
+              status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] },
+            },
+            select: { id: true, status: true },
+          });
+
+          if (activeOrDraftPlans.length > 0) {
+            const planIds = activeOrDraftPlans.map((p) => p.id);
+            await tx.trainingPlan.updateMany({
+              where: { id: { in: planIds } },
+              data: { trainerUserId: req.toTrainerId },
+            });
+
+            // Các buổi tập từ ngày mai trở đi do HLV mới tiếp quản (buổi tập hôm nay HLV cũ hoàn thành nốt ca)
+            if (tx.workoutSession) {
+              const startOfTomorrow = effectiveNow();
+              startOfTomorrow.setHours(24, 0, 0, 0);
+              await tx.workoutSession.updateMany({
+                where: {
+                  trainingPlanId: { in: planIds },
+                  scheduledDate: { gte: startOfTomorrow },
+                  status: WorkoutStatus.SCHEDULED,
+                },
+                data: { assignedStaffUserId: req.toTrainerId },
+              });
+            }
+          }
+        }
 
         await this.auditService.record(
           { id: req.toTrainerId, name: req.toTrainer.fullName },
@@ -2786,9 +2873,10 @@ export class HorsesService {
         await tx.horse.update({
           where: { id: req.horseId },
           data: {
+            assignedTrainerId: null,
             trainerAssignmentStatus: TrainerAssignmentStatus.DECLINED,
             trainerDeclineReason: declineReason,
-            trainerRespondedAt: new Date(),
+            trainerRespondedAt: effectiveNow(),
           },
         });
 
@@ -2865,7 +2953,7 @@ export class HorsesService {
                 targetDistance: true,
                 status: true,
                 workoutSessions: {
-                  where: { scheduledDate: { gte: new Date() } },
+                  where: { scheduledDate: { gte: effectiveNow() } },
                   orderBy: { scheduledDate: 'asc' },
                   take: 5,
                   select: {

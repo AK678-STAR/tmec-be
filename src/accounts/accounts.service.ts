@@ -1,3 +1,4 @@
+import { effectiveNow } from '../common/utils/demo-clock';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -6,6 +7,7 @@ import {
   PlanStatus,
   Prisma,
   Role,
+  TrainerAssignmentStatus,
   User,
   UserStatus,
   WorkoutStatus,
@@ -494,7 +496,7 @@ export class AccountsService {
   ): Promise<void> {
     if (confirmed) return;
 
-    const today = new Date(new Date().toDateString());
+    const today = new Date(effectiveNow().toDateString());
     const [activeStalls, upcomingWorkouts, upcomingShifts, activePlans] = await Promise.all([
       (tx as any).stallAllocation?.count
         ? (tx as any).stallAllocation.count({
@@ -505,7 +507,7 @@ export class AccountsService {
         ? (tx as any).workoutSession.count({
             where: {
               assignedStaffUserId: target.id,
-              scheduledDate: { gte: new Date() },
+              scheduledDate: { gte: effectiveNow() },
               status: WorkoutStatus.SCHEDULED,
             },
           })
@@ -550,7 +552,7 @@ export class AccountsService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw apiError(HttpStatus.NOT_FOUND, 'NOT_FOUND', 'User not found');
 
-    const today = new Date(new Date().toDateString());
+    const today = new Date(effectiveNow().toDateString());
     const [stalls, workouts, shifts, plans] = await Promise.all([
       this.prisma.stallAllocation
         ? this.prisma.stallAllocation.findMany({
@@ -565,7 +567,7 @@ export class AccountsService {
         ? this.prisma.workoutSession.findMany({
             where: {
               OR: [{ assignedStaffUserId: userId }, { trainingPlan: { trainerUserId: userId } }],
-              scheduledDate: { gte: new Date() },
+              scheduledDate: { gte: effectiveNow() },
               status: WorkoutStatus.SCHEDULED,
             },
             include: { horse: { select: { id: true, name: true, horseCode: true } } },
@@ -819,11 +821,14 @@ export class AccountsService {
       }
 
       const handoverTrainer = await this.find(dto.handoverTrainerId);
-      if (handoverTrainer.role !== Role.HEAD_TRAINER) {
+      if (
+        handoverTrainer.role !== Role.HEAD_TRAINER ||
+        handoverTrainer.status !== UserStatus.ACTIVE
+      ) {
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'INVALID_HANDOVER_RECIPIENT',
-          'Người nhận bàn giao phải là Huấn luyện viên trưởng.',
+          'Người nhận bàn giao phải là Huấn luyện viên trưởng đang hoạt động.',
         );
       }
 
@@ -836,15 +841,35 @@ export class AccountsService {
       }
 
       // Kiểm tra sức chứa của HLV nhận bàn giao (tối đa 8 con)
-      const recipientPlanCount = await this.prisma.trainingPlan.count({
+      const rawPlanCount = await this.prisma.trainingPlan.count({
         where: {
           trainerUserId: dto.handoverTrainerId,
           status: { in: [PlanStatus.DRAFT, PlanStatus.ACTIVE] },
           horse: { deletedAt: null },
         },
       });
+      const recipientPlanCount = Number(rawPlanCount) || 0;
 
-      const availableSlots = Math.max(0, MAX_HORSES_PER_TRAINER - recipientPlanCount);
+      let recipientHorseCount = 0;
+      try {
+        if (this.prisma.horse?.count) {
+          const c = await this.prisma.horse.count({
+            where: {
+              assignedTrainerId: dto.handoverTrainerId,
+              trainerAssignmentStatus: {
+                in: [TrainerAssignmentStatus.ASSIGNED, TrainerAssignmentStatus.PENDING_ACCEPTANCE],
+              },
+              deletedAt: null,
+            },
+          });
+          recipientHorseCount = Number(c) || 0;
+        }
+      } catch {
+        recipientHorseCount = 0;
+      }
+
+      const currentLoad = Math.max(recipientPlanCount, recipientHorseCount);
+      const availableSlots = Math.max(0, MAX_HORSES_PER_TRAINER - currentLoad);
       // Cơ chế Bàn giao Chia tách Thông minh (Smart Split Handover)
       const toHandoverPlans = activeOrDraftPlans.slice(0, availableSlots);
       const excessPlans = activeOrDraftPlans.slice(availableSlots);
@@ -868,12 +893,12 @@ export class AccountsService {
             data: {
               assignedTrainerId: dto.handoverTrainerId,
               trainerAssignmentStatus: 'ASSIGNED',
-              trainerAssignedAt: new Date(),
+              trainerAssignedAt: effectiveNow(),
             },
           });
 
           // Đồng bộ các buổi tập từ ngày mai trở đi sang HLV mới (buổi tập hôm nay HLV cũ hoàn thành nốt ca trực)
-          const startOfTomorrow = new Date();
+          const startOfTomorrow = effectiveNow();
           startOfTomorrow.setHours(24, 0, 0, 0);
           if (tx.workoutSession) {
             await tx.workoutSession.updateMany({
